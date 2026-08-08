@@ -29,6 +29,28 @@ const { createEvent, publishEvent, unpublishEvent, updateEvent } = await import(
 const db = adminClient()
 
 const ROLLBACK_TITLE = 'Rollback Probe Supper Club'
+const STRANDED_TITLE = 'Stranded Probe Supper Club'
+
+/** A `from()` stand-in whose only operation, `insert`, fails. */
+function insertFails(message: string) {
+  return { insert: async () => ({ data: null, error: { message } }) }
+}
+
+/** A `from()` stand-in whose only operation, `update(...).eq(...)`, fails. */
+function updateFails(message: string) {
+  return { update: () => ({ eq: async () => ({ data: null, error: { message } }) }) }
+}
+
+/** Wraps a real query builder so that only `delete(...).eq(...)` fails. */
+function deleteFails(builder: object, message: string): object {
+  return new Proxy(builder, {
+    get(target, prop) {
+      if (prop === 'delete') return () => ({ eq: async () => ({ data: null, error: { message } }) })
+      const value = Reflect.get(target, prop)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
 
 function form(overrides: Record<string, string> = {}): FormData {
   const fd = new FormData()
@@ -180,21 +202,46 @@ describe('createEvent', () => {
     // failure is injected at the client seam instead. Without this the rollback
     // branch is unreachable from a test, and dropping it would leave an event
     // with no inventory: unpublishable forever, with no UI to add a ticket type.
-    signInAs(aliceId)
     const failing = clientWithFrom(userClient(aliceId), (table) =>
-      table === 'ticket_types'
-        ? { insert: async () => ({ data: null, error: { message: 'simulated outage' } }) }
-        : null,
+      table === 'ticket_types' ? insertFails('simulated ticket_types outage') : null,
     )
 
     const state = await actionsWith(failing, (actions) =>
       actions.createEvent({}, form({ title: ROLLBACK_TITLE })),
     )
 
-    expect(state.error).toBeTruthy()
+    // The exact string, because `toBeTruthy()` would also hold if the events
+    // insert were what failed — in which case there would be nothing to roll
+    // back and the assertion below would pass without the rollback existing.
+    expect(state.error).toBe('simulated ticket_types outage')
 
     const { data } = await db.from('events').select('id').eq('title', ROLLBACK_TITLE)
     expect(data ?? []).toHaveLength(0)
+  })
+
+  it('names the stranded event when the rollback itself fails', async () => {
+    // Two statements, no transaction: the rollback can fail on its own. Silence
+    // there would leave exactly the unpublishable draft the rollback exists to
+    // prevent, with the host told only that tickets failed.
+    const base = userClient(aliceId)
+    const failing = clientWithFrom(base, (table) => {
+      if (table === 'ticket_types') return insertFails('simulated ticket_types outage')
+      if (table === 'events') return deleteFails(base.from('events'), 'simulated delete outage')
+      return null
+    })
+
+    const state = await actionsWith(failing, (actions) =>
+      actions.createEvent({}, form({ title: STRANDED_TITLE })),
+    )
+
+    const { data } = await db.from('events').select('id').eq('title', STRANDED_TITLE)
+    expect(data).toHaveLength(1) // it really is stranded
+
+    expect(state.error).toContain('simulated ticket_types outage')
+    expect(state.error).toContain('simulated delete outage')
+    expect(state.error).toContain(data![0].id) // recoverable by hand
+
+    await db.from('events').delete().eq('id', data![0].id)
   })
 })
 
@@ -210,6 +257,21 @@ describe('publishEvent', () => {
     expect(data!.status).toBe('draft')
 
     await db.from('events').update({ venue_name: 'The Terrace' }).eq('id', eventId)
+  })
+
+  it('refuses to publish a cancelled event', async () => {
+    // Publishing a called-off supper club would put it back in the feed and
+    // someone would turn up to it.
+    signInAs(aliceId)
+    await db.from('events').update({ status: 'cancelled' }).eq('id', eventId)
+
+    const state = await publishEvent({}, formWithId(eventId))
+
+    expect(state.error).toMatch(/cancelled/)
+    const { data } = await db.from('events').select('status').eq('id', eventId).single()
+    expect(data!.status).toBe('cancelled')
+
+    await db.from('events').update({ status: 'draft' }).eq('id', eventId)
   })
 
   it('publishes the owner\'s complete event and stamps published_at', async () => {
@@ -232,8 +294,7 @@ describe('publishEvent', () => {
   // Deliberately after the event is published, not before. A draft is invisible
   // to Bob under events_select_published, so a cross-host attempt on a draft
   // fails whether or not the action filters on host_id — the row simply is not
-  // there. Published, the row IS readable by Bob (asserted below), so the only
-  // thing that can refuse him is the ownership filter.
+  // there. Published, the row IS readable by Bob (asserted below).
   it('refuses to publish an event belonging to another host', async () => {
     const { data: visible } = await userClient(bobId)
       .from('events')
@@ -245,15 +306,25 @@ describe('publishEvent', () => {
     signInAs(bobId)
     const state = await publishEvent({}, formWithId(eventId))
 
-    expect(state.error).toBeTruthy()
+    // The ownership message specifically, not merely "some error". Bob is also
+    // refused by the status guard two lines further down — this event is already
+    // published — so a bare toBeTruthy() would still pass with the host filter
+    // deleted, and the guard would go untested.
+    expect(state.error).toMatch(/not yours/)
+
+    const { data } = await db.from('events').select('published_at').eq('id', eventId).single()
+    expect(data!.published_at).toBe(publishedAt) // Bob did not restamp it
+  })
+
+  it('refuses to publish an event that is already published', async () => {
+    signInAs(aliceId)
+    const state = await publishEvent({}, formWithId(eventId))
+
+    expect(state.error).toMatch(/already published/)
     expect(state.ok).toBeUndefined()
 
-    const { data } = await db
-      .from('events')
-      .select('status, published_at')
-      .eq('id', eventId)
-      .single()
-    expect(data!.published_at).toBe(publishedAt) // Bob did not restamp it
+    const { data } = await db.from('events').select('published_at').eq('id', eventId).single()
+    expect(data!.published_at).toBe(publishedAt) // no restamp, so no reordering
   })
 })
 
@@ -296,7 +367,10 @@ describe('updateEvent', () => {
     // tested claim rather than a comment.
     const rlsFree = clientWithFrom(userClient(bobId), (table) => db.from(table))
 
-    const fd = form({ title: 'Defaced without RLS' })
+    // Values that differ from the stored ones on every writable table, because
+    // the seats write now happens first: an unowned edit that got that far would
+    // reprice Alice's tickets before the events update refused it.
+    const fd = form({ title: 'Defaced without RLS', seats: '3', priceRupees: '1' })
     fd.set('eventId', eventId)
 
     const state = await actionsWith(rlsFree, (actions) => actions.updateEvent({}, fd))
@@ -305,32 +379,82 @@ describe('updateEvent', () => {
 
     const { data } = await db.from('events').select('title').eq('id', eventId).single()
     expect(data!.title).toBe('Diwali Supper Club (fixed typo)')
+
+    const { data: tickets } = await db
+      .from('ticket_types')
+      .select('price_paise, quantity')
+      .eq('event_id', eventId)
+      .single()
+    expect(tickets).toMatchObject({ price_paise: 50_000, quantity: 20 })
   })
 
-  it('surfaces the oversell guard when seats are cut below what is reserved', async () => {
+  it('refuses to cut seats below what is already reserved, writing nothing', async () => {
     await db.from('ticket_types').update({ reserved_count: 5 }).eq('event_id', eventId)
     signInAs(aliceId)
 
-    const fd = form({ seats: '2' })
+    const fd = form({ title: 'Half-saved', city: 'Bhopal', seats: '2' })
     fd.set('eventId', eventId)
     const state = await updateEvent({}, fd)
 
-    // ticket_types_no_oversell is the backstop; the action must not swallow it.
-    expect(state.error).toBeTruthy()
+    // A refusal the host can read, not `ticket_types_no_oversell`.
+    expect(state.blockers ?? []).toHaveLength(1)
+    expect(state.blockers![0]).toContain('5')
     expect(state.ok).toBeUndefined()
 
-    const { data } = await db
+    // The point of the pre-check: the event must not be half-saved. Before the
+    // events update was moved after the seats update, title and city here were
+    // already written by the time the host was told the save had failed.
+    const { data } = await db.from('events').select('title, city').eq('id', eventId).single()
+    expect(data).toMatchObject({ title: 'Diwali Supper Club (fixed typo)', city: 'Indore' })
+
+    const { data: tickets } = await db
       .from('ticket_types')
       .select('quantity')
       .eq('event_id', eventId)
       .single()
-    expect(data!.quantity).toBe(20) // rejected, not partially applied
+    expect(tickets!.quantity).toBe(20)
 
     await db.from('ticket_types').update({ reserved_count: 0 }).eq('event_id', eventId)
+  })
+
+  it('surfaces a rejected seats write and leaves the event alone', async () => {
+    // The pre-check above cannot catch a booking that lands between the read and
+    // the write, so ticket_types_no_oversell is still the backstop and the action
+    // must not swallow it. Injected, because that race cannot be staged here.
+    const base = userClient(aliceId)
+    const failing = clientWithFrom(base, (table) =>
+      table === 'ticket_types' ? updateFails('simulated no_oversell rejection') : null,
+    )
+
+    const fd = form({ title: 'Half-saved', city: 'Bhopal' })
+    fd.set('eventId', eventId)
+
+    const state = await actionsWith(failing, (actions) => actions.updateEvent({}, fd))
+    expect(state.error).toBe('Could not update seats: simulated no_oversell rejection')
+
+    const { data } = await db.from('events').select('title, city').eq('id', eventId).single()
+    expect(data).toMatchObject({ title: 'Diwali Supper Club (fixed typo)', city: 'Indore' })
   })
 })
 
 describe('unpublishEvent', () => {
+  it('refuses another host, with RLS taken out of the picture', async () => {
+    // Same reasoning as the updateEvent pair: events_update_own refuses Bob on
+    // its own, so an RLS-scoped test cannot tell the action's host_id filter
+    // from the policy. Reaching the tables as the service role leaves the filter
+    // as the only thing between Bob and pulling Alice's live event offline.
+    const rlsFree = clientWithFrom(userClient(bobId), (table) => db.from(table))
+
+    const state = await actionsWith(rlsFree, (actions) =>
+      actions.unpublishEvent({}, formWithId(eventId)),
+    )
+    expect(state.error).toBeTruthy()
+    expect(state.ok).toBeUndefined()
+
+    const { data } = await db.from('events').select('status').eq('id', eventId).single()
+    expect(data!.status).toBe('published')
+  })
+
   it('returns a published event to draft', async () => {
     signInAs(aliceId)
     const state = await unpublishEvent({}, formWithId(eventId))
@@ -338,6 +462,19 @@ describe('unpublishEvent', () => {
     expect(state.ok).toBe(true)
     const { data } = await db.from('events').select('status').eq('id', eventId).single()
     expect(data!.status).toBe('draft')
+  })
+})
+
+describe('the eventId guard', () => {
+  it('refuses a submission with no event id instead of leaking a Postgres error', async () => {
+    // '' is not a uuid, so without the guard PostgREST answers
+    // `invalid input syntax for type uuid: ""` and the host sees that.
+    signInAs(aliceId)
+    const empty = new FormData()
+
+    expect((await updateEvent({}, empty)).error).toBe('Missing event id')
+    expect((await publishEvent({}, empty)).error).toBe('Missing event id')
+    expect((await unpublishEvent({}, empty)).error).toBe('Missing event id')
   })
 })
 
