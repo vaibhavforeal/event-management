@@ -22,6 +22,8 @@ export interface EventFormValues {
   endsAtLocal?: string
   seats?: number
   priceRupees?: number
+  /** The host's own name, from `hosts.display_name`. */
+  hostDisplayName?: string | null
   requiresApproval?: boolean
   allowsCash?: boolean
   hideVenueUntilApproved?: boolean
@@ -45,6 +47,7 @@ interface Draft {
   endsAtLocal: string
   seats: string
   priceRupees: string
+  hostDisplayName: string
 }
 
 /**
@@ -69,6 +72,7 @@ function draftFromValues(values: EventFormValues): Draft {
     endsAtLocal: values.endsAtLocal ?? '',
     seats: String(values.seats ?? 20),
     priceRupees: String(values.priceRupees ?? 0),
+    hostDisplayName: values.hostDisplayName ?? '',
   }
 }
 
@@ -84,6 +88,7 @@ function draftFromEcho(echo: SubmittedEventValues): Draft {
     endsAtLocal: echo.endsAtLocal,
     seats: echo.seats,
     priceRupees: echo.priceRupees,
+    hostDisplayName: echo.hostDisplayName,
   }
 }
 
@@ -214,6 +219,36 @@ export function EventForm({
           className={field}
         />
         {state.fieldErrors?.title && <p className="text-sm text-red-600">{state.fieldErrors.title}</p>}
+      </div>
+
+      {/* Second field on the form, not tucked away in a settings screen that
+          does not exist. `hosts.display_name` is printed under "Host" on the
+          public page, and until this input existed it was filled in from
+          `profiles.phone` — so every host published their WhatsApp number to
+          the group chat they forwarded the link into. The helper line says out
+          loud both that guests see this and that it is not per-event, because
+          changing it here changes it on every event the host has. */}
+      <div>
+        <label htmlFor="hostDisplayName" className="block text-sm font-medium">
+          Your name
+        </label>
+        <input
+          id="hostDisplayName"
+          name="hostDisplayName"
+          value={draft.hostDisplayName}
+          onChange={(event) => set('hostDisplayName', event.target.value)}
+          maxLength={80}
+          required
+          autoComplete="name"
+          placeholder="Priya from Indore"
+          className={field}
+        />
+        <p className="text-sm text-zinc-500">
+          Guests see this under “Host”, on all of your events.
+        </p>
+        {state.fieldErrors?.hostDisplayName && (
+          <p className="text-sm text-red-600">{state.fieldErrors.hostDisplayName}</p>
+        )}
       </div>
 
       <div>

@@ -1,4 +1,5 @@
 import 'server-only'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 
 /**
@@ -24,18 +25,43 @@ export interface FeedEvent {
   ticket_types: Array<{ price_paise: number; quantity: number; reserved_count: number }>
 }
 
-export async function getCurrentHostId(): Promise<string | null> {
+export interface Host {
+  id: string
+  /** What the public event page prints under "Host". Never a phone number. */
+  display_name: string
+}
+
+/**
+ * The hosts row for a profile, on a client the caller already holds.
+ *
+ * Exported because `resolveOrCreateHost` in the Server Actions needs the same
+ * lookup and used to carry its own copy of it — two places for the
+ * `profile_id` filter to be got wrong, and two places to change.
+ */
+export async function findHost(
+  supabase: SupabaseClient,
+  profileId: string,
+): Promise<Host | null> {
+  const { data } = await supabase
+    .from('hosts')
+    .select('id, display_name')
+    .eq('profile_id', profileId)
+    .maybeSingle()
+
+  return (data as Host | null) ?? null
+}
+
+/** The caller's own hosts row. Null when signed out, or signed in but not a host. */
+export async function getCurrentHost(): Promise<Host | null> {
   const supabase = await createClient()
   const { data: auth } = await supabase.auth.getUser()
   if (!auth.user) return null
 
-  const { data } = await supabase
-    .from('hosts')
-    .select('id')
-    .eq('profile_id', auth.user.id)
-    .maybeSingle()
+  return findHost(supabase, auth.user.id)
+}
 
-  return data?.id ?? null
+export async function getCurrentHostId(): Promise<string | null> {
+  return (await getCurrentHost())?.id ?? null
 }
 
 /**
@@ -287,6 +313,9 @@ export interface OwnedEvent extends HostEvent {
   // it with clean state. The events_set_updated_at trigger moves it on every
   // write, so it changes exactly when the panel's cached response goes stale.
   updated_at: string
+  // So the edit form can show the host the name their guests will read, rather
+  // than asking them to trust that whatever is stored is the name they meant.
+  hosts: { display_name: string } | null
 }
 
 /** One of the caller's own events, for the edit page. */
@@ -300,7 +329,8 @@ export async function getOwnedEvent(id: string): Promise<OwnedEvent | null> {
     .select(
       `id, slug, title, status, city, starts_at, cover_image_url, published_at, updated_at,
        description, venue_name, venue_address, ends_at, requires_approval, allows_cash,
-       hide_venue_until_approved, ticket_types(price_paise, quantity, reserved_count)`,
+       hide_venue_until_approved, hosts(display_name),
+       ticket_types(price_paise, quantity, reserved_count)`,
     )
     .eq('id', id)
     .eq('host_id', hostId) // not just RLS: a published event is readable by anyone

@@ -177,6 +177,27 @@ describe('parseEventForm', () => {
     )
   })
 
+  it('accepts a submission with no host display name, and one with a name', () => {
+    // Optional at this bar on purpose: the input is `required`, so an omission
+    // means a hand-crafted POST, and the action has a neutral fallback for it.
+    // Rejecting here instead would be a dead end with nothing to correct.
+    expect(parseEventForm(form()).success).toBe(true)
+
+    const named = parseEventForm(form({ hostDisplayName: 'Priya' }))
+    expect(named.success).toBe(true)
+    if (named.success) expect(named.data.hostDisplayName).toBe('Priya')
+  })
+
+  it('explains a host display name that is too short or too long', () => {
+    expect(errorsFor({ hostDisplayName: 'P' }).hostDisplayName).toBe(
+      'Give the name your guests will see',
+    )
+    expect(parseEventForm(form({ hostDisplayName: 'x'.repeat(80) })).success).toBe(true)
+    expect(errorsFor({ hostDisplayName: 'x'.repeat(81) }).hostDisplayName).toBe(
+      'Keep your name under 80 characters',
+    )
+  })
+
   it('explains an over-long city, the last bound that could speak Zod', () => {
     // Unreachable through the form's maxLength attribute, reachable by POST.
     expect(parseEventForm(form({ city: 'x'.repeat(80) })).success).toBe(true)

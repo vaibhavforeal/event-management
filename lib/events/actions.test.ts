@@ -61,6 +61,7 @@ function form(overrides: Record<string, string> = {}): FormData {
     startsAtLocal: '2026-11-14T19:30',
     seats: '20',
     priceRupees: '500',
+    hostDisplayName: 'Priya',
   }
   for (const [key, value] of Object.entries({ ...base, ...overrides })) {
     if (value !== '') fd.set(key, value)
@@ -165,10 +166,43 @@ describe('createEvent', () => {
     const target = await captureRedirect(() => createEvent({}, form()))
     expect(target).toMatch(/^\/host\/events\/[0-9a-f-]+\/edit$/)
 
-    const { data: after } = await db.from('hosts').select('id').eq('profile_id', aliceId)
+    const { data: after } = await db.from('hosts').select('id, display_name').eq('profile_id', aliceId)
     expect(after).toHaveLength(1)
+    // Under the name she typed, which is the whole point of asking for one.
+    expect(after![0].display_name).toBe('Priya')
 
     eventId = target.split('/')[3]
+  })
+
+  it('never falls back to the host\'s phone number for a display name', async () => {
+    // The defect this exists to keep dead: display_name fell back to
+    // profiles.phone, nothing writes profiles.full_name, so every host's
+    // WhatsApp number was rendered under "Host" in the served HTML of the page
+    // designed to be forwarded into a group chat — permanently, because no
+    // screen could change it.
+    const carol = await createTestUser(db)
+    const { data: profile } = await db.from('profiles').select('phone').eq('id', carol).single()
+    const digits = profile!.phone.replace(/\D/g, '')
+    signInAs(carol)
+
+    // No hostDisplayName at all, i.e. a POST that skipped the form.
+    const target = await captureRedirect(() => createEvent({}, form({ hostDisplayName: '' })))
+    const createdId = target.split('/')[3]
+
+    const { data: host } = await db
+      .from('hosts')
+      .select('display_name')
+      .eq('profile_id', carol)
+      .single()
+
+    // Both forms, because GoTrue stores the number without the leading plus.
+    expect(host!.display_name).not.toContain(digits)
+    expect(host!.display_name).not.toContain(profile!.phone)
+    expect(host!.display_name).toBe('Host')
+
+    await db.from('events').delete().eq('id', createdId)
+    await db.from('hosts').delete().eq('profile_id', carol)
+    await db.auth.admin.deleteUser(carol).catch(() => {})
   })
 
   it('stores the start time converted from IST to UTC', async () => {
@@ -353,6 +387,16 @@ describe('updateEvent', () => {
 
     const { data } = await db.from('events').select('title').eq('id', eventId).single()
     expect(data!.title).toBe('Diwali Supper Club (fixed typo)')
+
+    // The form carries a display name on every submission, and it writes to the
+    // host row rather than the event row — so a refused edit must not still
+    // rename the person who sent it. Bob is called Bob.
+    const { data: bob } = await db
+      .from('hosts')
+      .select('display_name')
+      .eq('profile_id', bobId)
+      .single()
+    expect(bob!.display_name).toBe('Bob')
   })
 
   it('refuses that same edit with RLS taken out of the picture', async () => {
@@ -434,6 +478,28 @@ describe('updateEvent', () => {
 
     const { data } = await db.from('events').select('title, city').eq('id', eventId).single()
     expect(data).toMatchObject({ title: 'Diwali Supper Club (fixed typo)', city: 'Indore' })
+  })
+
+  it('renames the host when they change the name guests see', async () => {
+    // The only screen that can write hosts.display_name, so if this does not
+    // work the name is set once at creation and stuck there forever — which is
+    // the state that made the phone-number fallback permanent.
+    signInAs(aliceId)
+    const fd = form({
+      title: 'Diwali Supper Club (fixed typo)',
+      hostDisplayName: 'Priya from Indore',
+    })
+    fd.set('eventId', eventId)
+
+    const state = await updateEvent({}, fd)
+    expect(state.ok).toBe(true)
+
+    const { data } = await db
+      .from('hosts')
+      .select('display_name')
+      .eq('profile_id', aliceId)
+      .single()
+    expect(data!.display_name).toBe('Priya from Indore')
   })
 })
 

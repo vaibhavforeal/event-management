@@ -92,6 +92,24 @@ export const eventDraftSchema = z
       .number('Price must be a number')
       .min(0, 'Price cannot be negative')
       .max(1_000_000, 'That price looks like a mistake'),
+    /**
+     * The name guests see under "Host" on the public page.
+     *
+     * Not a column on `events` — it writes through to `hosts.display_name` —
+     * but it is a field of this form, so it belongs in this declaration. Left
+     * out of it, a refused save would hand back an echo missing exactly this
+     * field and wipe the name the host had just typed.
+     *
+     * Optional at this bar, because a hand-crafted POST can omit it and the
+     * action has a neutral fallback for that. The input itself is `required`,
+     * so a host filling in the form always supplies one.
+     */
+    hostDisplayName: z
+      .string()
+      .trim()
+      .min(2, 'Give the name your guests will see')
+      .max(80, 'Keep your name under 80 characters')
+      .optional(),
     requiresApproval: z.boolean(),
     allowsCash: z.boolean(),
     hideVenueUntilApproved: z.boolean(),
@@ -135,6 +153,7 @@ export const EVENT_FORM_FIELDS = {
   endsAtLocal: 'text',
   seats: 'text',
   priceRupees: 'text',
+  hostDisplayName: 'text',
   requiresApproval: 'checkbox',
   allowsCash: 'checkbox',
   hideVenueUntilApproved: 'checkbox',

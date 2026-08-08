@@ -12,7 +12,7 @@ import {
   validateForPublish,
   type SubmittedEventValues,
 } from '@/lib/events/validation'
-import { getCurrentHostId } from '@/lib/events/queries'
+import { findHost, getCurrentHost, getCurrentHostId } from '@/lib/events/queries'
 import { rupeesToPaise } from '@/lib/money'
 
 export interface EventFormState {
@@ -36,29 +36,50 @@ export interface EventFormState {
  */
 
 /**
- * A signed-in user has a profile but not necessarily a hosts row. Creating one
- * on first publish keeps host onboarding to zero extra screens.
+ * The name to publish under when the host has not supplied one.
+ *
+ * Never, under any circumstance, a phone number. `display_name` used to fall
+ * back to `profiles.phone`, and nothing writes `profiles.full_name` — the
+ * handle_new_user() trigger inserts id and phone and nothing else — so that
+ * fallback fired for every host there has ever been. The result was the host's
+ * WhatsApp number rendered under "Host" in the served HTML of the one page the
+ * product exists to have forwarded into a group chat, with no screen anywhere
+ * that could change it.
+ *
+ * The form now asks for a name, so this is the floor under a hand-crafted POST
+ * that omits one, not the common path.
  */
-async function resolveOrCreateHost(supabase: SupabaseClient, user: User): Promise<string> {
-  const { data: existing } = await supabase
-    .from('hosts')
-    .select('id')
-    .eq('profile_id', user.id)
-    .maybeSingle()
+const UNNAMED_HOST = 'Host'
 
-  if (existing) return existing.id
+/**
+ * A signed-in user has a profile but not necessarily a hosts row. Creating one
+ * on first save keeps host onboarding to zero extra screens.
+ *
+ * Also the one place a host's display name is written, so that renaming
+ * yourself is the same code path whether it is your first event or your tenth.
+ */
+async function resolveOrCreateHost(
+  supabase: SupabaseClient,
+  user: User,
+  displayName: string | undefined,
+): Promise<string> {
+  const existing = await findHost(supabase, user.id)
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('full_name, phone')
-    .eq('id', user.id)
-    .maybeSingle()
+  if (existing) {
+    if (displayName && displayName !== existing.display_name) {
+      const { error } = await supabase
+        .from('hosts')
+        .update({ display_name: displayName })
+        .eq('id', existing.id)
 
-  const displayName = profile?.full_name?.trim() || profile?.phone || 'Host'
+      if (error) throw new Error(`Could not update your name: ${error.message}`)
+    }
+    return existing.id
+  }
 
   const { data, error } = await supabase
     .from('hosts')
-    .insert({ profile_id: user.id, display_name: displayName })
+    .insert({ profile_id: user.id, display_name: displayName ?? UNNAMED_HOST })
     .select('id')
     .single()
 
@@ -78,7 +99,7 @@ export async function createEvent(
   if (!parsed.success) return { fieldErrors: parsed.fieldErrors, values: submittedValues(formData) }
   const input = parsed.data
 
-  const hostId = await resolveOrCreateHost(supabase, auth.user)
+  const hostId = await resolveOrCreateHost(supabase, auth.user, input.hostDisplayName)
 
   const { data: event, error } = await supabase
     .from('events')
@@ -143,8 +164,11 @@ export async function updateEvent(
   formData: FormData,
 ): Promise<EventFormState> {
   const supabase = await createClient()
-  const hostId = await getCurrentHostId()
-  if (!hostId) redirect('/login')
+  // The whole row rather than just the id: `display_name` comes back with it,
+  // so seeing whether the host renamed themselves costs no extra query.
+  const host = await getCurrentHost()
+  if (!host) redirect('/login')
+  const hostId = host.id
 
   const eventId = String(formData.get('eventId') ?? '')
   if (!eventId) return { error: 'Missing event id', values: submittedValues(formData) }
@@ -233,6 +257,24 @@ export async function updateEvent(
 
   if (error) return { error: error.message, values: submittedValues(formData) }
   if (!data) return { error: 'That event is not yours to edit', values: submittedValues(formData) }
+
+  // Last, and on its own row rather than the event's: renaming yourself changes
+  // every event page you have, so it must not ride along with an edit that was
+  // refused. By here the event save has already stood, which is why a failure
+  // says so rather than pretending nothing was written.
+  if (input.hostDisplayName && input.hostDisplayName !== host.display_name) {
+    const { error: renameError } = await supabase
+      .from('hosts')
+      .update({ display_name: input.hostDisplayName })
+      .eq('id', hostId)
+
+    if (renameError) {
+      return {
+        error: `The event was saved, but your name was not: ${renameError.message}`,
+        values: submittedValues(formData),
+      }
+    }
+  }
 
   revalidatePath(`/e/${existing.slug}`)
   revalidatePath('/host')
