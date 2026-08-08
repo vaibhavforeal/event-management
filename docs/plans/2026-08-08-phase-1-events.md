@@ -804,6 +804,8 @@ git commit -m "Add event-covers storage bucket with per-user folder policies"
 **Files:**
 - Create: `lib/auth/session.ts`
 - Create: `lib/events/queries.ts`
+- Create: `tests/helpers/session.ts`
+- Modify: `vitest.config.mts`
 - Test: `lib/events/queries.test.ts`
 
 **Interfaces:**
@@ -815,6 +817,15 @@ git commit -m "Add event-covers storage bucket with per-user folder policies"
   - `getPublishedEventBySlug(slug: string): Promise<PublicEvent | null>`
   - `listHostEvents(): Promise<HostEvent[]>`
   - `getOwnedEvent(id: string): Promise<OwnedEvent | null>`
+  - `tests/helpers/session.ts`: `mockSupabaseSession()`, `signInAs(userId: string | null)`
+
+**Testing decision (settled before execution):** these tests call the real
+exported functions. `queries.ts` reaches the database through
+`@/lib/supabase/server#createClient`, so the test mocks that one module
+boundary and lets everything below it hit the real local Postgres under real
+RLS. Asserting against re-issued PostgREST queries instead would leave a
+missing `.eq('host_id', ...)` in `queries.ts` completely undetected — which is
+one of the two bugs this plan exists to prevent.
 
 - [ ] **Step 1: Write the session helper**
 
@@ -996,36 +1007,101 @@ export async function getOwnedEvent(id: string): Promise<OwnedEvent | null> {
 }
 ```
 
-- [ ] **Step 3: Write the integration test**
+- [ ] **Step 3: Let Vitest import server-only modules**
 
-These functions read cookies, so they cannot be called directly from Vitest. The test asserts the same queries against the same RLS, using the seeded fixtures.
+`queries.ts` and `session.ts` start with `import 'server-only'`, which throws
+outside a server bundle. Alias it to an empty module for tests.
+
+```ts
+// vitest.config.mts — add to the existing resolve.alias block
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('.', import.meta.url)),
+      // `server-only` exists to break the build if a module is imported into a
+      // client bundle. Vitest is neither, so it is stubbed rather than removed
+      // from the source — the guard still protects the real build.
+      'server-only': fileURLToPath(new URL('./tests/helpers/empty-module.ts', import.meta.url)),
+    },
+  },
+```
+
+```ts
+// tests/helpers/empty-module.ts
+// Stands in for `server-only` under Vitest. Intentionally empty.
+export {}
+```
+
+- [ ] **Step 4: Write the session mock helper**
+
+```ts
+// tests/helpers/session.ts
+import { vi } from 'vitest'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { anonClient, userClient } from './db'
+
+/**
+ * Lets a test call the real functions in lib/events/queries.ts.
+ *
+ * Those functions reach the database through one seam —
+ * `@/lib/supabase/server#createClient` — so that seam is the only thing mocked.
+ * Everything below it is real: a real PostgREST client, carrying a real JWT for
+ * the chosen user, hitting the real local Postgres under real RLS.
+ *
+ * The alternative — re-issuing equivalent queries in the test — would pass
+ * happily while queries.ts was missing a filter, which is exactly the class of
+ * bug this suite exists to catch.
+ */
+
+let currentUserId: string | null = null
+
+/** Who subsequent createClient() calls act as. null means signed out. */
+export function signInAs(userId: string | null): void {
+  currentUserId = userId
+}
+
+/**
+ * Call at the top level of a test file, before importing the module under test.
+ * vi.mock is hoisted, so the factory must not close over anything but the
+ * mutable module-scope variable above.
+ */
+export function mockSupabaseSession(): void {
+  vi.mock('@/lib/supabase/server', () => ({
+    createClient: async (): Promise<SupabaseClient> =>
+      currentUserId ? userClient(currentUserId) : anonClient(),
+  }))
+}
+```
+
+- [ ] **Step 5: Write the integration test**
 
 ```ts
 // lib/events/queries.test.ts
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import {
-  adminClient,
-  anonClient,
-  cleanupEvent,
-  seedEvent,
-  userClient,
-  type SeededEvent,
-} from '@/tests/helpers/db'
+import { adminClient, cleanupEvent, seedEvent, type SeededEvent } from '@/tests/helpers/db'
+import { mockSupabaseSession, signInAs } from '@/tests/helpers/session'
 
-/**
- * Mirrors the selects in lib/events/queries.ts. queries.ts itself reads cookies
- * and so cannot run under Vitest; what matters is that the query shapes it uses
- * return the right rows under RLS.
- */
+mockSupabaseSession()
+
+const {
+  getCurrentHostId,
+  getOwnedEvent,
+  getPublishedEventBySlug,
+  listCityFeed,
+  listHostEvents,
+} = await import('@/lib/events/queries')
 
 const db = adminClient()
 
 let published: SeededEvent
 let draft: SeededEvent
+let publishedSlug: string
 
 beforeAll(async () => {
   published = await seedEvent(db, { status: 'published' })
   draft = await seedEvent(db, { status: 'draft' })
+
+  const { data } = await db.from('events').select('slug').eq('id', published.eventId).single()
+  publishedSlug = data!.slug
 })
 
 afterAll(async () => {
@@ -1033,81 +1109,115 @@ afterAll(async () => {
   await cleanupEvent(db, draft)
 })
 
-describe('public event page query', () => {
-  it('returns a published event to an anonymous visitor, with its host', async () => {
-    const { data, error } = await anonClient()
-      .from('events')
-      .select('id, slug, title, ticket_types(price_paise, quantity), hosts(display_name)')
-      .eq('id', published.eventId)
-      .eq('status', 'published')
-      .maybeSingle()
+describe('getPublishedEventBySlug', () => {
+  it('returns a published event to a signed-out visitor, with its host', async () => {
+    signInAs(null)
+    const event = await getPublishedEventBySlug(publishedSlug)
 
-    expect(error).toBeNull()
-    expect(data).not.toBeNull()
-    expect(data!.ticket_types).toHaveLength(1)
-    expect(data!.hosts).toMatchObject({ display_name: 'Test Host' })
+    expect(event).not.toBeNull()
+    expect(event!.title).toBe('Test Supper Club')
+    expect(event!.ticket_types).toHaveLength(1)
+    expect(event!.hosts).toMatchObject({ display_name: 'Test Host' })
   })
 
-  it('returns nothing for a draft', async () => {
-    const { data } = await anonClient()
-      .from('events')
-      .select('id')
-      .eq('id', draft.eventId)
-      .eq('status', 'published')
-      .maybeSingle()
+  it('returns null for an unknown slug', async () => {
+    signInAs(null)
+    expect(await getPublishedEventBySlug('no-such-event-aaaaaa')).toBeNull()
+  })
 
-    expect(data).toBeNull()
+  it('returns null for a draft, even to its own host', async () => {
+    const { data } = await db.from('events').select('slug').eq('id', draft.eventId).single()
+    signInAs(draft.hostProfileId)
+
+    // The public page must never render a draft, session or not.
+    expect(await getPublishedEventBySlug(data!.slug)).toBeNull()
   })
 })
 
-describe('host dashboard query', () => {
-  it('returns only the calling host\'s events', async () => {
-    const { data } = await userClient(draft.hostProfileId)
-      .from('events')
-      .select('id')
-      .eq('host_id', draft.hostId)
+describe('listCityFeed', () => {
+  it('lists upcoming published events and excludes drafts', async () => {
+    signInAs(null)
+    const ids = (await listCityFeed()).map((e) => e.id)
 
-    expect(data).toHaveLength(1)
-    expect(data![0].id).toBe(draft.eventId)
-  })
-
-  it('does not leak another host\'s published event into the list', async () => {
-    // Without the explicit host_id filter this returns the whole platform,
-    // because events_select_published makes every published row readable.
-    const { data } = await userClient(draft.hostProfileId)
-      .from('events')
-      .select('id')
-      .eq('host_id', draft.hostId)
-
-    expect(data!.map((e) => e.id)).not.toContain(published.eventId)
-  })
-})
-
-describe('feed query', () => {
-  it('lists upcoming published events only', async () => {
-    const { data } = await anonClient()
-      .from('events')
-      .select('id, status')
-      .eq('status', 'published')
-      .gte('starts_at', new Date().toISOString())
-
-    const ids = data!.map((e) => e.id)
     expect(ids).toContain(published.eventId)
     expect(ids).not.toContain(draft.eventId)
+  })
+
+  it('filters by city', async () => {
+    signInAs(null)
+    expect((await listCityFeed('Indore')).map((e) => e.id)).toContain(published.eventId)
+    expect(await listCityFeed('Nowhere-on-Sea')).toEqual([])
+  })
+})
+
+describe('getCurrentHostId', () => {
+  it('returns the host id for a signed-in host', async () => {
+    signInAs(draft.hostProfileId)
+    expect(await getCurrentHostId()).toBe(draft.hostId)
+  })
+
+  it('returns null when signed out', async () => {
+    signInAs(null)
+    expect(await getCurrentHostId()).toBeNull()
+  })
+})
+
+describe('listHostEvents', () => {
+  it('returns the calling host\'s own events, drafts included', async () => {
+    signInAs(draft.hostProfileId)
+    const ids = (await listHostEvents()).map((e) => e.id)
+
+    expect(ids).toEqual([draft.eventId])
+  })
+
+  it('does not leak another host\'s published event', async () => {
+    // The regression this guards: events_select_published makes EVERY published
+    // event readable, so a listHostEvents() that trusts RLS alone would hand a
+    // host the entire platform's catalogue as "your events".
+    signInAs(draft.hostProfileId)
+    const ids = (await listHostEvents()).map((e) => e.id)
+
+    expect(ids).not.toContain(published.eventId)
+  })
+
+  it('returns an empty list for a signed-in user who is not a host', async () => {
+    signInAs(published.attendeeId)
+    expect(await listHostEvents()).toEqual([])
+  })
+})
+
+describe('getOwnedEvent', () => {
+  it('returns the host\'s own draft', async () => {
+    signInAs(draft.hostProfileId)
+    const event = await getOwnedEvent(draft.eventId)
+
+    expect(event).not.toBeNull()
+    expect(event!.id).toBe(draft.eventId)
+  })
+
+  it('refuses another host\'s event even though it is published', async () => {
+    signInAs(draft.hostProfileId)
+    expect(await getOwnedEvent(published.eventId)).toBeNull()
+  })
+
+  it('returns null when signed out', async () => {
+    signInAs(null)
+    expect(await getOwnedEvent(draft.eventId)).toBeNull()
   })
 })
 ```
 
-- [ ] **Step 4: Run the test**
+- [ ] **Step 6: Run the test**
 
 Run: `npx vitest run lib/events/queries.test.ts`
-Expected: PASS, 5 tests
+Expected: PASS, 13 tests
 
-- [ ] **Step 5: Typecheck and commit**
+- [ ] **Step 7: Typecheck and commit**
 
 ```bash
 npm run typecheck
-git add lib/auth/session.ts lib/events/queries.ts lib/events/queries.test.ts
+git add lib/auth/session.ts lib/events/queries.ts lib/events/queries.test.ts \
+        tests/helpers/session.ts tests/helpers/empty-module.ts vitest.config.mts
 git commit -m "Add session helper and event queries scoped to the calling host"
 ```
 
@@ -1366,26 +1476,72 @@ export async function unpublishEvent(
 
 - [ ] **Step 2: Write the integration test**
 
-Server Actions read cookies, so the test exercises the same sequence against RLS with an explicit user client.
+Calls the real exported actions, using the same `@/lib/supabase/server` mock
+Task 5 introduced. `next/cache` and `next/navigation` are stubbed too: outside a
+request, `revalidatePath` throws and `redirect` throws a control-flow signal.
 
 ```ts
 // lib/events/actions.test.ts
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { adminClient, createTestUser, userClient } from '@/tests/helpers/db'
-import { buildSlug } from '@/lib/events/slug'
-import { istLocalToUtc } from '@/lib/events/datetime'
-import { rupeesToPaise } from '@/lib/money'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { adminClient, createTestUser } from '@/tests/helpers/db'
+import { mockSupabaseSession, signInAs } from '@/tests/helpers/session'
 
-/**
- * Mirrors what app/host/events/actions.ts does, minus the cookie plumbing:
- * create a host, insert an event plus one ticket type, then publish.
- */
+mockSupabaseSession()
+
+// revalidatePath needs a request store; there isn't one here.
+vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }))
+
+// Next's redirect() signals by throwing. Reproduce that so the test can assert
+// a redirect happened without depending on Next's internal error shape.
+class RedirectSignal extends Error {
+  constructor(public readonly to: string) {
+    super(`redirect:${to}`)
+  }
+}
+vi.mock('next/navigation', () => ({
+  redirect: (to: string) => {
+    throw new RedirectSignal(to)
+  },
+  notFound: () => {
+    throw new Error('notFound')
+  },
+}))
+
+const { createEvent, publishEvent, unpublishEvent, updateEvent } = await import(
+  '@/app/host/events/actions'
+)
 
 const db = adminClient()
 
+function form(overrides: Record<string, string> = {}): FormData {
+  const fd = new FormData()
+  const base: Record<string, string> = {
+    title: 'Diwali Supper Club',
+    city: 'Indore',
+    venueName: 'The Terrace',
+    startsAtLocal: '2026-11-14T19:30',
+    seats: '20',
+    priceRupees: '500',
+  }
+  for (const [key, value] of Object.entries({ ...base, ...overrides })) {
+    if (value !== '') fd.set(key, value)
+  }
+  return fd
+}
+
+/** Runs an action that is expected to redirect, returning the target path. */
+async function captureRedirect(run: () => Promise<unknown>): Promise<string> {
+  try {
+    await run()
+  } catch (error) {
+    if (error instanceof RedirectSignal) return error.to
+    throw error
+  }
+  throw new Error('Expected a redirect, but the action returned normally')
+}
+
 let aliceId: string
 let bobId: string
-let aliceHostId: string
 let eventId: string
 let slug: string
 
@@ -1396,123 +1552,160 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (eventId) await db.from('events').delete().eq('id', eventId)
-  if (aliceHostId) await db.from('hosts').delete().eq('id', aliceHostId)
+  await db.from('hosts').delete().eq('profile_id', aliceId)
+  await db.from('hosts').delete().eq('profile_id', bobId)
   await db.auth.admin.deleteUser(aliceId).catch(() => {})
   await db.auth.admin.deleteUser(bobId).catch(() => {})
 })
 
-describe('creating an event as a signed-in user', () => {
-  it('creates the host row implicitly', async () => {
-    const { data, error } = await userClient(aliceId)
-      .from('hosts')
-      .insert({ profile_id: aliceId, display_name: 'Alice' })
-      .select('id')
-      .single()
+describe('createEvent', () => {
+  it('rejects a form missing the columns Postgres requires', async () => {
+    signInAs(aliceId)
+    const state = await createEvent({}, form({ title: '', city: '' }))
 
-    expect(error).toBeNull()
-    aliceHostId = data!.id
+    expect(state.fieldErrors?.title).toBeTruthy()
+    expect(state.fieldErrors?.city).toBeTruthy()
   })
 
-  it('inserts the event as a draft', async () => {
-    slug = buildSlug('Diwali Supper Club')
-    const { data, error } = await userClient(aliceId)
-      .from('events')
-      .insert({
-        host_id: aliceHostId,
-        slug,
-        title: 'Diwali Supper Club',
-        city: 'Indore',
-        venue_name: 'The Terrace',
-        starts_at: istLocalToUtc('2026-11-14T19:30').toISOString(),
-        status: 'draft',
-      })
-      .select('id, starts_at')
-      .single()
+  it('creates the host row implicitly on first event', async () => {
+    signInAs(aliceId)
+    const { data: before } = await db.from('hosts').select('id').eq('profile_id', aliceId)
+    expect(before ?? []).toHaveLength(0)
 
-    expect(error).toBeNull()
-    // 19:30 IST is 14:00 UTC. If this is 19:30Z the conversion was skipped.
+    const target = await captureRedirect(() => createEvent({}, form()))
+    expect(target).toMatch(/^\/host\/events\/[0-9a-f-]+\/edit$/)
+
+    const { data: after } = await db.from('hosts').select('id').eq('profile_id', aliceId)
+    expect(after).toHaveLength(1)
+
+    eventId = target.split('/')[3]
+  })
+
+  it('stores the start time converted from IST to UTC', async () => {
+    // 19:30 IST is 14:00 UTC. A 19:30Z here means the conversion was skipped.
+    const { data } = await db.from('events').select('starts_at, status').eq('id', eventId).single()
+
     expect(data!.starts_at).toContain('14:00:00')
-    eventId = data!.id
+    expect(data!.status).toBe('draft')
   })
 
-  it('inserts the single implicit ticket type', async () => {
-    const { error } = await userClient(aliceId).from('ticket_types').insert({
-      event_id: eventId,
-      name: 'General',
-      price_paise: rupeesToPaise(500),
-      quantity: 20,
-    })
-
-    expect(error).toBeNull()
-  })
-
-  it('stores the price as integer paise', async () => {
-    const { data } = await db.from('ticket_types').select('price_paise').eq('event_id', eventId).single()
-    expect(data!.price_paise).toBe(50_000)
-  })
-})
-
-describe('publishing', () => {
-  it('refuses to let another host publish it', async () => {
-    const { data } = await userClient(bobId)
-      .from('events')
-      .update({ status: 'published' })
-      .eq('id', eventId)
-      .select()
-
-    expect(data ?? []).toHaveLength(0)
-  })
-
-  it('lets the owner publish', async () => {
-    const { error } = await userClient(aliceId)
-      .from('events')
-      .update({ status: 'published', published_at: new Date().toISOString() })
-      .eq('id', eventId)
-      .eq('host_id', aliceHostId)
-
-    expect(error).toBeNull()
-  })
-
-  it('makes the event visible at its slug', async () => {
-    const { data } = await db.from('events').select('slug, status').eq('id', eventId).single()
-    expect(data!.status).toBe('published')
-    expect(data!.slug).toBe(slug)
-  })
-})
-
-describe('editing', () => {
-  it('never changes the slug when the title changes', async () => {
-    // The link is already in a WhatsApp group by now.
-    await userClient(aliceId)
-      .from('events')
-      .update({ title: 'Diwali Supper Club (fixed typo)' })
-      .eq('id', eventId)
-      .eq('host_id', aliceHostId)
-
-    const { data } = await db.from('events').select('slug').eq('id', eventId).single()
-    expect(data!.slug).toBe(slug)
-  })
-
-  it('refuses to cut seats below what is already reserved', async () => {
-    await db.from('ticket_types').update({ reserved_count: 5 }).eq('event_id', eventId)
-
-    const { error } = await userClient(aliceId)
+  it('creates one ticket type priced in integer paise', async () => {
+    const { data } = await db
       .from('ticket_types')
-      .update({ quantity: 2 })
+      .select('name, price_paise, quantity')
       .eq('event_id', eventId)
 
-    // ticket_types_no_oversell is the backstop.
-    expect(error).not.toBeNull()
+    expect(data).toHaveLength(1)
+    expect(data![0]).toMatchObject({ name: 'General', price_paise: 50_000, quantity: 20 })
+  })
+})
+
+describe('publishEvent', () => {
+  it('reports every blocker at once rather than publishing', async () => {
+    signInAs(aliceId)
+    await db.from('events').update({ venue_name: null }).eq('id', eventId)
+
+    const state = await publishEvent({}, formWithId(eventId))
+
+    expect(state.blockers ?? []).not.toHaveLength(0)
+    const { data } = await db.from('events').select('status').eq('id', eventId).single()
+    expect(data!.status).toBe('draft')
+
+    await db.from('events').update({ venue_name: 'The Terrace' }).eq('id', eventId)
+  })
+
+  it('refuses to publish an event belonging to another host', async () => {
+    signInAs(bobId)
+    await db.from('hosts').insert({ profile_id: bobId, display_name: 'Bob' })
+
+    const state = await publishEvent({}, formWithId(eventId))
+
+    expect(state.error).toBeTruthy()
+    const { data } = await db.from('events').select('status').eq('id', eventId).single()
+    expect(data!.status).toBe('draft')
+  })
+
+  it('publishes the owner\'s complete event and stamps published_at', async () => {
+    signInAs(aliceId)
+    const state = await publishEvent({}, formWithId(eventId))
+
+    expect(state.ok).toBe(true)
+    const { data } = await db
+      .from('events')
+      .select('status, published_at, slug')
+      .eq('id', eventId)
+      .single()
+
+    expect(data!.status).toBe('published')
+    expect(data!.published_at).not.toBeNull()
+    slug = data!.slug
+  })
+})
+
+describe('updateEvent', () => {
+  it('never changes the slug when the title changes', async () => {
+    // The link is already sitting in a WhatsApp group by now.
+    signInAs(aliceId)
+    const fd = form({ title: 'Diwali Supper Club (fixed typo)' })
+    fd.set('eventId', eventId)
+
+    const state = await updateEvent({}, fd)
+    expect(state.ok).toBe(true)
+
+    const { data } = await db.from('events').select('slug, title').eq('id', eventId).single()
+    expect(data!.slug).toBe(slug)
+    expect(data!.title).toBe('Diwali Supper Club (fixed typo)')
+  })
+
+  it('refuses an edit from a different host', async () => {
+    signInAs(bobId)
+    const fd = form({ title: 'Defaced' })
+    fd.set('eventId', eventId)
+
+    const state = await updateEvent({}, fd)
+    expect(state.error).toBeTruthy()
+
+    const { data } = await db.from('events').select('title').eq('id', eventId).single()
+    expect(data!.title).toBe('Diwali Supper Club (fixed typo)')
+  })
+
+  it('surfaces the oversell guard when seats are cut below what is reserved', async () => {
+    await db.from('ticket_types').update({ reserved_count: 5 }).eq('event_id', eventId)
+    signInAs(aliceId)
+
+    const fd = form({ seats: '2' })
+    fd.set('eventId', eventId)
+    const state = await updateEvent({}, fd)
+
+    // ticket_types_no_oversell is the backstop; the action must not swallow it.
+    expect(state.error).toBeTruthy()
 
     await db.from('ticket_types').update({ reserved_count: 0 }).eq('event_id', eventId)
   })
 })
+
+describe('unpublishEvent', () => {
+  it('returns a published event to draft', async () => {
+    signInAs(aliceId)
+    const state = await unpublishEvent({}, formWithId(eventId))
+
+    expect(state.ok).toBe(true)
+    const { data } = await db.from('events').select('status').eq('id', eventId).single()
+    expect(data!.status).toBe('draft')
+  })
+})
+
+function formWithId(id: string): FormData {
+  const fd = new FormData()
+  fd.set('eventId', id)
+  return fd
+}
 ```
 
 - [ ] **Step 3: Run the test**
 
 Run: `npx vitest run lib/events/actions.test.ts`
-Expected: PASS, 9 tests
+Expected: PASS, 12 tests
 
 - [ ] **Step 4: Typecheck and commit**
 
@@ -2384,7 +2577,7 @@ npm test
 npm run typecheck && npm run lint
 ```
 
-Expected: all tests pass — 76 from Phase 0 plus roughly 50 new ones.
+Expected: all tests pass — 76 from Phase 0 plus roughly 65 new ones.
 
 - [ ] **Step 4: Verify end to end in the browser**
 
