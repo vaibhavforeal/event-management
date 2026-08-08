@@ -23,6 +23,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('.', import.meta.url)),
+      // `server-only` exists to break the build if a module is imported into a
+      // client bundle. Vitest is neither, so it is stubbed rather than removed
+      // from the source — the guard still protects the real build.
+      'server-only': fileURLToPath(new URL('./tests/helpers/empty-module.ts', import.meta.url)),
     },
   },
 })
