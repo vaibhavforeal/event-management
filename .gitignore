@@ -12,6 +12,9 @@
 
 # testing
 /coverage
+# browser snapshots/console logs written by the Playwright MCP server when a
+# layout change is verified by measuring it in a real browser
+/.playwright-mcp
 
 # next.js
 /.next/

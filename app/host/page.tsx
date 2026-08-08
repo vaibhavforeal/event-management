@@ -26,11 +26,13 @@ export default async function HostDashboard() {
   await requireUser()
   const events = await listHostEvents()
 
-  // `w-full` on <main> is load-bearing, not decoration. The root layout makes
-  // <body> a column flex container, and a flex item with auto cross-axis margins
-  // (mx-auto) is exempt from stretching — so main was sized shrink-to-fit and
-  // settled at its own max-width, 768px, on a 390px phone. Without it the page
-  // scrolls sideways however well the row inside it behaves.
+  // `w-full` alongside `mx-auto max-w-*` is the standing rule for every <main>
+  // in this app. <body> used to be a column flex container, and a flex item with
+  // auto cross-axis margins is exempt from stretching — so main was sized
+  // shrink-to-fit and settled at its own max-width, 768px, on a 390px phone.
+  // Task 8.5 removed that `flex`, which makes `w-full` redundant today; it stays
+  // because it costs nothing and makes the page immune should any ancestor
+  // become a flex or grid container again.
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
       <div className="mb-6 flex items-center justify-between">

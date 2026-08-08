@@ -27,10 +27,18 @@ export default async function EditEventPage(props: PageProps<'/host/events/[id]/
   const shareUrl = new URL(`/e/${event.slug}`, clientEnv.NEXT_PUBLIC_SITE_URL).toString()
 
   return (
-    <main className="mx-auto max-w-2xl space-y-8 px-4 py-8">
+    <main className="mx-auto w-full max-w-2xl space-y-8 px-4 py-8">
       <div>
-        <h1 className="text-2xl font-semibold">{event.title}</h1>
-        <p className="text-sm text-zinc-500">
+        {/* break-words on both, because these are the two host-entered strings
+            on this page and neither is guaranteed to contain a space. A title
+            may be 140 characters (the schema CHECK allows it) and the slug is
+            derived from it, so a one-word title yields a ~67-character unbroken
+            slug. This is the load-bearing half of the fix: measured at 390px,
+            removing just these two classes takes the page from 0 back to 1489px
+            of horizontal overflow. Sizing main correctly cannot make an
+            unbreakable word wrap. */}
+        <h1 className="text-2xl font-semibold break-words">{event.title}</h1>
+        <p className="text-sm break-words text-zinc-500">
           {event.status === 'published' ? 'Published' : 'Draft'}
           {' · '}
           <Link href={`/e/${event.slug}`} className="underline">/e/{event.slug}</Link>
