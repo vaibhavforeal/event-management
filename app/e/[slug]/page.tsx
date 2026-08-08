@@ -25,7 +25,17 @@ function truncateAtWord(text: string, limit: number): string {
 
   // One character is reserved for the ellipsis, so the result is never longer
   // than `limit` — the point of the limit is that it is a limit.
-  const clipped = text.slice(0, limit - 1)
+  //
+  // `slice` counts UTF-16 code units, so a cut can land between the two halves
+  // of a surrogate pair. Emoji are pairs, and hosts on an Indian consumer
+  // product use them constantly, so a lone high surrogate would reach the
+  // preview card and render as a replacement character. Drop it: better one
+  // character short than one that is not a character.
+  //
+  // Code points, not grapheme clusters. A ZWJ sequence cut here degrades to a
+  // simpler emoji (👨‍👩‍👧 to 👨) rather than to mojibake, which is an acceptable
+  // way to lose and does not need Intl.Segmenter on a hot path.
+  const clipped = text.slice(0, limit - 1).replace(/[\uD800-\uDBFF]$/, '')
   // Drop the trailing partial word. A single word longer than the whole limit
   // has no boundary to cut on: the pattern then matches nothing (or everything,
   // if the string starts with space), and the hard cut stands.
@@ -45,14 +55,21 @@ export async function generateMetadata(props: PageProps<'/e/[slug]'>): Promise<M
   if (!event) return { title: 'Event not found' }
 
   const when = formatIst(new Date(event.starts_at))
-  // Truthiness rather than `??`: an empty description is stored as NULL by the
-  // form today, but a direct write could leave '', and an empty og:description
-  // renders a preview card with a blank second line. The date and city are a
-  // better card than nothing at all.
-  const description = event.description
-    ? truncateAtWord(event.description, OG_DESCRIPTION_LIMIT)
+  // Trimmed content rather than `??` on the raw column. An absent description is
+  // NULL and a submitted one is trimmed by Zod, but a direct database write can
+  // leave '' or '   ', and either renders a preview card with a blank second
+  // line. The date and city are a better card than whitespace.
+  const summary = event.description?.trim()
+  const description = summary
+    ? truncateAtWord(summary, OG_DESCRIPTION_LIMIT)
     : `${when} · ${event.city}`
-  const url = `${clientEnv.NEXT_PUBLIC_SITE_URL}/e/${event.slug}`
+  // `new URL` rather than concatenation, matching how the edit page builds the
+  // share link it hands the host. NEXT_PUBLIC_SITE_URL passes z.url() with a
+  // trailing slash and .env.example does not forbid one, so concatenation
+  // silently emits "http://host//e/slug" — which resolves, but means the
+  // canonical URL WhatsApp caches is not the URL the host is forwarding. These
+  // two strings drifting apart is the one thing this page cannot afford.
+  const url = new URL(`/e/${event.slug}`, clientEnv.NEXT_PUBLIC_SITE_URL).toString()
 
   return {
     title: event.title,
@@ -204,9 +221,10 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           <h1 className="text-[28px] leading-[1.15] font-semibold tracking-tight text-balance break-words sm:text-[34px]">
             {event.title}
           </h1>
-          <p className="text-[15px] break-words" style={{ color: SLATE }}>
-            {event.city}
-          </p>
+          {/* The city used to repeat here. It belongs under Where, not in the
+              header: an address without a city is an incomplete address, and the
+              header's job is what and when. The preview card already leads with
+              the city when there is no description to show. */}
         </header>
 
         <section className="mt-8 space-y-2 border-t pt-6" style={{ borderColor: MIST }}>
@@ -238,9 +256,19 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               </p>
             )
           )}
-          <p className="font-mono text-[13px] break-words" style={{ color: SLATE }}>
-            {event.city}
-          </p>
+          {/* Only when there is a venue name to sit above it: without one the
+              line above already reads `event.city`, and the block would print
+              the city twice.
+
+              Unreachable today — publishEventBlockers requires a venue name, so
+              a published event always has one and the `?? event.city` fallback
+              above never fires. The guard costs a boolean and means relaxing
+              that rule cannot quietly reintroduce the duplicate. */}
+          {event.venue_name && (
+            <p className="font-mono text-[13px] break-words" style={{ color: SLATE }}>
+              {event.city}
+            </p>
+          )}
         </section>
 
         {event.description && (
