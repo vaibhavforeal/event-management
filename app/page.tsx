@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { EventCard } from '@/app/_components/event-card'
-import { foldCityName, listCityFeed, listFeedCities } from '@/lib/events/queries'
+import { MAX_CITY_LENGTH, foldCityName, listCityFeed, listFeedCities } from '@/lib/events/queries'
 
 export const metadata = {
   title: 'What is on',
@@ -91,9 +91,15 @@ export default async function FeedPage(props: PageProps<'/'>) {
             )
           })}
 
+          {/* Shows the string the feed actually filtered on, truncated to the
+              same MAX_CITY_LENGTH the query uses — not the raw URL value. A
+              hand-made `?city=` of 9,000 characters otherwise painted all of
+              them: no overflow, thanks to min-w-0 above, but a link forwarded
+              into a group chat that renders the feed as one enormous black bar,
+              and this product travels by forwarded link. */}
           {selectedCity && !selectionIsKnown && (
             <span className="min-w-0 rounded-full bg-black px-3 py-1 break-words text-white">
-              {selectedCity}
+              {selectedCity.trim().slice(0, MAX_CITY_LENGTH)}
             </span>
           )}
 

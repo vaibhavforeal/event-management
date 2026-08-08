@@ -188,6 +188,22 @@ describe('listCityFeed', () => {
     expect(await listCityFeed('x'.repeat(500))).toEqual([])
   })
 
+  it('answers an absurdly long city with an empty feed, not an error', async () => {
+    // Escaping triples every special character, so a long `?city=` builds a
+    // request line PostgREST rejects outright: ~1,340 `%` (or ~8,000 plain
+    // characters) turned the feed — the app's main public route — into a 500
+    // "URI too long" where the empty state belongs. Truncating to the 80 Zod
+    // already allows on write is what keeps this a query that simply matches
+    // nothing. Both lengths below returned 500 before the fix.
+    signInAs(null)
+
+    await expect(listCityFeed('%'.repeat(1400))).resolves.toEqual([])
+    await expect(listCityFeed('z'.repeat(9000))).resolves.toEqual([])
+    // Length alone must not become a way to match: an 80-character prefix of a
+    // real city is still a different string, so it finds nothing.
+    await expect(listCityFeed('Indore' + 'z'.repeat(9000))).resolves.toEqual([])
+  })
+
   it('finds a city whose name contains a wildcard character', async () => {
     // The other half of escaping: a literal % in a stored city has to stay
     // findable, not just be neutralised. Fails if the escape is ever "strip the

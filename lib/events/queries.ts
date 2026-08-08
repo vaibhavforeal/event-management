@@ -65,23 +65,20 @@ export function foldCityName(city: string): string {
  * filter. One backslash per special character, which is what SQL LIKE takes as
  * its default escape.
  *
- * Established by probing the running stack rather than by reading about it, and
- * the probe is worth describing because getting it wrong reads as a working
- * result twice over:
+ * Verified against this stack: escaped, `%`, `*`, `_ndore`, `%Indore%` and a
+ * bare backslash all match nothing, while a city whose name really does contain
+ * `%` or `_` is still found. An earlier round of this comment claimed the
+ * opposite — that backslashes do not escape here — on the strength of a probe
+ * written through a shell heredoc that ate one level of them, so the value
+ * reaching the server was a bare `%` and matched everything, exactly as a broken
+ * escape would. If you are about to change this, reproduce through the code path
+ * that actually runs; a probe is not evidence until it does.
  *
- *  - An earlier round of this concluded backslashes do NOT escape. They do. The
- *    probe had been written through a shell heredoc that ate one level of them,
- *    so the value actually reaching the server was a bare `%`. It matched
- *    everything, exactly as a broken escape would.
- *  - A later round appeared to show escaping breaking legitimate matches. That
- *    probe scoped itself with `.in('city', ...)` alongside `.ilike('city', ...)`
- *    — two filters on one column, of which PostgREST applies one. Scope a probe
- *    by a different column than the one under test.
- *
- * Known limit: PostgREST rewrites `*` to `%` after this runs, so a city whose
- * name literally contains an asterisk is not reachable and folds onto `%`. That
- * is a lost match, not a hole — `?city=*` still matches nothing — and no real
- * city name contains one.
+ * Known limit: PostgREST rewrites `*` to `%` after this runs, so `Ind*re` is
+ * escaped to `Ind\*re`, rewritten to `Ind\%re`, and matches a sibling city named
+ * `Ind%re` instead of nothing. It substitutes one city for another rather than
+ * widening to several — `?city=*` still matches nothing — and no real city name
+ * contains an asterisk.
  */
 export function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_*]/g, (character) => `\\${character}`)
@@ -127,6 +124,20 @@ function looksDeliberatelyCased(city: string): number {
  * without revisiting this is not silently load-bearing.
  */
 const CITY_SCAN_ROWS = 1000
+
+/**
+ * The longest `?city=` worth sending to the database.
+ *
+ * Mirrors `city: z.string().max(80)` in lib/events/validation.ts, which is what
+ * bounds every stored value, so this truncates nothing that could have matched.
+ * Keep the two together: raising the Zod cap without raising this would start
+ * silently cutting legitimate city names out of the filter.
+ *
+ * Exported because the feed shows the visitor which city it filtered on, and
+ * that label has to be the string actually queried rather than whatever was in
+ * the URL.
+ */
+export const MAX_CITY_LENGTH = 80
 
 /**
  * The cities that currently have something on, for the feed's filter row.
@@ -192,7 +203,14 @@ export async function listCityFeed(city?: string): Promise<FeedEvent[]> {
   // visitor's city has to be found whether or not it made that list's own cap.
   // ILIKE keeps the match case-insensitive and O(1); escapeLikePattern is what
   // stops the visitor's string being read as a pattern.
-  if (city) query = query.ilike('city', escapeLikePattern(city.trim()))
+  //
+  // Truncated first, because escaping is what makes the length dangerous: it
+  // triples every special character, so ~1,340 `%` in `?city=` built a request
+  // line PostgREST rejects, and the feed — the app's main public route —
+  // answered 500 "URI too long" where an empty state belongs. 80 is not a guess:
+  // it is exactly what Zod caps `city` at on write, so nothing storable is cut,
+  // and anything longer could not have matched a row anyway.
+  if (city) query = query.ilike('city', escapeLikePattern(city.trim().slice(0, MAX_CITY_LENGTH)))
 
   const { data, error } = await query
   if (error) throw new Error(`Could not load the feed: ${error.message}`)
