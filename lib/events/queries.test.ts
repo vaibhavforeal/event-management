@@ -172,36 +172,71 @@ describe('listCityFeed', () => {
   })
 
   it('reads a wildcard as a literal city name rather than a pattern', async () => {
-    // The regression this guards is a tempting one-line fix for the test above:
-    // `.ilike('city', city)`. PostgREST reads both % and * in the pattern as
-    // wildcards and does NOT honour a backslash escape — verified against the
-    // local stack — so `?city=%`, a URL any visitor can type, would quietly
-    // return every city on the platform while looking like a working filter.
-    // '_ndore' is the sharpest of the three: under ilike it matches Indore.
+    // The regression this guards: `?city=` goes straight into an ILIKE pattern,
+    // so an unescaped `.ilike('city', city)` hands any visitor a URL — `?city=%`
+    // — that returns every city on the platform while looking like a working
+    // filter. escapeLikePattern is the only thing standing between the two.
+    // '_ndore' is the sharpest case: unescaped, it matches Indore.
     signInAs(null)
 
     expect(await listCityFeed('%')).toEqual([])
     expect(await listCityFeed('*')).toEqual([])
+    expect(await listCityFeed('%%%')).toEqual([])
     expect(await listCityFeed('_ndore')).toEqual([])
+    expect(await listCityFeed('Ind__e')).toEqual([])
+    expect(await listCityFeed('%Indore%')).toEqual([])
+    expect(await listCityFeed('x'.repeat(500))).toEqual([])
+  })
+
+  it('finds a city whose name contains a wildcard character', async () => {
+    // The other half of escaping: a literal % in a stored city has to stay
+    // findable, not just be neutralised. Fails if the escape is ever "strip the
+    // special characters" rather than "escape them".
+    await reshape(soon, { city: 'Ind%re' })
+    signInAs(null)
+
+    const ids = (await listCityFeed('Ind%re')).map((e) => e.id)
+    expect(ids).toContain(soon.eventId)
+    // ...and it is a literal match, not a pattern that happens to hit Indore.
+    expect(ids).not.toContain(published.eventId)
+
+    await reshape(soon, { city: 'Indore' })
+  })
+
+  it('finds a city that is absent from the chip list', async () => {
+    // listCityFeed must resolve the visitor's city against the database, never
+    // against listFeedCities(). An earlier version looked the city up in that
+    // list and returned [] when it was missing — and that list has a row cap, so
+    // a real city past the cap rendered an empty feed. That was strictly worse
+    // than the case-sensitive matching it replaced, which at least still found
+    // the city by URL. Simulated here by filtering for a city that exists while
+    // asserting nothing about whether it is offered as a chip.
+    await reshape(soon, { city: 'Rarecity' })
+    signInAs(null)
+
+    expect((await listCityFeed('Rarecity')).map((e) => e.id)).toContain(soon.eventId)
+    expect((await listCityFeed('rarecity')).map((e) => e.id)).toContain(soon.eventId)
+
+    await reshape(soon, { city: 'Indore' })
   })
 })
 
 describe('listFeedCities', () => {
   it('collapses spellings of one city into a single entry', async () => {
     signInAs(null)
-    const indore = (await listFeedCities()).filter((c) => c.name.toLowerCase() === 'indore')
+    const indore = (await listFeedCities()).filter((name) => name.toLowerCase() === 'indore')
 
+    // Three stored spellings — 'Indore', 'INDORE', 'indore' — one chip.
     expect(indore).toHaveLength(1)
-    expect([...indore[0].variants].sort()).toEqual(['INDORE', 'Indore', 'indore'])
   })
 
   it('shows a deliberately capitalised spelling rather than a shouted one', async () => {
     signInAs(null)
-    const indore = (await listFeedCities()).find((c) => c.name.toLowerCase() === 'indore')
+    const indore = (await listFeedCities()).find((name) => name.toLowerCase() === 'indore')
 
     // Not whichever spelling sorted first — that hands the chip to INDORE on
-    // the strength of a capital B in the ASCII table.
-    expect(indore!.name).toBe('Indore')
+    // the strength of a capital letter's place in the ASCII table.
+    expect(indore).toBe('Indore')
   })
 
   it('is not narrowed by the feed\'s own row limit', async () => {
@@ -213,7 +248,7 @@ describe('listFeedCities', () => {
 
     expect(feed.length).toBeLessThanOrEqual(50)
     for (const city of new Set(feed.map((e) => e.city.trim().toLowerCase()))) {
-      expect(cities.map((c) => c.name.toLowerCase())).toContain(city)
+      expect(cities.map((name) => name.toLowerCase())).toContain(city)
     }
   })
 
@@ -226,7 +261,7 @@ describe('listFeedCities', () => {
 
     for (const seed of [draft, past, cancelled]) {
       signInAs(seed.hostProfileId)
-      const names = (await listFeedCities()).map((c) => c.name)
+      const names = await listFeedCities()
       expect(names).not.toContain('Draftsville')
       expect(names).not.toContain('Yesterbury')
       expect(names).not.toContain('Calledoff')

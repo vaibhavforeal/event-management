@@ -7,6 +7,23 @@ export const metadata = {
   description: 'Supper clubs, board-game nights, workshops and pop-ups near you.',
 }
 
+/**
+ * How many city chips to paint.
+ *
+ * A stopgap, and named so it is easy to argue with. Before the chip row got its
+ * own query it could only ever show the cities of the 50 events on the page;
+ * now it can show every city the chip query returns, and measured at 1,207
+ * upcoming events across as many cities that was 1,000 chips and a 469KB home
+ * page. On the mid-range Android this product is opened on, that is worse than
+ * an incomplete chooser.
+ *
+ * A chip row IS a chooser: past a couple of dozen entries it has stopped being
+ * one and wants search instead. The filter no longer depends on this list, so
+ * anything cut here is still reachable by URL and still returns its events, and
+ * a selected city renders regardless of whether it made the cut.
+ */
+const MAX_CITY_CHIPS = 24
+
 export default async function FeedPage(props: PageProps<'/'>) {
   const { city } = await props.searchParams
   const selectedCity = typeof city === 'string' ? city : undefined
@@ -17,13 +34,16 @@ export default async function FeedPage(props: PageProps<'/'>) {
   // navigation, on a product whose entire discovery story is this one page.
   // listFeedCities() answers "which cities have something on" independently of
   // that cap, and folds case so one city is one chip.
-  const [events, cities] = await Promise.all([listCityFeed(selectedCity), listFeedCities()])
+  const [events, allCities] = await Promise.all([listCityFeed(selectedCity), listFeedCities()])
+  const cities = allCities.slice(0, MAX_CITY_CHIPS)
 
   const selectedKey = selectedCity ? foldCityName(selectedCity) : undefined
   // A hand-typed ?city= that matches nothing published still has to be visible:
   // otherwise the empty state reads as "nothing on anywhere", with no clue what
-  // is filtered and nothing obvious to undo.
-  const selectionIsKnown = cities.some((known) => foldCityName(known.name) === selectedKey)
+  // is filtered and nothing obvious to undo. Also covers a real city that fell
+  // outside the chip query's row cap, or past MAX_CITY_CHIPS — it still filters,
+  // it just has no chip of its own.
+  const selectionIsKnown = cities.some((name) => foldCityName(name) === selectedKey)
 
   return (
     // `w-full` alongside `mx-auto max-w-*` is the standing rule for every <main>
@@ -45,27 +65,34 @@ export default async function FeedPage(props: PageProps<'/'>) {
           filtered, or there is no way back. */}
       {(cities.length > 1 || selectedCity) && (
         <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-          {cities.map((known) => {
-            const selected = foldCityName(known.name) === selectedKey
+          {/* min-w-0 on every chip, not just break-words. These are flex items,
+              and a flex item's automatic minimum size is its min-content width —
+              which `overflow-wrap` does not reduce, because it is allowed to
+              break a word for layout but not to claim the word is narrower than
+              it is. An 80-character unbroken city is valid (Zod caps at 80) and
+              without this it pushed the row 265px past a 390px viewport and
+              scrolled the whole page sideways. Same trap as Tasks 8 and 9. */}
+          {cities.map((name) => {
+            const selected = foldCityName(name) === selectedKey
             return (
               <Link
-                key={known.name}
+                key={name}
                 // The selected chip toggles itself off, which is what a filled
                 // chip is expected to do. "Clear" says the same thing in words
                 // for anyone who does not expect it.
-                href={selected ? '/' : `/?city=${encodeURIComponent(known.name)}`}
+                href={selected ? '/' : `/?city=${encodeURIComponent(name)}`}
                 aria-current={selected ? 'true' : undefined}
-                className={`rounded-full px-3 py-1 break-words ${
+                className={`min-w-0 rounded-full px-3 py-1 break-words ${
                   selected ? 'bg-black text-white' : 'border border-zinc-300'
                 }`}
               >
-                {known.name}
+                {name}
               </Link>
             )
           })}
 
           {selectedCity && !selectionIsKnown && (
-            <span className="rounded-full bg-black px-3 py-1 break-words text-white">
+            <span className="min-w-0 rounded-full bg-black px-3 py-1 break-words text-white">
               {selectedCity}
             </span>
           )}
@@ -85,9 +112,9 @@ export default async function FeedPage(props: PageProps<'/'>) {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {events.map((event, index) => (
-            // Only the first card gets priority: it is the one above the fold,
+            // Only the first card is preloaded: it is the one above the fold,
             // so it is the largest contentful paint worth not queueing.
-            <EventCard key={event.id} event={event} priority={index === 0} />
+            <EventCard key={event.id} event={event} preload={index === 0} />
           ))}
         </div>
       )}

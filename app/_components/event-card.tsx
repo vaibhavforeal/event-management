@@ -17,7 +17,7 @@ import type { FeedEvent } from '@/lib/events/queries'
  */
 const CARD_SIZES = '(min-width: 768px) 360px, (min-width: 640px) calc((100vw - 48px) / 2), calc(100vw - 32px)'
 
-export function EventCard({ event, priority = false }: { event: FeedEvent; priority?: boolean }) {
+export function EventCard({ event, preload = false }: { event: FeedEvent; preload?: boolean }) {
   const ticket = event.ticket_types[0]
 
   return (
@@ -31,10 +31,13 @@ export function EventCard({ event, priority = false }: { event: FeedEvent; prior
           alt=""
           width={800}
           height={400}
-          // Only ever set on the first card, which is the one above the fold and
-          // so the likely largest contentful paint. Setting it on every card
-          // would make them all compete and mean nothing.
-          priority={priority}
+          // `preload`, not `priority`: Next 16 deprecated the latter in favour
+          // of this, to make the behaviour it actually has — inserting a <link>
+          // in the head — say so. Only ever set on the first card, the one above
+          // the fold and so the likely largest contentful paint; the docs warn
+          // against preloading several images that each might be the LCP,
+          // because then none of them is prioritised.
+          preload={preload}
           sizes={CARD_SIZES}
           className="h-40 w-full object-cover"
         />

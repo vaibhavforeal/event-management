@@ -57,11 +57,34 @@ export function foldCityName(city: string): string {
   return city.trim().toLowerCase()
 }
 
-export interface FeedCity {
-  /** The spelling the chip shows and `?city=` carries. */
-  name: string
-  /** Every stored spelling that folds to it, for an exact-equality filter. */
-  variants: string[]
+/**
+ * Escapes a value so ILIKE matches it as a literal string.
+ *
+ * `?city=` is visitor-supplied and goes straight into a pattern, so without this
+ * `?city=%` returns every city on the platform while looking like a working
+ * filter. One backslash per special character, which is what SQL LIKE takes as
+ * its default escape.
+ *
+ * Established by probing the running stack rather than by reading about it, and
+ * the probe is worth describing because getting it wrong reads as a working
+ * result twice over:
+ *
+ *  - An earlier round of this concluded backslashes do NOT escape. They do. The
+ *    probe had been written through a shell heredoc that ate one level of them,
+ *    so the value actually reaching the server was a bare `%`. It matched
+ *    everything, exactly as a broken escape would.
+ *  - A later round appeared to show escaping breaking legitimate matches. That
+ *    probe scoped itself with `.in('city', ...)` alongside `.ilike('city', ...)`
+ *    — two filters on one column, of which PostgREST applies one. Scope a probe
+ *    by a different column than the one under test.
+ *
+ * Known limit: PostgREST rewrites `*` to `%` after this runs, so a city whose
+ * name literally contains an asterisk is not reachable and folds onto `%`. That
+ * is a lost match, not a hole — `?city=*` still matches nothing — and no real
+ * city name contains one.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_*]/g, (character) => `\\${character}`)
 }
 
 /**
@@ -96,21 +119,39 @@ function looksDeliberatelyCased(city: string): number {
 }
 
 /**
+ * How many event rows the chip row is willing to fold.
+ *
+ * PostgREST truncates every response at `max_rows` (supabase/config.toml), which
+ * is 1000. Stated here rather than left implicit so the truncation is a decision
+ * with a number attached instead of a surprise, and so raising the config
+ * without revisiting this is not silently load-bearing.
+ */
+const CITY_SCAN_ROWS = 1000
+
+/**
  * The cities that currently have something on, for the feed's filter row.
  *
- * Its own query rather than something derived from listCityFeed()'s result, and
- * that is the whole point. The feed is capped at 50 rows nationally, so once
- * the platform has more upcoming events than that, a city whose next event
- * falls outside the window would silently stop appearing in the filter and
- * become reachable only by hand-editing the URL. Nothing errors; the city just
- * stops getting traffic. The cap belongs to the feed, not to navigation.
+ * Deliberately NOT derived from listCityFeed()'s result: that is capped at 50
+ * rows nationally, so past fifty upcoming events a city would drop out of the
+ * filter row entirely.
+ *
+ * This query has a cap of its own — see CITY_SCAN_ROWS — so at genuine scale the
+ * chip row becomes an incomplete list of cities rather than a complete one. That
+ * is survivable **only** because listCityFeed() no longer consults it: a city
+ * missing from the chips is still reachable by URL and still returns its events.
+ * An earlier version resolved the filter through this list and returned an empty
+ * feed for any city past the cap, which was worse than the case-sensitive
+ * matching it replaced. Do not reintroduce that coupling.
+ *
+ * Ordered by city so the truncation is deterministic — the same thousand rows
+ * every time, rather than whatever the planner happened to return.
  *
  * PostgREST has no DISTINCT, so the fold happens here over one short column.
  * events_discovery_idx on (city, starts_at) where status = 'published' covers
- * this predicate exactly, so it is an index-only scan; a real DISTINCT would
- * need a view or an RPC, i.e. a migration, which this does not warrant yet.
+ * this predicate, so it is an index-only scan; a real DISTINCT would need a view
+ * or an RPC, i.e. a migration, which this does not warrant yet.
  */
-export async function listFeedCities(): Promise<FeedCity[]> {
+export async function listFeedCities(): Promise<string[]> {
   const supabase = await createClient()
 
   const { data, error } = await supabase
@@ -118,6 +159,8 @@ export async function listFeedCities(): Promise<FeedCity[]> {
     .select('city')
     .eq('status', 'published')
     .gte('starts_at', new Date().toISOString())
+    .order('city', { ascending: true })
+    .limit(CITY_SCAN_ROWS)
 
   if (error) throw new Error(`Could not load the cities: ${error.message}`)
 
@@ -130,34 +173,11 @@ export async function listFeedCities(): Promise<FeedCity[]> {
     else byFolded.set(folded, [city])
   }
 
-  return [...byFolded.values()]
-    .map((spellings) => ({
-      name: preferredSpelling(spellings),
-      variants: [...new Set(spellings)],
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name))
+  return [...byFolded.values()].map(preferredSpelling).sort((a, b) => a.localeCompare(b))
 }
 
 /** Upcoming published events, soonest first. Matching on city ignores case. */
 export async function listCityFeed(city?: string): Promise<FeedEvent[]> {
-  let variants: string[] | undefined
-
-  if (city) {
-    // Every stored spelling of the requested city, matched with exact equality.
-    //
-    // `.ilike()` is the obvious way to be case-insensitive and it is the wrong
-    // one here. PostgREST reads both % and * in the pattern as wildcards, and —
-    // checked against the local stack rather than assumed — a backslash does
-    // NOT escape them back to literals. `?city=%` is a URL any visitor can
-    // type, and it would quietly match every city on the platform while looking
-    // like a working filter. `.in()` has no pattern surface at all.
-    const folded = foldCityName(city)
-    variants = (await listFeedCities()).find((known) => foldCityName(known.name) === folded)?.variants
-    // Nothing published in that city under any spelling. Returning here saves a
-    // query whose answer we already know; `.in()` on an empty list is also safe.
-    if (!variants) return []
-  }
-
   const supabase = await createClient()
 
   let query = supabase
@@ -168,7 +188,11 @@ export async function listCityFeed(city?: string): Promise<FeedEvent[]> {
     .order('starts_at', { ascending: true })
     .limit(50)
 
-  if (variants) query = query.in('city', variants)
+  // Resolved against the database directly, never against listFeedCities(): the
+  // visitor's city has to be found whether or not it made that list's own cap.
+  // ILIKE keeps the match case-insensitive and O(1); escapeLikePattern is what
+  // stops the visitor's string being read as a pattern.
+  if (city) query = query.ilike('city', escapeLikePattern(city.trim()))
 
   const { data, error } = await query
   if (error) throw new Error(`Could not load the feed: ${error.message}`)
