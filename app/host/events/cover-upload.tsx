@@ -3,6 +3,30 @@
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
+/** Matches the `accept` list below, and used when the filename is no help. */
+const EXTENSION_BY_TYPE: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+}
+
+/**
+ * A storage-safe extension for the object key.
+ *
+ * Taking everything after the last dot trusts the filename too much: "shot.a?v=2"
+ * yields "a?v=2", which Storage accepts as a key and RLS allows, but getPublicUrl
+ * does not escape — so the object uploads fine and its public link is broken for
+ * good. A short alphanumeric whitelist is the cheapest way to be sure, and the
+ * declared MIME type is a real fallback rather than a guess. (The old `?? 'jpg'`
+ * never ran: String.split always returns at least one element.)
+ */
+function safeExtension(file: File): string {
+  const lastDot = file.name.lastIndexOf('.')
+  const fromName = lastDot === -1 ? '' : file.name.slice(lastDot + 1).toLowerCase()
+  if (/^[a-z0-9]{1,5}$/.test(fromName)) return fromName
+  return EXTENSION_BY_TYPE[file.type] ?? 'jpg'
+}
+
 /**
  * Uploads straight from the browser to Supabase Storage, then writes the public
  * URL into a hidden input the form submits.
@@ -28,8 +52,7 @@ export function CoverUpload({ initialUrl }: { initialUrl?: string | null }) {
       return
     }
 
-    const extension = file.name.split('.').pop()?.toLowerCase() ?? 'jpg'
-    const path = `${auth.user.id}/${crypto.randomUUID()}.${extension}`
+    const path = `${auth.user.id}/${crypto.randomUUID()}.${safeExtension(file)}`
 
     const { error: uploadError } = await supabase.storage
       .from('event-covers')

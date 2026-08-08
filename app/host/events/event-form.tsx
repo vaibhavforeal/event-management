@@ -1,8 +1,8 @@
 'use client'
 
-import { useActionState } from 'react'
+import { useActionState, useState } from 'react'
 import { CoverUpload } from './cover-upload'
-import type { EventFormState } from './actions'
+import type { EventFormState, SubmittedEventValues } from './actions'
 
 type Action = (state: EventFormState, formData: FormData) => Promise<EventFormState>
 
@@ -23,6 +23,66 @@ export interface EventFormValues {
   hideVenueUntilApproved?: boolean
 }
 
+/**
+ * What the inputs are bound to.
+ *
+ * Seats and price are strings here even though they are numbers everywhere
+ * else: a half-typed or momentarily cleared number field has no numeric value,
+ * and coercing on every keystroke would fight the host as they type. Zod does
+ * the conversion on the server, which is where the authoritative check lives.
+ */
+interface Draft {
+  title: string
+  description: string
+  city: string
+  venueName: string
+  venueAddress: string
+  startsAtLocal: string
+  endsAtLocal: string
+  seats: string
+  priceRupees: string
+}
+
+/**
+ * The checkboxes are deliberately NOT in Draft — they are uncontrolled. See the
+ * comment on `checkboxes` in the component for why controlling them does not
+ * survive React's post-action form reset.
+ */
+interface CheckboxState {
+  requiresApproval: boolean
+  allowsCash: boolean
+  hideVenueUntilApproved: boolean
+}
+
+function draftFromValues(values: EventFormValues): Draft {
+  return {
+    title: values.title ?? '',
+    description: values.description ?? '',
+    city: values.city ?? '',
+    venueName: values.venueName ?? '',
+    venueAddress: values.venueAddress ?? '',
+    startsAtLocal: values.startsAtLocal ?? '',
+    endsAtLocal: values.endsAtLocal ?? '',
+    seats: String(values.seats ?? 20),
+    priceRupees: String(values.priceRupees ?? 0),
+  }
+}
+
+/** The echo already arrives as raw strings, so it maps across unchanged. */
+function draftFromEcho(echo: SubmittedEventValues): Draft {
+  return {
+    title: echo.title,
+    description: echo.description,
+    city: echo.city,
+    venueName: echo.venueName,
+    venueAddress: echo.venueAddress,
+    startsAtLocal: echo.startsAtLocal,
+    endsAtLocal: echo.endsAtLocal,
+    seats: echo.seats,
+    priceRupees: echo.priceRupees,
+  }
+}
+
 const field = 'w-full rounded-lg border border-zinc-300 px-3 py-2 text-base'
 
 export function EventForm({
@@ -35,6 +95,71 @@ export function EventForm({
   submitLabel: string
 }) {
   const [state, formAction, pending] = useActionState(action, {} as EventFormState)
+  const [draft, setDraft] = useState(() => draftFromValues(values))
+
+  /**
+   * Every field below is controlled, and that is what actually stops a rejected
+   * save from emptying the form.
+   *
+   * React 19 resets the form once the action settles, and `defaultValue` is read
+   * only when an input mounts — so an uncontrolled field came back blank, and
+   * re-rendering it with a fresh `defaultValue` did nothing at all. Controlled
+   * inputs are immune because their value is supplied on every render. The cover
+   * URL was the one field that already survived, for exactly this reason.
+   *
+   * Remounting the fields under a per-submission key would also work, but it
+   * would take CoverUpload's uploaded-image state and the caret position down
+   * with it, so controlling them is both cheaper and less disruptive.
+   */
+  const [lastEcho, setLastEcho] = useState<SubmittedEventValues | undefined>(undefined)
+  // `generation` exists only to remount the checkboxes; see below.
+  const [generation, setGeneration] = useState(0)
+  // Adopt the server's echo whenever a new response arrives. Comparing against
+  // the previous response during render is React's documented way to adjust
+  // state in response to a change; an effect would paint the stale values first.
+  if (state.values && state.values !== lastEcho) {
+    setLastEcho(state.values)
+    setDraft(draftFromEcho(state.values))
+    setGeneration((n) => n + 1)
+  }
+
+  function set<K extends keyof Draft>(key: K, value: Draft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }))
+  }
+
+  /**
+   * Checkboxes are uncontrolled, unlike every other field here, and that
+   * inconsistency is load-bearing.
+   *
+   * React's post-action reset restores each control from its DOM *attributes*.
+   * For a text input React keeps the `value` attribute in step with the `value`
+   * prop, so a controlled one is restored to the value it already had and
+   * nothing appears to happen. A checkbox's `checked` attribute comes only from
+   * `defaultChecked`, and React never sets it for a controlled box — so the
+   * reset finds no attribute and clears the box, and since React's own state
+   * still says "true" there is no re-render to put it back. Verified in a
+   * browser: with all thirteen fields controlled, the text survived a rejected
+   * save and all three checkboxes silently reverted.
+   *
+   * So drive them from `defaultChecked` and let the reset restore the echoed
+   * value, which is the behaviour we want anyway. The key forces a remount when
+   * a new response lands, so the fresh default is definitely applied whichever
+   * side of the reset the render falls on — the correctness does not depend on
+   * that ordering. Remounting costs nothing here: these inputs hold no other
+   * state, and after a submit the focus is on the submit button, not on them.
+   * CoverUpload is deliberately outside this, so its uploaded image is untouched.
+   */
+  const checkboxes: CheckboxState = lastEcho
+    ? {
+        requiresApproval: lastEcho.requiresApproval,
+        allowsCash: lastEcho.allowsCash,
+        hideVenueUntilApproved: lastEcho.hideVenueUntilApproved,
+      }
+    : {
+        requiresApproval: values.requiresApproval ?? false,
+        allowsCash: values.allowsCash ?? false,
+        hideVenueUntilApproved: values.hideVenueUntilApproved ?? false,
+      }
 
   return (
     <form action={formAction} className="space-y-5">
@@ -42,30 +167,77 @@ export function EventForm({
 
       <div>
         <label htmlFor="title" className="block text-sm font-medium">What is it called?</label>
-        <input id="title" name="title" defaultValue={values.title} required className={field} />
+        <input
+          id="title"
+          name="title"
+          value={draft.title}
+          onChange={(event) => set('title', event.target.value)}
+          maxLength={140}
+          required
+          className={field}
+        />
         {state.fieldErrors?.title && <p className="text-sm text-red-600">{state.fieldErrors.title}</p>}
       </div>
 
       <div>
         <label htmlFor="description" className="block text-sm font-medium">Description</label>
-        <textarea id="description" name="description" rows={5} defaultValue={values.description ?? ''} className={field} />
+        <textarea
+          id="description"
+          name="description"
+          rows={5}
+          value={draft.description}
+          onChange={(event) => set('description', event.target.value)}
+          maxLength={5000}
+          className={field}
+        />
+        {state.fieldErrors?.description && (
+          <p className="text-sm text-red-600">{state.fieldErrors.description}</p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
           <label htmlFor="city" className="block text-sm font-medium">City</label>
-          <input id="city" name="city" defaultValue={values.city} required className={field} />
+          <input
+            id="city"
+            name="city"
+            value={draft.city}
+            onChange={(event) => set('city', event.target.value)}
+            maxLength={80}
+            required
+            className={field}
+          />
           {state.fieldErrors?.city && <p className="text-sm text-red-600">{state.fieldErrors.city}</p>}
         </div>
         <div>
           <label htmlFor="venueName" className="block text-sm font-medium">Venue</label>
-          <input id="venueName" name="venueName" defaultValue={values.venueName ?? ''} className={field} />
+          <input
+            id="venueName"
+            name="venueName"
+            value={draft.venueName}
+            onChange={(event) => set('venueName', event.target.value)}
+            maxLength={160}
+            className={field}
+          />
+          {state.fieldErrors?.venueName && (
+            <p className="text-sm text-red-600">{state.fieldErrors.venueName}</p>
+          )}
         </div>
       </div>
 
       <div>
         <label htmlFor="venueAddress" className="block text-sm font-medium">Address</label>
-        <input id="venueAddress" name="venueAddress" defaultValue={values.venueAddress ?? ''} className={field} />
+        <input
+          id="venueAddress"
+          name="venueAddress"
+          value={draft.venueAddress}
+          onChange={(event) => set('venueAddress', event.target.value)}
+          maxLength={500}
+          className={field}
+        />
+        {state.fieldErrors?.venueAddress && (
+          <p className="text-sm text-red-600">{state.fieldErrors.venueAddress}</p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -75,7 +247,8 @@ export function EventForm({
             id="startsAtLocal"
             name="startsAtLocal"
             type="datetime-local"
-            defaultValue={values.startsAtLocal}
+            value={draft.startsAtLocal}
+            onChange={(event) => set('startsAtLocal', event.target.value)}
             required
             className={field}
           />
@@ -89,7 +262,8 @@ export function EventForm({
             id="endsAtLocal"
             name="endsAtLocal"
             type="datetime-local"
-            defaultValue={values.endsAtLocal}
+            value={draft.endsAtLocal}
+            onChange={(event) => set('endsAtLocal', event.target.value)}
             className={field}
           />
           {state.fieldErrors?.endsAtLocal && (
@@ -101,7 +275,16 @@ export function EventForm({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
           <label htmlFor="seats" className="block text-sm font-medium">Seats</label>
-          <input id="seats" name="seats" type="number" min={1} defaultValue={values.seats ?? 20} required className={field} />
+          <input
+            id="seats"
+            name="seats"
+            type="number"
+            min={1}
+            value={draft.seats}
+            onChange={(event) => set('seats', event.target.value)}
+            required
+            className={field}
+          />
           {state.fieldErrors?.seats && <p className="text-sm text-red-600">{state.fieldErrors.seats}</p>}
         </div>
         <div>
@@ -112,7 +295,8 @@ export function EventForm({
             type="number"
             min={0}
             step="0.01"
-            defaultValue={values.priceRupees ?? 0}
+            value={draft.priceRupees}
+            onChange={(event) => set('priceRupees', event.target.value)}
             required
             className={field}
           />
@@ -125,15 +309,30 @@ export function EventForm({
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium">Options</legend>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" name="requiresApproval" defaultChecked={values.requiresApproval} />
+          <input
+            key={`requiresApproval-${generation}`}
+            type="checkbox"
+            name="requiresApproval"
+            defaultChecked={checkboxes.requiresApproval}
+          />
           I approve each guest before they pay
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" name="allowsCash" defaultChecked={values.allowsCash} />
+          <input
+            key={`allowsCash-${generation}`}
+            type="checkbox"
+            name="allowsCash"
+            defaultChecked={checkboxes.allowsCash}
+          />
           Allow paying cash at the door
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" name="hideVenueUntilApproved" defaultChecked={values.hideVenueUntilApproved} />
+          <input
+            key={`hideVenueUntilApproved-${generation}`}
+            type="checkbox"
+            name="hideVenueUntilApproved"
+            defaultChecked={checkboxes.hideVenueUntilApproved}
+          />
           Hide the exact address until I approve a guest
         </label>
       </fieldset>

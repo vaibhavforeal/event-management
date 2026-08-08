@@ -15,6 +15,63 @@ export interface EventFormState {
   fieldErrors?: Record<string, string>
   blockers?: string[]
   ok?: boolean
+  /**
+   * Exactly what the host typed, handed back on every rejection so the form can
+   * refill itself. See SubmittedEventValues.
+   */
+  values?: SubmittedEventValues
+}
+
+/**
+ * The submission, read back out verbatim.
+ *
+ * React 19 resets a form once its action settles, so without this a refused
+ * save returns an empty form and the host retypes the lot — which, for a
+ * product promising a published event in three minutes, is the difference
+ * between a typo and starting again.
+ *
+ * Raw strings rather than parsed values, deliberately. The point is to give
+ * back the *invalid* two-character title so it can be corrected, and on a
+ * validation failure there is no parsed value to give back at all.
+ */
+export interface SubmittedEventValues {
+  title: string
+  description: string
+  city: string
+  venueName: string
+  venueAddress: string
+  coverImageUrl: string
+  startsAtLocal: string
+  endsAtLocal: string
+  seats: string
+  priceRupees: string
+  requiresApproval: boolean
+  allowsCash: boolean
+  hideVenueUntilApproved: boolean
+}
+
+function rawText(formData: FormData, name: string): string {
+  const value = formData.get(name)
+  return typeof value === 'string' ? value : ''
+}
+
+function submittedValues(formData: FormData): SubmittedEventValues {
+  return {
+    title: rawText(formData, 'title'),
+    description: rawText(formData, 'description'),
+    city: rawText(formData, 'city'),
+    venueName: rawText(formData, 'venueName'),
+    venueAddress: rawText(formData, 'venueAddress'),
+    coverImageUrl: rawText(formData, 'coverImageUrl'),
+    startsAtLocal: rawText(formData, 'startsAtLocal'),
+    endsAtLocal: rawText(formData, 'endsAtLocal'),
+    seats: rawText(formData, 'seats'),
+    priceRupees: rawText(formData, 'priceRupees'),
+    // An unchecked checkbox is absent from FormData entirely.
+    requiresApproval: formData.get('requiresApproval') !== null,
+    allowsCash: formData.get('allowsCash') !== null,
+    hideVenueUntilApproved: formData.get('hideVenueUntilApproved') !== null,
+  }
 }
 
 /**
@@ -64,7 +121,7 @@ export async function createEvent(
   if (!auth.user) redirect('/login')
 
   const parsed = parseEventForm(formData)
-  if (!parsed.success) return { fieldErrors: parsed.fieldErrors }
+  if (!parsed.success) return { fieldErrors: parsed.fieldErrors, values: submittedValues(formData) }
   const input = parsed.data
 
   const hostId = await resolveOrCreateHost(supabase, auth.user)
@@ -90,7 +147,7 @@ export async function createEvent(
     .select('id')
     .single()
 
-  if (error) return { error: error.message }
+  if (error) return { error: error.message, values: submittedValues(formData) }
 
   const { error: ticketError } = await supabase.from('ticket_types').insert({
     event_id: event.id,
@@ -117,10 +174,11 @@ export async function createEvent(
         error:
           `${ticketError.message}. The half-created event could not be removed either ` +
           `(${rollbackError.message}) — quote event id ${event.id} when asking for help.`,
+        values: submittedValues(formData),
       }
     }
 
-    return { error: ticketError.message }
+    return { error: ticketError.message, values: submittedValues(formData) }
   }
 
   redirect(`/host/events/${event.id}/edit`)
@@ -135,10 +193,10 @@ export async function updateEvent(
   if (!hostId) redirect('/login')
 
   const eventId = String(formData.get('eventId') ?? '')
-  if (!eventId) return { error: 'Missing event id' }
+  if (!eventId) return { error: 'Missing event id', values: submittedValues(formData) }
 
   const parsed = parseEventForm(formData)
-  if (!parsed.success) return { fieldErrors: parsed.fieldErrors }
+  if (!parsed.success) return { fieldErrors: parsed.fieldErrors, values: submittedValues(formData) }
   const input = parsed.data
 
   // Ownership is settled before anything is written, so neither write below can
@@ -151,8 +209,8 @@ export async function updateEvent(
     .eq('host_id', hostId)
     .maybeSingle()
 
-  if (readError) return { error: readError.message }
-  if (!existing) return { error: 'That event is not yours to edit' }
+  if (readError) return { error: readError.message, values: submittedValues(formData) }
+  if (!existing) return { error: 'That event is not yours to edit', values: submittedValues(formData) }
 
   // Cutting capacity below the seats already taken is the one edit Postgres
   // refuses outright (ticket_types_no_oversell). Catching it here, before any
@@ -167,6 +225,9 @@ export async function updateEvent(
       blockers: [
         `${reserved} of those seats are already taken, so capacity cannot go down to ${input.seats}`,
       ],
+      // Especially here: the host may have just typed the venue that clears a
+      // publish blocker, and this refusal must not take it away with it.
+      values: submittedValues(formData),
     }
   }
 
@@ -187,7 +248,10 @@ export async function updateEvent(
 
   if (ticketError) {
     // Still reachable despite the check above: a booking may land in between.
-    return { error: `Could not update seats: ${ticketError.message}` }
+    return {
+      error: `Could not update seats: ${ticketError.message}`,
+      values: submittedValues(formData),
+    }
   }
 
   // Note the absence of `slug`. The link may already be in a WhatsApp group.
@@ -213,8 +277,8 @@ export async function updateEvent(
     .select('id')
     .maybeSingle()
 
-  if (error) return { error: error.message }
-  if (!data) return { error: 'That event is not yours to edit' }
+  if (error) return { error: error.message, values: submittedValues(formData) }
+  if (!data) return { error: 'That event is not yours to edit', values: submittedValues(formData) }
 
   revalidatePath(`/e/${existing.slug}`)
   revalidatePath('/host')
