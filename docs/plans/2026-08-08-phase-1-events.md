@@ -817,7 +817,9 @@ git commit -m "Add event-covers storage bucket with per-user folder policies"
   - `getPublishedEventBySlug(slug: string): Promise<PublicEvent | null>`
   - `listHostEvents(): Promise<HostEvent[]>`
   - `getOwnedEvent(id: string): Promise<OwnedEvent | null>`
-  - `tests/helpers/session.ts`: `mockSupabaseSession()`, `signInAs(userId: string | null)`
+  - `tests/helpers/session.ts`: `signInAs(userId: string | null)`. Importing this
+    module installs the `@/lib/supabase/server` mock as a side effect, so the
+    module under test must be brought in with a top-level `await import(...)`.
 
 **Testing decision (settled before execution):** these tests call the real
 exported functions. `queries.ts` reaches the database through
@@ -1059,17 +1061,15 @@ export function signInAs(userId: string | null): void {
   currentUserId = userId
 }
 
-/**
- * Call at the top level of a test file, before importing the module under test.
- * vi.mock is hoisted, so the factory must not close over anything but the
- * mutable module-scope variable above.
- */
-export function mockSupabaseSession(): void {
-  vi.mock('@/lib/supabase/server', () => ({
-    createClient: async (): Promise<SupabaseClient> =>
-      currentUserId ? userClient(currentUserId) : anonClient(),
-  }))
-}
+// Registered at module top level, where vi.mock's hoisting actually applies.
+// Wrapping this in an exported function would be a lie: the call would do
+// nothing, because vi.mock is hoisted out of it either way.
+//
+// The factory must close over nothing but the mutable variable above.
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: async (): Promise<SupabaseClient> =>
+    currentUserId ? userClient(currentUserId) : anonClient(),
+}))
 ```
 
 - [ ] **Step 5: Write the integration test**
@@ -1078,9 +1078,7 @@ export function mockSupabaseSession(): void {
 // lib/events/queries.test.ts
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { adminClient, cleanupEvent, seedEvent, type SeededEvent } from '@/tests/helpers/db'
-import { mockSupabaseSession, signInAs } from '@/tests/helpers/session'
-
-mockSupabaseSession()
+import { signInAs } from '@/tests/helpers/session' // side effect: installs the mock
 
 const {
   getCurrentHostId,
@@ -1484,9 +1482,7 @@ request, `revalidatePath` throws and `redirect` throws a control-flow signal.
 // lib/events/actions.test.ts
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { adminClient, createTestUser } from '@/tests/helpers/db'
-import { mockSupabaseSession, signInAs } from '@/tests/helpers/session'
-
-mockSupabaseSession()
+import { signInAs } from '@/tests/helpers/session' // side effect: installs the mock
 
 // revalidatePath needs a request store; there isn't one here.
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }))
