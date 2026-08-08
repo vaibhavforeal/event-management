@@ -14,6 +14,10 @@
 
 const IST_OFFSET_MINUTES = 330 // UTC+05:30
 const IST_OFFSET_MS = IST_OFFSET_MINUTES * 60_000
+// A shape check, not input validation: it counts digits but not their range, so
+// "2026-13-45T99:99" matches here and rolls over rather than throwing. A real
+// datetime-local input cannot emit that; a hand-crafted POST can. Validate at
+// the request boundary with Zod — do not mistake this for that.
 const LOCAL_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/
 
 /** Reads a zoneless datetime-local string as IST and returns the UTC instant. */

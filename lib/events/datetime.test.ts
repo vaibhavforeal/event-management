@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatIst, istLocalToUtc, utcToIstLocal } from '@/lib/events/datetime'
+import { formatIst, formatIstDateOnly, istLocalToUtc, utcToIstLocal } from '@/lib/events/datetime'
 
 describe('istLocalToUtc', () => {
   it('subtracts the 5:30 offset', () => {
@@ -43,5 +43,14 @@ describe('formatIst', () => {
     const text = formatIst(new Date('2026-08-15T14:00:00.000Z'))
     expect(text).toContain('7:30')
     expect(text).toContain('Aug')
+  })
+})
+
+describe('formatIstDateOnly', () => {
+  it('reports the IST calendar day, not the UTC one', () => {
+    // 20:00 UTC on Sat 15 Aug is 01:30 IST on Sun 16 Aug. The two zones disagree
+    // about the date, so a formatter that lost its timeZone pin renders
+    // "Sat, 15 Aug" here — a whole day early on the listing page.
+    expect(formatIstDateOnly(new Date('2026-08-15T20:00:00.000Z'))).toBe('Sun, 16 Aug')
   })
 })

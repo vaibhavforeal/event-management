@@ -6,6 +6,11 @@ export default defineConfig({
     environment: 'node',
     include: ['**/*.test.ts'],
     exclude: ['node_modules/**', '.next/**', 'tests/e2e/**'],
+    // Pin the zone so timezone bugs cannot hide. Vercel runs UTC, most of this
+    // team runs IST, and IST is the one zone where reading the ambient zone
+    // instead of Asia/Kolkata still produces the right answer — so an unpinned
+    // suite is green locally and wrong in production. See lib/events/datetime.ts.
+    env: { TZ: 'UTC' },
     // Integration tests hit a shared local Postgres; running files in parallel
     // makes them fight over the same rows.
     fileParallelism: false,
