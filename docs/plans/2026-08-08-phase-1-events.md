@@ -1956,6 +1956,16 @@ export function EventForm({
         </label>
       </fieldset>
 
+      {/* updateEvent returns blockers when a seat change is refused, e.g. cutting
+          capacity below what is already reserved. Without this the host sees a
+          form that simply does nothing. */}
+      {state.blockers && state.blockers.length > 0 && (
+        <ul className="list-inside list-disc rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+          {state.blockers.map((blocker) => (
+            <li key={blocker}>{blocker}</li>
+          ))}
+        </ul>
+      )}
       {state.error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{state.error}</p>}
       {state.ok && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">Saved.</p>}
 
