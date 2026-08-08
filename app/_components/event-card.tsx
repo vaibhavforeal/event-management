@@ -4,7 +4,20 @@ import { formatIst } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import type { FeedEvent } from '@/lib/events/queries'
 
-export function EventCard({ event }: { event: FeedEvent }) {
+/**
+ * What a card is actually painted at, so next/image can pick a variant that
+ * fits instead of guessing from the 800px `width` prop.
+ *
+ * Derived from the feed's own layout: <main> is max-w-3xl (768px) with px-4, and
+ * the grid is one column until sm (640px) and two with gap-4 above it. So a card
+ * is the full content width on a phone, half of it minus the gap in between, and
+ * a flat 360px once the page stops growing. Without this a 390px Android was
+ * served the 828px variant of a cover — on the connection a forwarded WhatsApp
+ * link is usually opened over, that is the difference between loading and not.
+ */
+const CARD_SIZES = '(min-width: 768px) 360px, (min-width: 640px) calc((100vw - 48px) / 2), calc(100vw - 32px)'
+
+export function EventCard({ event, priority = false }: { event: FeedEvent; priority?: boolean }) {
   const ticket = event.ticket_types[0]
 
   return (
@@ -18,6 +31,11 @@ export function EventCard({ event }: { event: FeedEvent }) {
           alt=""
           width={800}
           height={400}
+          // Only ever set on the first card, which is the one above the fold and
+          // so the likely largest contentful paint. Setting it on every card
+          // would make them all compete and mean nothing.
+          priority={priority}
+          sizes={CARD_SIZES}
           className="h-40 w-full object-cover"
         />
       ) : (
