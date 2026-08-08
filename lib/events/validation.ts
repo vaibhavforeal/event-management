@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { istLocalToUtc, utcToIstLocal } from './datetime'
 
 /**
  * Two different bars, deliberately.
@@ -11,9 +12,36 @@ import { z } from 'zod'
  * show a stranger who arrived from a WhatsApp link.
  */
 
+/**
+ * True only if the string names a calendar instant that actually exists.
+ *
+ * The regex below counts digits but not their range, so "2026-13-45T99:99"
+ * matches it and `istLocalToUtc` then rolls it forward to 2027-02-17 rather
+ * than complaining — fifteen months from where the host meant. A real
+ * datetime-local input cannot emit that, but a hand-crafted POST can, and
+ * lib/events/datetime.ts says in terms that the range check belongs here at
+ * the request boundary.
+ *
+ * The round trip is the whole test: anything that rolls over comes back as a
+ * different string. That catches out-of-range fields and dates that do not
+ * exist (31 February) in one stroke, with no month-length table to maintain.
+ *
+ * Defensive rather than trusting the regex ran first: Zod 4 keeps running
+ * checks after one fails, so this can be handed a malformed string, and
+ * `istLocalToUtc` throws on those. A validator must return false, never throw.
+ */
+function isRealLocalDateTime(value: string): boolean {
+  try {
+    return utcToIstLocal(istLocalToUtc(value)) === value
+  } catch {
+    return false
+  }
+}
+
 const localDateTime = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'Pick a date and time')
+  .refine(isRealLocalDateTime, 'That date and time does not exist')
 
 const optionalText = (max: number) => z.string().trim().max(max).optional()
 
@@ -32,7 +60,13 @@ export const eventDraftSchema = z
     description: optionalText(5000),
     venueName: optionalText(160),
     venueAddress: optionalText(500),
-    coverImageUrl: z.url('That does not look like an image link').optional(),
+    // Scheme-restricted, not merely well-formed: a bare z.url() accepts
+    // "javascript:alert(1)" and this value lands in an <img src> today and an
+    // og:image tag in Task 9. /^https?$/ is what Zod matches its own
+    // `httpProtocol` against, after stripping the trailing colon.
+    coverImageUrl: z
+      .url({ protocol: /^https?$/, error: 'That does not look like an image link' })
+      .optional(),
     // The bare string is the type-level message, used when coercion yields NaN
     // — i.e. the host typed something that is not a number at all. Without it
     // Zod says "expected number, received NaN", which is the machine string
@@ -107,7 +141,10 @@ export interface PublishCandidate {
   city: string | null
   venue_name: string | null
   starts_at: string
-  ticketTypes: Array<{ quantity: number }>
+  // Nullable on purpose. A join that matched no rows hands back null, and this
+  // function is pure and exported, so the type should say what it tolerates
+  // rather than leave the next caller to discover a TypeError.
+  ticketTypes: Array<{ quantity: number }> | null
 }
 
 export interface PublishBlocker {
@@ -144,7 +181,9 @@ export function validateForPublish(
   } else if (startsAt <= now.getTime()) {
     blockers.push({ field: 'starts_at', message: 'The start time is in the past' })
   }
-  if (!candidate.ticketTypes.some((t) => t.quantity > 0)) {
+  // `> 0`, not `>= 0`: a ticket type holding zero seats is not sellable
+  // capacity. `?.` so a missing list blocks exactly like an empty one.
+  if (!candidate.ticketTypes?.some((t) => t.quantity > 0)) {
     blockers.push({ field: 'seats', message: 'Add at least one seat' })
   }
 

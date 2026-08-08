@@ -52,6 +52,27 @@ describe('parseEventForm', () => {
     if (!result.success) expect(result.fieldErrors.startsAtLocal).toBeTruthy()
   })
 
+  it('rejects a start time whose fields are out of range', () => {
+    // istLocalToUtc would roll this over to 2027-02-17 rather than throwing.
+    // datetime.ts says in terms that the range check belongs at this boundary.
+    expect(errorsFor({ startsAtLocal: '2026-13-45T99:99' }).startsAtLocal).toBeTruthy()
+  })
+
+  it('rejects a date that is well-formed but not on the calendar', () => {
+    expect(errorsFor({ startsAtLocal: '2026-02-31T10:00' }).startsAtLocal).toBeTruthy()
+  })
+
+  it('accepts a real date, including a leap day', () => {
+    expect(parseEventForm(form({ startsAtLocal: '2026-11-14T19:30' })).success).toBe(true)
+    expect(parseEventForm(form({ startsAtLocal: '2028-02-29T10:00' })).success).toBe(true)
+  })
+
+  it('still reports end-before-start when both times are real dates', () => {
+    // The range check and the lexicographic refine have to coexist.
+    const errors = errorsFor({ startsAtLocal: '2026-11-14T19:30', endsAtLocal: '2026-11-14T18:00' })
+    expect(errors.endsAtLocal).toBe('The end time must be after the start time')
+  })
+
   it('rejects zero or negative seats', () => {
     expect(parseEventForm(form({ seats: '0' })).success).toBe(false)
     expect(parseEventForm(form({ seats: '-3' })).success).toBe(false)
@@ -125,6 +146,12 @@ describe('parseEventForm', () => {
     expect(errorsFor({ coverImageUrl: 'poster.jpg' }).coverImageUrl).toBeTruthy()
   })
 
+  it('rejects a cover image link with a dangerous scheme', () => {
+    // This value reaches an <img src> today and an og:image tag in Task 9.
+    expect(errorsFor({ coverImageUrl: 'javascript:alert(1)' }).coverImageUrl).toBeTruthy()
+    expect(errorsFor({ coverImageUrl: 'data:text/html,<script>alert(1)</script>' }).coverImageUrl).toBeTruthy()
+  })
+
   it('rejects a title longer than the schema CHECK allows', () => {
     expect(parseEventForm(form({ title: 'x'.repeat(140) })).success).toBe(true)
     expect(errorsFor({ title: 'x'.repeat(141) }).title).toBe('Keep the name under 140 characters')
@@ -164,6 +191,23 @@ describe('validateForPublish', () => {
 
   it('blocks an event with no seats', () => {
     const blockers = validateForPublish({ ...complete, ticketTypes: [] }, now)
+    expect(blockers.map((b) => b.field)).toContain('seats')
+  })
+
+  it('blocks a ticket type that exists but holds zero seats', () => {
+    // An empty array blocks whether the test is > 0 or >= 0. This is the case
+    // that actually pins the comparison.
+    const blockers = validateForPublish({ ...complete, ticketTypes: [{ quantity: 0 }] }, now)
+    expect(blockers.map((b) => b.field)).toContain('seats')
+  })
+
+  it('blocks a negative quantity', () => {
+    const blockers = validateForPublish({ ...complete, ticketTypes: [{ quantity: -5 }] }, now)
+    expect(blockers.map((b) => b.field)).toContain('seats')
+  })
+
+  it('blocks a missing ticket type list rather than throwing', () => {
+    const blockers = validateForPublish({ ...complete, ticketTypes: null }, now)
     expect(blockers.map((b) => b.field)).toContain('seats')
   })
 
