@@ -156,6 +156,26 @@ describe('parseEventForm', () => {
     expect(parseEventForm(form({ title: 'x'.repeat(140) })).success).toBe(true)
     expect(errorsFor({ title: 'x'.repeat(141) }).title).toBe('Keep the name under 140 characters')
   })
+
+  it('explains over-long optional text in words a host can act on', () => {
+    // The form renders these three, so a Zod default would reach the host. They
+    // also share the optionalText helper, and one wired-up message does not
+    // prove the other two — hence all three, each on its own boundary.
+    expect(parseEventForm(form({ description: 'x'.repeat(5000) })).success).toBe(true)
+    expect(errorsFor({ description: 'x'.repeat(5001) }).description).toBe(
+      'Keep the description under 5000 characters',
+    )
+
+    expect(parseEventForm(form({ venueName: 'x'.repeat(160) })).success).toBe(true)
+    expect(errorsFor({ venueName: 'x'.repeat(161) }).venueName).toBe(
+      'Keep the venue name under 160 characters',
+    )
+
+    expect(parseEventForm(form({ venueAddress: 'x'.repeat(500) })).success).toBe(true)
+    expect(errorsFor({ venueAddress: 'x'.repeat(501) }).venueAddress).toBe(
+      'Keep the address under 500 characters',
+    )
+  })
 })
 
 describe('validateForPublish', () => {

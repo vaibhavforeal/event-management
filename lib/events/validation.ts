@@ -43,7 +43,14 @@ const localDateTime = z
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'Pick a date and time')
   .refine(isRealLocalDateTime, 'That date and time does not exist')
 
-const optionalText = (max: number) => z.string().trim().max(max).optional()
+/**
+ * The message is required, not optional, on purpose: without one Zod says
+ * "Too big: expected string to have <=5000 characters", which is exactly the
+ * machine string this module exists to keep away from the host. Making it a
+ * parameter means a new optional field cannot be added without writing one.
+ */
+const optionalText = (max: number, tooLong: string) =>
+  z.string().trim().max(max, tooLong).optional()
 
 export const eventDraftSchema = z
   .object({
@@ -57,9 +64,9 @@ export const eventDraftSchema = z
     city: z.string().trim().min(1, 'Which city is this in?').max(80),
     startsAtLocal: localDateTime,
     endsAtLocal: localDateTime.optional(),
-    description: optionalText(5000),
-    venueName: optionalText(160),
-    venueAddress: optionalText(500),
+    description: optionalText(5000, 'Keep the description under 5000 characters'),
+    venueName: optionalText(160, 'Keep the venue name under 160 characters'),
+    venueAddress: optionalText(500, 'Keep the address under 500 characters'),
     // Scheme-restricted, not merely well-formed: a bare z.url() accepts
     // "javascript:alert(1)" and this value lands in an <img src> today and an
     // og:image tag in Task 9. /^https?$/ is what Zod matches its own
