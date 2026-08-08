@@ -9,15 +9,24 @@
 const MAX_TITLE_CHARS = 60
 const SUFFIX_LENGTH = 6
 
-// Base32 without the look-alike characters (0/O, 1/l/I), so a slug read aloud
-// down a phone line survives the trip.
+// Crockford base32 minus '0' and '1', so a slug read aloud down a phone line
+// survives the trip. Crockford already omits i/l/o (they are misheard and
+// misread as 1/1/0) and u (dropping it is the conventional way to avoid
+// accidentally spelling something obscene). Dropping the digits 0 and 1 as
+// well leaves nothing that can be confused with the letters that remain.
+// Do not "restore" any of 0, 1, i, l, o or u: each is excluded on purpose.
 const SUFFIX_ALPHABET = '23456789abcdefghjkmnpqrstvwxyz'
 
 /** Kebab-cases a title, dropping anything that is not URL-safe. May return ''. */
 export function slugifyTitle(title: string): string {
   return title
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '') // combining marks left behind by NFKD
+    // Combining marks (U+0300-U+036F) left behind by NFKD. Written as escapes
+    // deliberately: the literal characters are invisible in an editor, and if
+    // a paste or an NFC round-trip ever dropped them nothing would fail loudly
+    // — 'Ménage' would just start slugifying to 'me-nage'. Slugs are
+    // write-once, so such a slug could never be corrected in place afterwards.
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
