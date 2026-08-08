@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { adminClient, cleanupEvent, seedEvent, type SeededEvent } from '@/tests/helpers/db'
-import { mockSupabaseSession, signInAs } from '@/tests/helpers/session'
-
-mockSupabaseSession()
+// Importing this installs the @/lib/supabase/server mock as a side effect, which
+// is why the module under test is pulled in below with `await import` rather
+// than a static import — it has to resolve after the mock is registered.
+import { signInAs } from '@/tests/helpers/session'
 
 const {
   getCurrentHostId,

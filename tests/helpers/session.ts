@@ -8,11 +8,23 @@ import { anonClient, userClient } from './db'
  * Those functions reach the database through one seam —
  * `@/lib/supabase/server#createClient` — so that seam is the only thing mocked.
  * Everything below it is real: a real PostgREST client, carrying a real JWT for
- * the chosen user, hitting the real local Postgres under real RLS.
+ * the chosen user, hitting the real local Postgres under real RLS. Re-issuing
+ * equivalent queries in the test instead would pass happily while queries.ts was
+ * missing a filter, which is the class of bug this suite exists to catch.
  *
- * The alternative — re-issuing equivalent queries in the test — would pass
- * happily while queries.ts was missing a filter, which is exactly the class of
- * bug this suite exists to catch.
+ * IMPORTING THIS MODULE INSTALLS THE MOCK. There is nothing to call — the
+ * vi.mock below is hoisted above the imports and runs on import, for every file
+ * that takes anything from here.
+ *
+ * The consequence, which is easy to get wrong: a test file must pull in the
+ * module under test with a top-level `await import(...)`, never a static import.
+ * Static imports are evaluated before this module's body, so the module under
+ * test would bind the real @/lib/supabase/server, signInAs() would stop having
+ * any effect, and every RLS assertion in the file would quietly pass against
+ * whatever session the real client happened to have (none).
+ *
+ *   import { signInAs } from '@/tests/helpers/session'
+ *   const { listHostEvents } = await import('@/lib/events/queries')
  */
 
 let currentUserId: string | null = null
@@ -22,14 +34,7 @@ export function signInAs(userId: string | null): void {
   currentUserId = userId
 }
 
-/**
- * Call at the top level of a test file, before importing the module under test.
- * vi.mock is hoisted, so the factory must not close over anything but the
- * mutable module-scope variable above.
- */
-export function mockSupabaseSession(): void {
-  vi.mock('@/lib/supabase/server', () => ({
-    createClient: async (): Promise<SupabaseClient> =>
-      currentUserId ? userClient(currentUserId) : anonClient(),
-  }))
-}
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: async (): Promise<SupabaseClient> =>
+    currentUserId ? userClient(currentUserId) : anonClient(),
+}))
