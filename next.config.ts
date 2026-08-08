@@ -47,6 +47,38 @@ function supabaseImagePattern(): RemotePattern {
   }
 }
 
+/**
+ * Whether Supabase is the CLI stack running on this machine.
+ *
+ * Next 16 refuses to optimize a remote image whose hostname resolves to a
+ * private or loopback address — SSRF protection — and reports it as a bare
+ * `400 "url" parameter is not allowed`, the same message a missing
+ * remotePattern gives, which sends you looking in the wrong place. Locally that
+ * hits every single cover: Storage lives on http://127.0.0.1:54321, so /e/[slug]
+ * renders its hero as a broken image for every developer while being perfectly
+ * fine in production. Turning `dangerouslyAllowLocalIP` on unblocks it.
+ *
+ * Derived rather than hard-coded to `true`, and from the hostname literal rather
+ * than a DNS lookup, so it cannot become true for a deployed project: a real
+ * `<ref>.supabase.co` never matches. Split-horizon DNS that points a public
+ * hostname at a private IP is still refused, which is the conservative answer.
+ */
+function isLocalHostname(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '::1' ||
+    hostname === '[::1]' ||
+    /^127\./.test(hostname) ||
+    /^10\./.test(hostname) ||
+    /^192\.168\./.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+  )
+}
+
+// Computed once, so the check below reuses the hostname supabaseImagePattern()
+// has already validated rather than re-parsing the variable.
+const supabasePattern = supabaseImagePattern()
+
 const nextConfig: NextConfig = {
   images: {
     // Covers are served straight from Supabase Storage. Without this, next/image
@@ -56,8 +88,10 @@ const nextConfig: NextConfig = {
     // exactly, which is harmless — Next tests each pattern in turn.
     remotePatterns: [
       { protocol: 'http', hostname: '127.0.0.1', port: '54321', pathname: '/storage/v1/object/public/**' },
-      supabaseImagePattern(),
+      supabasePattern,
     ],
+    // Only ever true against the local Supabase stack; see above.
+    dangerouslyAllowLocalIP: isLocalHostname(supabasePattern.hostname),
   },
 }
 
