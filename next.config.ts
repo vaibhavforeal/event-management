@@ -62,6 +62,13 @@ function supabaseImagePattern(): RemotePattern {
  * than a DNS lookup, so it cannot become true for a deployed project: a real
  * `<ref>.supabase.co` never matches. Split-horizon DNS that points a public
  * hostname at a private IP is still refused, which is the conservative answer.
+ * Checked by evaluating this config against seven hostnames — the flag is false
+ * for `<ref>.supabase.co` and for a public corporate host, true only for
+ * localhost, 127/8, 10/8, 192.168/16 and 172.16-31/12.
+ *
+ * If you are here because covers 404-ish with `400 "url" parameter is not
+ * allowed` — in a feed card, a listing, anywhere — this is the flag, not
+ * `remotePatterns`. The two failures are reported with the identical message.
  */
 function isLocalHostname(hostname: string): boolean {
   return (

@@ -19,8 +19,25 @@
   }
 }
 
+/*
+  No font-family here on purpose.
+
+  This rule used to carry `font-family: Arial, Helvetica, sans-serif`, left over
+  from create-next-app, and it silently beat the fonts the app actually loads:
+  app/layout.tsx pulls Geist and Geist Mono over the network on every page and
+  publishes them as --font-geist-sans / --font-geist-mono, the @theme block above
+  maps those onto --font-sans / --font-mono, and Tailwind's preflight then sets
+  `html { font-family: --theme(--default-font-family, …) }`, which resolves to
+  --font-sans. All of that was correct. It just landed on <html>, and a
+  font-family on <body> overrides an inherited one — so every page below body
+  rendered in Arial while still paying for two webfonts nobody saw.
+
+  Leaving it off lets the inherited value through. Set a face with the `font-sans`
+  or `font-mono` utilities where a specific one is wanted, not with an element
+  selector here: an element selector is invisible from the markup and this is
+  exactly how the last one hid for so long.
+*/
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
 }

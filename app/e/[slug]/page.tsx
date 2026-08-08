@@ -6,6 +6,33 @@ import { formatIst, formatIstDateOnly } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import { clientEnv } from '@/lib/env'
 
+/** How much of the description WhatsApp gets. Its card shows rather less. */
+const OG_DESCRIPTION_LIMIT = 200
+
+/**
+ * Truncates to `limit` characters without splitting a word.
+ *
+ * A plain slice ends the preview card mid-word — "join us for a five-cour" —
+ * which reads as a broken page rather than a truncated one, and this string is
+ * the only prose a stranger sees before deciding whether to tap. The ellipsis is
+ * added only when something was actually cut, so a short description passes
+ * through untouched.
+ *
+ * Pure and total: no locale, no clock, no I/O, and every input returns a string.
+ */
+function truncateAtWord(text: string, limit: number): string {
+  if (text.length <= limit) return text
+
+  // One character is reserved for the ellipsis, so the result is never longer
+  // than `limit` — the point of the limit is that it is a limit.
+  const clipped = text.slice(0, limit - 1)
+  // Drop the trailing partial word. A single word longer than the whole limit
+  // has no boundary to cut on: the pattern then matches nothing (or everything,
+  // if the string starts with space), and the hard cut stands.
+  const whole = clipped.replace(/\s+\S*$/, '') || clipped
+  return `${whole.trimEnd()}…`
+}
+
 /**
  * The OpenGraph block is not decoration. This link's first impression is the
  * preview card WhatsApp renders from these tags; a link that unfurls as a bare
@@ -18,7 +45,13 @@ export async function generateMetadata(props: PageProps<'/e/[slug]'>): Promise<M
   if (!event) return { title: 'Event not found' }
 
   const when = formatIst(new Date(event.starts_at))
-  const description = event.description?.slice(0, 200) ?? `${when} · ${event.city}`
+  // Truthiness rather than `??`: an empty description is stored as NULL by the
+  // form today, but a direct write could leave '', and an empty og:description
+  // renders a preview card with a blank second line. The date and city are a
+  // better card than nothing at all.
+  const description = event.description
+    ? truncateAtWord(event.description, OG_DESCRIPTION_LIMIT)
+    : `${when} · ${event.city}`
   const url = `${clientEnv.NEXT_PUBLIC_SITE_URL}/e/${event.slug}`
 
   return {
@@ -135,7 +168,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
      * full surface rather than ending mid-viewport with white <body> below it.
      */
     <main
-      className="mx-auto min-h-screen w-full max-w-2xl pb-36 font-sans"
+      className="mx-auto min-h-screen w-full max-w-2xl pb-36"
       style={{ backgroundColor: '#FBFAF7', color: INK }}
     >
       {event.cover_image_url && (

@@ -17,7 +17,7 @@ import Link from 'next/link'
 export default function EventNotFound() {
   return (
     <main
-      className="mx-auto flex min-h-screen w-full max-w-md flex-col items-center gap-4 px-5 py-24 text-center font-sans"
+      className="mx-auto flex min-h-screen w-full max-w-md flex-col items-center gap-4 px-5 py-24 text-center"
       style={{ backgroundColor: '#FBFAF7', color: '#14110F' }}
     >
       <p
