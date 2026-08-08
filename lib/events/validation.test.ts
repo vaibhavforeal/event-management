@@ -176,6 +176,12 @@ describe('parseEventForm', () => {
       'Keep the address under 500 characters',
     )
   })
+
+  it('explains an over-long city, the last bound that could speak Zod', () => {
+    // Unreachable through the form's maxLength attribute, reachable by POST.
+    expect(parseEventForm(form({ city: 'x'.repeat(80) })).success).toBe(true)
+    expect(errorsFor({ city: 'x'.repeat(81) }).city).toBe('Keep the city name under 80 characters')
+  })
 })
 
 describe('validateForPublish', () => {

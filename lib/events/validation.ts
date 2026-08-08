@@ -61,7 +61,11 @@ export const eventDraftSchema = z
       .trim()
       .min(3, 'Give your event a name of at least 3 characters')
       .max(140, 'Keep the name under 140 characters'),
-    city: z.string().trim().min(1, 'Which city is this in?').max(80),
+    city: z
+      .string()
+      .trim()
+      .min(1, 'Which city is this in?')
+      .max(80, 'Keep the city name under 80 characters'),
     startsAtLocal: localDateTime,
     endsAtLocal: localDateTime.optional(),
     description: optionalText(5000, 'Keep the description under 5000 characters'),

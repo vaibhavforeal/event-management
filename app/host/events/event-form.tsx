@@ -114,13 +114,38 @@ export function EventForm({
   const [lastEcho, setLastEcho] = useState<SubmittedEventValues | undefined>(undefined)
   // `generation` exists only to remount the checkboxes; see below.
   const [generation, setGeneration] = useState(0)
-  // Adopt the server's echo whenever a new response arrives. Comparing against
-  // the previous response during render is React's documented way to adjust
-  // state in response to a change; an effect would paint the stale values first.
-  if (state.values && state.values !== lastEcho) {
-    setLastEcho(state.values)
-    setDraft(draftFromEcho(state.values))
-    setGeneration((n) => n + 1)
+  // Which response has already been folded in, tracked by identity. Seeded with
+  // the first `state` so mounting does no work. Comparing during render is
+  // React's documented way to adjust state in response to a change; an effect
+  // would paint the stale values first.
+  const [handled, setHandled] = useState(state)
+
+  if (state !== handled) {
+    setHandled(state)
+    if (state.values) {
+      // Rejected: adopt what the host sent so nothing they typed is lost.
+      setLastEcho(state.values)
+      setDraft(draftFromEcho(state.values))
+      setGeneration((n) => n + 1)
+    } else if (state.ok) {
+      /**
+       * Saved: the echo is now obsolete and must go, or it pins `defaultChecked`
+       * to the last *rejected* submission forever.
+       *
+       * Keeping it caused a genuinely dangerous bug. Submit while "hide venue
+       * until approved" is ticked and get rejected; untick it; save; the save
+       * succeeds and Postgres correctly stores false — and then the box springs
+       * back to ticked from the stale echo, so the next save writes true again.
+       * A host is told their address is public, watches the setting turn itself
+       * back on, and silently re-hides it. That control decides whether a guest
+       * ever sees the address, so being wrong in either direction is unsafe.
+       *
+       * Dropping the echo returns the checkboxes to the server-supplied props,
+       * which the action's revalidation has already refreshed by this point.
+       */
+      setLastEcho(undefined)
+      setGeneration((n) => n + 1)
+    }
   }
 
   function set<K extends keyof Draft>(key: K, value: Draft[K]) {
@@ -148,6 +173,14 @@ export function EventForm({
    * that ordering. Remounting costs nothing here: these inputs hold no other
    * state, and after a submit the focus is on the submit button, not on them.
    * CoverUpload is deliberately outside this, so its uploaded image is untouched.
+   *
+   * Keying the whole form on the event's `updated_at` — as PublishPanel does —
+   * would also clear the echo, and would make the two components consistent. It
+   * is not used here because remounting EventForm also remounts its
+   * `useActionState`, which throws away `state.ok`: the "Saved." confirmation
+   * would appear and then vanish the moment the refreshed row arrived.
+   * PublishPanel can afford that because it signals success through the `status`
+   * prop rather than a message.
    */
   const checkboxes: CheckboxState = lastEcho
     ? {
