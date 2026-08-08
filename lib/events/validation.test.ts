@@ -16,6 +16,13 @@ function form(overrides: Record<string, string> = {}): FormData {
   return fd
 }
 
+/** Throws rather than returning, so a test can never pass by not asserting. */
+function errorsFor(overrides: Record<string, string>): Record<string, string> {
+  const result = parseEventForm(form(overrides))
+  if (result.success) throw new Error('expected the form to be rejected, but it parsed')
+  return result.fieldErrors
+}
+
 describe('parseEventForm', () => {
   it('accepts the minimum the database requires', () => {
     const result = parseEventForm(form())
@@ -82,6 +89,46 @@ describe('parseEventForm', () => {
     expect(result.success).toBe(true)
     if (result.success) expect(result.data.requiresApproval).toBe(true)
   })
+
+  it('reads the hide-venue toggle in both positions', () => {
+    const off = parseEventForm(form())
+    expect(off.success).toBe(true)
+    if (off.success) expect(off.data.hideVenueUntilApproved).toBe(false)
+
+    const on = parseEventForm(form({ hideVenueUntilApproved: 'on' }))
+    expect(on.success).toBe(true)
+    if (on.success) expect(on.data.hideVenueUntilApproved).toBe(true)
+  })
+
+  it('explains a non-numeric seats entry in words a host can act on', () => {
+    // A number input constrains the browser widget; a form POST is not bound by it.
+    expect(errorsFor({ seats: 'abc' }).seats).toBe('Seats must be a whole number')
+  })
+
+  it('explains a non-numeric price in words a host can act on', () => {
+    expect(errorsFor({ priceRupees: 'abc' }).priceRupees).toBe('Price must be a number')
+  })
+
+  it('still reports the per-rule message, not the type-level one', () => {
+    expect(errorsFor({ seats: '0' }).seats).toBe('You need at least one seat')
+    expect(errorsFor({ seats: '2.5' }).seats).toBe('Seats must be a whole number')
+    expect(errorsFor({ priceRupees: '-1' }).priceRupees).toBe('Price cannot be negative')
+  })
+
+  it('accepts a valid cover image link', () => {
+    const result = parseEventForm(form({ coverImageUrl: 'https://example.com/poster.jpg' }))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.coverImageUrl).toBe('https://example.com/poster.jpg')
+  })
+
+  it('rejects a cover image link that is not a URL', () => {
+    expect(errorsFor({ coverImageUrl: 'poster.jpg' }).coverImageUrl).toBeTruthy()
+  })
+
+  it('rejects a title longer than the schema CHECK allows', () => {
+    expect(parseEventForm(form({ title: 'x'.repeat(140) })).success).toBe(true)
+    expect(errorsFor({ title: 'x'.repeat(141) }).title).toBe('Keep the name under 140 characters')
+  })
 })
 
 describe('validateForPublish', () => {
@@ -105,6 +152,13 @@ describe('validateForPublish', () => {
 
   it('blocks a start time in the past', () => {
     const blockers = validateForPublish({ ...complete, starts_at: '2026-01-01T00:00:00.000Z' }, now)
+    expect(blockers.map((b) => b.field)).toContain('starts_at')
+  })
+
+  it('blocks a start time it cannot read as a date', () => {
+    // Fails closed: an unreadable date must not slip past the gate just because
+    // NaN comparisons are false.
+    const blockers = validateForPublish({ ...complete, starts_at: 'not-a-date' }, now)
     expect(blockers.map((b) => b.field)).toContain('starts_at')
   })
 

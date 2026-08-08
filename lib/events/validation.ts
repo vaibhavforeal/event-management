@@ -33,13 +33,18 @@ export const eventDraftSchema = z
     venueName: optionalText(160),
     venueAddress: optionalText(500),
     coverImageUrl: z.url('That does not look like an image link').optional(),
+    // The bare string is the type-level message, used when coercion yields NaN
+    // — i.e. the host typed something that is not a number at all. Without it
+    // Zod says "expected number, received NaN", which is the machine string
+    // this module exists to avoid. Per-rule messages below still win for their
+    // own rule; this is only the fallback.
     seats: z.coerce
-      .number()
+      .number('Seats must be a whole number')
       .int('Seats must be a whole number')
       .positive('You need at least one seat')
       .max(100_000, 'That is more seats than this platform is for'),
     priceRupees: z.coerce
-      .number()
+      .number('Price must be a number')
       .min(0, 'Price cannot be negative')
       .max(1_000_000, 'That price looks like a mistake'),
     requiresApproval: z.boolean(),
@@ -128,7 +133,15 @@ export function validateForPublish(
   if (!candidate.venue_name || candidate.venue_name.trim() === '') {
     blockers.push({ field: 'venue_name', message: 'Add where it is happening' })
   }
-  if (new Date(candidate.starts_at).getTime() <= now.getTime()) {
+  // Fail closed. `new Date('nonsense').getTime()` is NaN, and every comparison
+  // against NaN is false — so without this branch an unreadable start time
+  // would sail through the one gate whose job is to stop an unfit event going
+  // public. Today's caller reads a NOT NULL timestamptz, but the parameter is
+  // a plain string and this function is pure and reusable.
+  const startsAt = new Date(candidate.starts_at).getTime()
+  if (Number.isNaN(startsAt)) {
+    blockers.push({ field: 'starts_at', message: 'Pick a date and time' })
+  } else if (startsAt <= now.getTime()) {
     blockers.push({ field: 'starts_at', message: 'The start time is in the past' })
   }
   if (!candidate.ticketTypes.some((t) => t.quantity > 0)) {
