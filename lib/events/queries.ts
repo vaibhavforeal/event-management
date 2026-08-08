@@ -123,6 +123,10 @@ export interface OwnedEvent extends HostEvent {
   requires_approval: boolean
   allows_cash: boolean
   hide_venue_until_approved: boolean
+  // The edit page keys the publish panel on this so a successful save remounts
+  // it with clean state. The events_set_updated_at trigger moves it on every
+  // write, so it changes exactly when the panel's cached response goes stale.
+  updated_at: string
 }
 
 /** One of the caller's own events, for the edit page. */
@@ -134,7 +138,7 @@ export async function getOwnedEvent(id: string): Promise<OwnedEvent | null> {
   const { data, error } = await supabase
     .from('events')
     .select(
-      `id, slug, title, status, city, starts_at, cover_image_url, published_at,
+      `id, slug, title, status, city, starts_at, cover_image_url, published_at, updated_at,
        description, venue_name, venue_address, ends_at, requires_approval, allows_cash,
        hide_venue_until_approved, ticket_types(price_paise, quantity, reserved_count)`,
     )

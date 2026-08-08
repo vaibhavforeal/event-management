@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { requireUser } from '@/lib/auth/session'
+import { clientEnv } from '@/lib/env'
 import { getOwnedEvent } from '@/lib/events/queries'
 import { utcToIstLocal } from '@/lib/events/datetime'
 import { publishEvent, unpublishEvent, updateEvent } from '../../actions'
@@ -18,6 +19,13 @@ export default async function EditEventPage(props: PageProps<'/host/events/[id]/
 
   const ticket = event.ticket_types[0]
 
+  // Built here rather than in the client component so the absolute URL is in the
+  // very first byte of HTML. NEXT_PUBLIC_SITE_URL is the canonical origin the
+  // rest of the app uses, so the copied link matches the og:url Task 9 emits.
+  // `new URL` rather than string concatenation so a configured trailing slash
+  // cannot produce "//e/slug".
+  const shareUrl = new URL(`/e/${event.slug}`, clientEnv.NEXT_PUBLIC_SITE_URL).toString()
+
   return (
     <main className="mx-auto max-w-2xl space-y-8 px-4 py-8">
       <div>
@@ -29,9 +37,14 @@ export default async function EditEventPage(props: PageProps<'/host/events/[id]/
         </p>
       </div>
 
+      {/* Keyed on updated_at so a successful save remounts the panel with clean
+          state. Without this its useActionState is independent of the form's, so
+          a stale "Add where it is happening" blocker sat next to "Saved." — two
+          contradictory messages, and the host acts on the wrong one. */}
       <PublishPanel
+        key={event.updated_at}
         eventId={event.id}
-        slug={event.slug}
+        shareUrl={shareUrl}
         status={event.status}
         publishAction={publishEvent}
         unpublishAction={unpublishEvent}

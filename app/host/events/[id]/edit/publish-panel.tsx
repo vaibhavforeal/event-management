@@ -7,13 +7,23 @@ type Action = (state: EventFormState, formData: FormData) => Promise<EventFormSt
 
 export function PublishPanel({
   eventId,
-  slug,
+  shareUrl,
   status,
   publishAction,
   unpublishAction,
 }: {
   eventId: string
-  slug: string
+  /**
+   * Absolute, and built on the server from NEXT_PUBLIC_SITE_URL.
+   *
+   * It used to be derived here from `window.location.origin`, which meant the
+   * server rendered a relative "/e/slug" and hydration swapped in the absolute
+   * one. React does not warn on `value` mismatches for form elements, so that
+   * divergence was silent — and a host who tapped Copy before hydration pasted
+   * a relative path into WhatsApp, which is a dead link. Sharing that link is
+   * the single thing this panel exists to do, so the first byte has to be right.
+   */
+  shareUrl: string
   status: string
   publishAction: Action
   unpublishAction: Action
@@ -24,9 +34,6 @@ export function PublishPanel({
     {} as EventFormState,
   )
   const [copied, setCopied] = useState(false)
-
-  const shareUrl =
-    typeof window === 'undefined' ? `/e/${slug}` : `${window.location.origin}/e/${slug}`
 
   return (
     <section className="space-y-3 rounded-xl border border-zinc-200 p-4">
