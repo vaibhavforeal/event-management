@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { adminClient, cleanupEvent, seedEvent, type SeededEvent } from '@/tests/helpers/db'
 // Importing this installs the @/lib/supabase/server mock as a side effect, which
-// is why the module under test is pulled in below with `await import` rather
-// than a static import — it has to resolve after the mock is registered.
+// is why the module under test is pulled in below with `await import` — a body
+// statement always runs after the imports, however they get reordered.
 import { signInAs } from '@/tests/helpers/session'
 
 const {
@@ -18,28 +18,53 @@ const db = adminClient()
 let published: SeededEvent
 let draft: SeededEvent
 let past: SeededEvent
+let soon: SeededEvent
+let cancelled: SeededEvent
+let completed: SeededEvent
 let publishedSlug: string
+let cancelledSlug: string
+let completedSlug: string
+
+async function slugOf(eventId: string): Promise<string> {
+  const { data } = await db.from('events').select('slug').eq('id', eventId).single()
+  return data!.slug
+}
+
+/** seedEvent only offers draft and published, and always dates an event a week out. */
+async function reshape(
+  seed: SeededEvent,
+  patch: { status?: string; starts_at?: string },
+): Promise<void> {
+  const { error } = await db.from('events').update(patch).eq('id', seed.eventId)
+  if (error) throw new Error(`reshape failed: ${error.message}`)
+}
 
 beforeAll(async () => {
   published = await seedEvent(db, { status: 'published' })
   draft = await seedEvent(db, { status: 'draft' })
   past = await seedEvent(db, { status: 'published' })
+  soon = await seedEvent(db, { status: 'published' })
+  cancelled = await seedEvent(db, { status: 'published' })
+  completed = await seedEvent(db, { status: 'published' })
 
-  // seedEvent always dates an event a week out, so the feed's "upcoming" filter
-  // has nothing to exclude unless we put something behind us.
-  await db
-    .from('events')
-    .update({ starts_at: new Date(Date.now() - 24 * 3600 * 1000).toISOString() })
-    .eq('id', past.eventId)
+  // Something behind us, so the feed's "upcoming" filter has work to do.
+  await reshape(past, { starts_at: new Date(Date.now() - 24 * 3600 * 1000).toISOString() })
+  // A day out against published's week, so "soonest first" is falsifiable.
+  await reshape(soon, { starts_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString() })
+  // Left in the future on purpose: if these were also past, the starts_at filter
+  // would hide them and the status filter would go untested.
+  await reshape(cancelled, { status: 'cancelled' })
+  await reshape(completed, { status: 'completed' })
 
-  const { data } = await db.from('events').select('slug').eq('id', published.eventId).single()
-  publishedSlug = data!.slug
+  publishedSlug = await slugOf(published.eventId)
+  cancelledSlug = await slugOf(cancelled.eventId)
+  completedSlug = await slugOf(completed.eventId)
 })
 
 afterAll(async () => {
-  await cleanupEvent(db, published)
-  await cleanupEvent(db, draft)
-  await cleanupEvent(db, past)
+  for (const seed of [published, draft, past, soon, cancelled, completed]) {
+    await cleanupEvent(db, seed)
+  }
 })
 
 describe('getPublishedEventBySlug', () => {
@@ -59,11 +84,25 @@ describe('getPublishedEventBySlug', () => {
   })
 
   it('returns null for a draft, even to its own host', async () => {
-    const { data } = await db.from('events').select('slug').eq('id', draft.eventId).single()
     signInAs(draft.hostProfileId)
 
     // The public page must never render a draft, session or not.
-    expect(await getPublishedEventBySlug(data!.slug)).toBeNull()
+    expect(await getPublishedEventBySlug(await slugOf(draft.eventId))).toBeNull()
+  })
+
+  it('returns null for a cancelled or a completed event, even to its own host', async () => {
+    // Asked as the owning host, because events_select_published already hides
+    // these from everyone else — so a signed-out check would prove nothing.
+    //
+    // What this pins down is "show published", not "hide drafts". Both events
+    // are still upcoming, so if the filter were ever relaxed to neq('draft')
+    // the page of a cancelled supper club would go back online, and someone
+    // would turn up to it.
+    signInAs(cancelled.hostProfileId)
+    expect(await getPublishedEventBySlug(cancelledSlug)).toBeNull()
+
+    signInAs(completed.hostProfileId)
+    expect(await getPublishedEventBySlug(completedSlug)).toBeNull()
   })
 })
 
@@ -81,6 +120,28 @@ describe('listCityFeed', () => {
     // draft's own host — the one caller RLS shows it to — is what pins it down.
     signInAs(draft.hostProfileId)
     expect((await listCityFeed()).map((e) => e.id)).not.toContain(draft.eventId)
+  })
+
+  it('excludes cancelled and completed events', async () => {
+    // Both are still upcoming, and each is asked for by its own host, so RLS
+    // shows it: the status filter is the only thing that can keep a cancelled
+    // event out of the feed.
+    signInAs(cancelled.hostProfileId)
+    expect((await listCityFeed()).map((e) => e.id)).not.toContain(cancelled.eventId)
+
+    signInAs(completed.hostProfileId)
+    expect((await listCityFeed()).map((e) => e.id)).not.toContain(completed.eventId)
+  })
+
+  it('orders upcoming events soonest first', async () => {
+    signInAs(null)
+    const ids = (await listCityFeed()).map((e) => e.id)
+
+    // indexOf returns -1 for a missing id, which would sort "first" and pass the
+    // comparison for the wrong reason. Hence the containment checks.
+    expect(ids).toContain(soon.eventId)
+    expect(ids).toContain(published.eventId)
+    expect(ids.indexOf(soon.eventId)).toBeLessThan(ids.indexOf(published.eventId))
   })
 
   it('filters by city', async () => {

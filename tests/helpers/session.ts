@@ -16,15 +16,19 @@ import { anonClient, userClient } from './db'
  * vi.mock below is hoisted above the imports and runs on import, for every file
  * that takes anything from here.
  *
- * The consequence, which is easy to get wrong: a test file must pull in the
- * module under test with a top-level `await import(...)`, never a static import.
- * Static imports are evaluated before this module's body, so the module under
- * test would bind the real @/lib/supabase/server, signInAs() would stop having
- * any effect, and every RLS assertion in the file would quietly pass against
- * whatever session the real client happened to have (none).
+ * So the module under test must be evaluated after this one. A top-level
+ * `await import(...)` guarantees that, because it runs after every static import
+ * regardless of how the import block is ordered — and import blocks get
+ * reordered by formatters and by anyone tidying up.
  *
  *   import { signInAs } from '@/tests/helpers/session'
  *   const { listHostEvents } = await import('@/lib/events/queries')
+ *
+ * Getting the order wrong fails loudly, never silently: too early and the module
+ * under test binds the real @/lib/supabase/server, so every test dies on
+ * "`cookies` was called outside a request scope" (or, before ./db has run
+ * dotenv, on "Invalid client environment" at load). Measured, all three
+ * orderings. There is no arrangement that passes while testing the wrong thing.
  */
 
 let currentUserId: string | null = null
