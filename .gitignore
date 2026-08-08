@@ -32,6 +32,15 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...but the template must be committed, it is the only record of what is needed
+!.env.example
+
+# supabase local stack
+/supabase/.temp
+/supabase/.branches
+
+# claude-code session history
+/.remember
 
 # vercel
 .vercel

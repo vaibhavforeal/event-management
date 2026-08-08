@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Scratch files the Supabase CLI writes while the local stack runs. It
+    // includes a minified Deno bootstrap that is not ours to lint.
+    "supabase/.temp/**",
+    // Generated from the database schema by `npm run db:types`.
+    "lib/supabase/types.ts",
   ]),
 ]);
 
