@@ -109,10 +109,53 @@ export type ParseResult =
   | { success: true; data: EventDraftInput }
   | { success: false; fieldErrors: Record<string, string> }
 
-function text(value: FormDataEntryValue | null): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  return trimmed === '' ? undefined : trimmed
+/**
+ * Every field the event form posts, and how it arrives on the wire.
+ *
+ * The single declaration this module and the Server Actions both read. There
+ * used to be two hand-written lists of the same thirteen names — one here, one
+ * in `submittedValues()` — and a field present in only one of them is dropped
+ * from the echo handed back on every rejection, silently. That is precisely the
+ * shape of this branch's worst UI defect, so the lists are now one list.
+ *
+ * `satisfies Record<keyof EventDraftInput, FieldKind>` is what makes it stick:
+ * adding a field to the schema without adding it here fails the typecheck, and
+ * so does naming a field here that the schema does not have.
+ */
+type FieldKind = 'text' | 'checkbox'
+
+export const EVENT_FORM_FIELDS = {
+  title: 'text',
+  description: 'text',
+  city: 'text',
+  venueName: 'text',
+  venueAddress: 'text',
+  coverImageUrl: 'text',
+  startsAtLocal: 'text',
+  endsAtLocal: 'text',
+  seats: 'text',
+  priceRupees: 'text',
+  requiresApproval: 'checkbox',
+  allowsCash: 'checkbox',
+  hideVenueUntilApproved: 'checkbox',
+} as const satisfies Record<keyof EventDraftInput, FieldKind>
+
+/**
+ * The submission, read back out verbatim.
+ *
+ * React 19 resets a form once its action settles, so without this a refused
+ * save returns an empty form and the host retypes the lot — which, for a
+ * product promising a published event in three minutes, is the difference
+ * between a typo and starting again.
+ *
+ * Raw strings rather than parsed values, deliberately. The point is to give
+ * back the *invalid* two-character title so it can be corrected, and on a
+ * validation failure there is no parsed value to give back at all.
+ */
+export type SubmittedEventValues = {
+  [K in keyof typeof EVENT_FORM_FIELDS]: (typeof EVENT_FORM_FIELDS)[K] extends 'checkbox'
+    ? boolean
+    : string
 }
 
 /** An unchecked checkbox is absent from FormData entirely. */
@@ -120,22 +163,57 @@ function checkbox(formData: FormData, name: string): boolean {
   return formData.get(name) !== null
 }
 
+/** Untrimmed, unparsed: what the host actually typed. */
+function rawText(formData: FormData, name: string): string {
+  const value = formData.get(name)
+  return typeof value === 'string' ? value : ''
+}
+
+export function readSubmittedValues(formData: FormData): SubmittedEventValues {
+  const values: Record<string, string | boolean> = {}
+  for (const [name, kind] of Object.entries(EVENT_FORM_FIELDS)) {
+    values[name] = kind === 'checkbox' ? checkbox(formData, name) : rawText(formData, name)
+  }
+  return values as SubmittedEventValues
+}
+
+function text(value: FormDataEntryValue | null): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+/**
+ * What an omitted field is worth to Zod.
+ *
+ * Only the fields that are NOT optional in the schema need one: handing Zod
+ * `undefined` for a required string gets "expected string, received undefined",
+ * the machine string this module exists to keep away from the host. Anything
+ * absent from this map is genuinely optional and stays `undefined`. A price
+ * left blank means free, which is why it is '0' rather than ''.
+ *
+ * Not a second copy of the field list — it holds five of the thirteen, and
+ * getting it wrong changes a message rather than dropping a field, which the
+ * message assertions in validation.test.ts already catch.
+ */
+const OMITTED_TEXT_DEFAULTS: Partial<Record<keyof EventDraftInput, string>> = {
+  title: '',
+  city: '',
+  startsAtLocal: '',
+  seats: '',
+  priceRupees: '0',
+}
+
 export function parseEventForm(formData: FormData): ParseResult {
-  const parsed = eventDraftSchema.safeParse({
-    title: text(formData.get('title')) ?? '',
-    city: text(formData.get('city')) ?? '',
-    startsAtLocal: text(formData.get('startsAtLocal')) ?? '',
-    endsAtLocal: text(formData.get('endsAtLocal')),
-    description: text(formData.get('description')),
-    venueName: text(formData.get('venueName')),
-    venueAddress: text(formData.get('venueAddress')),
-    coverImageUrl: text(formData.get('coverImageUrl')),
-    seats: text(formData.get('seats')) ?? '',
-    priceRupees: text(formData.get('priceRupees')) ?? '0',
-    requiresApproval: checkbox(formData, 'requiresApproval'),
-    allowsCash: checkbox(formData, 'allowsCash'),
-    hideVenueUntilApproved: checkbox(formData, 'hideVenueUntilApproved'),
-  })
+  const candidate: Record<string, unknown> = {}
+  for (const [name, kind] of Object.entries(EVENT_FORM_FIELDS)) {
+    candidate[name] =
+      kind === 'checkbox'
+        ? checkbox(formData, name)
+        : (text(formData.get(name)) ?? OMITTED_TEXT_DEFAULTS[name as keyof EventDraftInput])
+  }
+
+  const parsed = eventDraftSchema.safeParse(candidate)
 
   if (parsed.success) return { success: true, data: parsed.data }
 

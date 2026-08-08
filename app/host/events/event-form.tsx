@@ -2,7 +2,11 @@
 
 import { useActionState, useState } from 'react'
 import { CoverUpload } from './cover-upload'
-import type { EventFormState, SubmittedEventValues } from './actions'
+import type { EventFormState } from './actions'
+// Type-only, so nothing from the validation module (Zod included) is pulled
+// into the client bundle. The echo's shape is declared there because that is
+// where the form's field list lives.
+import type { SubmittedEventValues } from '@/lib/events/validation'
 
 type Action = (state: EventFormState, formData: FormData) => Promise<EventFormState>
 

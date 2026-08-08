@@ -6,7 +6,12 @@ import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { buildSlug } from '@/lib/events/slug'
 import { istLocalToUtc } from '@/lib/events/datetime'
-import { parseEventForm, validateForPublish } from '@/lib/events/validation'
+import {
+  parseEventForm,
+  readSubmittedValues as submittedValues,
+  validateForPublish,
+  type SubmittedEventValues,
+} from '@/lib/events/validation'
 import { getCurrentHostId } from '@/lib/events/queries'
 import { rupeesToPaise } from '@/lib/money'
 
@@ -17,61 +22,10 @@ export interface EventFormState {
   ok?: boolean
   /**
    * Exactly what the host typed, handed back on every rejection so the form can
-   * refill itself. See SubmittedEventValues.
+   * refill itself. Built by lib/events/validation.ts from the same declaration
+   * the parser reads, so a new field cannot reach the schema and miss the echo.
    */
   values?: SubmittedEventValues
-}
-
-/**
- * The submission, read back out verbatim.
- *
- * React 19 resets a form once its action settles, so without this a refused
- * save returns an empty form and the host retypes the lot — which, for a
- * product promising a published event in three minutes, is the difference
- * between a typo and starting again.
- *
- * Raw strings rather than parsed values, deliberately. The point is to give
- * back the *invalid* two-character title so it can be corrected, and on a
- * validation failure there is no parsed value to give back at all.
- */
-export interface SubmittedEventValues {
-  title: string
-  description: string
-  city: string
-  venueName: string
-  venueAddress: string
-  coverImageUrl: string
-  startsAtLocal: string
-  endsAtLocal: string
-  seats: string
-  priceRupees: string
-  requiresApproval: boolean
-  allowsCash: boolean
-  hideVenueUntilApproved: boolean
-}
-
-function rawText(formData: FormData, name: string): string {
-  const value = formData.get(name)
-  return typeof value === 'string' ? value : ''
-}
-
-function submittedValues(formData: FormData): SubmittedEventValues {
-  return {
-    title: rawText(formData, 'title'),
-    description: rawText(formData, 'description'),
-    city: rawText(formData, 'city'),
-    venueName: rawText(formData, 'venueName'),
-    venueAddress: rawText(formData, 'venueAddress'),
-    coverImageUrl: rawText(formData, 'coverImageUrl'),
-    startsAtLocal: rawText(formData, 'startsAtLocal'),
-    endsAtLocal: rawText(formData, 'endsAtLocal'),
-    seats: rawText(formData, 'seats'),
-    priceRupees: rawText(formData, 'priceRupees'),
-    // An unchecked checkbox is absent from FormData entirely.
-    requiresApproval: formData.get('requiresApproval') !== null,
-    allowsCash: formData.get('allowsCash') !== null,
-    hideVenueUntilApproved: formData.get('hideVenueUntilApproved') !== null,
-  }
 }
 
 /**
