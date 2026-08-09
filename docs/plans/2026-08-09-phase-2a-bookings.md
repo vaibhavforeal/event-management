@@ -17,7 +17,7 @@
 - **Identity never comes from a form.** Every write takes a `Caller`, which only `currentCaller()` can produce. A posted `attendeeId` field must not exist anywhere.
 - **Only free, no-approval, not-yet-started events are bookable.** `price_paise = 0`, `requires_approval = false`, `starts_at > now()`. Enforced in SQL, not only in the action.
 - **One active booking per attendee per event.** Enforced by a partial unique index, not by an application check, because an application check races with itself.
-- **A host never sees an attendee's phone number.** The guest list shows the name the attendee typed. `profiles` stays readable only by its owner.
+- **A host can see the phone number of anyone booked on their own event, and nobody else's.** This needs a new RLS policy — `profiles` is owner-only today. The name still comes from `bookings.attendee_name`, because `profiles.full_name` is null for every user alive.
 - **`params` and `searchParams` are Promises** in Next.js 16. Use the generated `PageProps<'/route'>` from `next typegen`; never hand-write page prop types.
 - **`cookies()` is async.** `lib/supabase/server.ts#createClient` must be awaited.
 - **IST is UTC+05:30 year-round, no DST.** Use `lib/events/datetime.ts`; never `new Date(localString)` on a zoneless value.
@@ -32,7 +32,8 @@
 | File | Responsibility |
 |---|---|
 | `supabase/migrations/20260810000001_bookings_attendee_name.sql` | **New.** `bookings.attendee_name`, and the partial unique index enforcing one active booking per attendee per event. |
-| `supabase/migrations/20260810000002_book_free_tickets.sql` | **New.** `book_free_tickets()`, its four guards, its revoke/grant pair. |
+| `supabase/migrations/20260810000002_profiles_visible_to_hosts.sql` | **New.** One RLS policy: a host may read the `profiles` row of anyone booked on an event they own. |
+| `supabase/migrations/20260810000003_book_free_tickets.sql` | **New.** `book_free_tickets()`, its four guards, its revoke/grant pair. |
 | `lib/supabase/types.ts` | **Regenerated.** Gains the new function's `Args`. |
 | `lib/bookings/caller.ts` | **New.** The branded `Caller` type and the only way to make one. |
 | `lib/bookings/authorize.ts` | **New.** Pure. `mayCancel()`. No database, no imports beyond the `Caller` type. |
@@ -56,7 +57,9 @@ Reads and writes are split into two modules on purpose: `queries.ts` runs under 
 
 Four things were checked against the codebase after this plan was first written, and each changed it. They are recorded here because each is invisible from the task list and each would have cost a build.
 
-**A host cannot read an attendee's `profiles` row.** `profiles_select_own` is `id = auth.uid()` and that is the entire SELECT surface on the table (`20260808000003_rls_policies.sql:61`). An embed of `bookings.profiles(full_name, phone)` therefore returns `null` for every attendee — PostgREST raises nothing, so a guest list built that way renders "Guest" and a blank phone for every row while every test that counts rows passes. Compounding it, `full_name` is null for every user who has ever existed: the signup trigger writes `id` and `phone` only (`20260808000001_core_schema.sql:64`) and nothing in the repo writes it. **Resolution:** the attendee types a name when booking and it is stored on the booking. No RLS change, and hosts never see phone numbers.
+**A host cannot read an attendee's `profiles` row.** `profiles_select_own` is `id = auth.uid()` and that is the entire SELECT surface on the table (`20260808000003_rls_policies.sql:61`). An embed of `bookings.profiles(full_name, phone)` therefore returns `null` for every attendee — PostgREST raises nothing, so a guest list built that way renders "Guest" and a blank phone for every row while every test that counts rows passes. Compounding it, `full_name` is null for every user who has ever existed: the signup trigger writes `id` and `phone` only (`20260808000001_core_schema.sql:64`) and nothing in the repo writes it.
+
+**Resolution, in two parts.** A host needs to contact their guests, so a new policy makes an attendee's `profiles` row readable to the host of an event they booked — and to nobody else. That supplies the phone number. It does not supply a name: `full_name` is still null for everyone, and nothing in this phase writes it, so the attendee types a name when booking and it is stored on the booking. The two are separate on purpose — a booking-time name is what belongs on a door list, and it does not change retroactively when someone later edits their profile.
 
 **Nothing stopped an attendee booking the same event repeatedly.** `max_per_order` bounds one order, not a person, so ten single-seat bookings take a ten-seat room. **Resolution:** one active booking per attendee per event, enforced by a partial unique index.
 
@@ -72,15 +75,16 @@ One thing the audit cleared rather than changed: every page in this app is dynam
 
 **Files:**
 - Create: `supabase/migrations/20260810000001_bookings_attendee_name.sql`
-- Create: `supabase/migrations/20260810000002_book_free_tickets.sql`
+- Create: `supabase/migrations/20260810000002_profiles_visible_to_hosts.sql`
+- Create: `supabase/migrations/20260810000003_book_free_tickets.sql`
 - Modify: `lib/supabase/types.ts` (regenerated, never hand-edited)
 - Test: `lib/bookings/book-free-tickets.test.ts`
 
 **Interfaces:**
-- Consumes: `reserve_tickets`, `confirm_booking` from `20260808000002_reservation_functions.sql`
-- Produces: `book_free_tickets(p_ticket_type_id uuid, p_attendee_id uuid, p_quantity integer, p_attendee_name text, p_attendee_note text) returns bookings`; `bookings.attendee_name`; SQLSTATE `EH010` (not free), `EH011` (requires approval), `EH012` (already booked), `EH013` (event has started)
+- Consumes: `reserve_tickets`, `confirm_booking` from `20260808000002_reservation_functions.sql`; `owns_event()` from `20260808000003_rls_policies.sql`
+- Produces: `book_free_tickets(p_ticket_type_id uuid, p_attendee_id uuid, p_quantity integer, p_attendee_name text, p_attendee_note text) returns bookings`; `bookings.attendee_name`; the `profiles_select_for_host` policy; SQLSTATE `EH010` (not free), `EH011` (requires approval), `EH012` (already booked), `EH013` (event has started)
 
-Two migrations, not one: the column and the index are schema, the function is behaviour, and this repo's history is one focused change per file.
+Three migrations, not one. The column and index are schema, the policy is authorisation, the function is behaviour, and this repo's history is one focused change per file — which also means a policy that turns out to be too wide can be reverted without taking the booking path with it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -294,6 +298,59 @@ describe('book_free_tickets', () => {
     expect(error?.message).toBe('permission denied for function book_free_tickets')
   })
 })
+
+describe('profiles_select_for_host', () => {
+  // The policy added in Step 3b. `free.attendeeId` booked in the first test of
+  // this file, so the host relationship exists by the time these run.
+  it('lets the host read the phone number of someone booked on their event', async () => {
+    const { userClient } = await import('@/tests/helpers/db')
+
+    const { data } = await userClient(free.hostProfileId)
+      .from('profiles')
+      .select('id, phone')
+      .eq('id', free.attendeeId)
+      .maybeSingle()
+
+    // Not `not.toBeNull()`: RLS filters rather than errors, so a policy that
+    // did nothing would also return no row and a laxer assertion would pass
+    // for the wrong reason.
+    expect(data?.id).toBe(free.attendeeId)
+    expect(data?.phone).toMatch(/^\+/)
+  })
+
+  it('shows a host nothing about someone who booked a different host\'s event', async () => {
+    const { userClient, createTestUser } = await import('@/tests/helpers/db')
+    const otherHost = await seedEvent(db, { quantity: 5, pricePaise: 0, status: 'published' })
+    const outsider = await createTestUser(db)
+
+    const { data } = await userClient(otherHost.hostProfileId)
+      .from('profiles')
+      .select('id')
+      .eq('id', outsider)
+
+    expect(data ?? []).toHaveLength(0)
+
+    await db.auth.admin.deleteUser(outsider).catch(() => {})
+    await cleanupEvent(db, otherHost)
+  })
+
+  it('still refuses one attendee reading another', async () => {
+    // The policy is additive. It must widen the table to hosts and to nobody
+    // else — an attendee is not a host, and being on the same event grants
+    // nothing.
+    const { userClient, createTestUser } = await import('@/tests/helpers/db')
+    const nosy = await createTestUser(db)
+
+    const { data } = await userClient(nosy)
+      .from('profiles')
+      .select('id')
+      .eq('id', free.attendeeId)
+
+    expect(data ?? []).toHaveLength(0)
+
+    await db.auth.admin.deleteUser(nosy).catch(() => {})
+  })
+})
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -347,10 +404,50 @@ create unique index bookings_one_active_per_attendee
   where status in ('pending_approval', 'awaiting_payment', 'confirmed');
 ```
 
-- [ ] **Step 3b: Write the function migration**
+- [ ] **Step 3b: Write the profiles policy migration**
 
 ```sql
--- supabase/migrations/20260810000002_book_free_tickets.sql
+-- supabase/migrations/20260810000002_profiles_visible_to_hosts.sql
+
+-- A host may read the profile of someone booked on their own event.
+--
+-- profiles_select_own (20260808000003:61) is `id = auth.uid()` and was the
+-- entire SELECT surface on this table, which is correct for a stranger and
+-- wrong for the person whose supper club you are turning up to. A host has to
+-- be able to reach their guests -- WhatsApp is the only channel this product
+-- has -- and until this policy the phone number simply was not readable, with
+-- an embed returning null rather than erroring.
+--
+-- Scoped through owns_event(), the same helper bookings_select_for_host uses
+-- (20260808000003:125), so "my event" means one thing across the schema. It is
+-- SECURITY DEFINER precisely so evaluating a policy here does not re-enter the
+-- policies on events and hosts and recurse.
+--
+-- Deliberately not narrowed to confirmed bookings. A host who needs to tell
+-- someone the venue moved needs them whether or not that person has since
+-- cancelled, and the guest list narrows to confirmed in the query instead.
+--
+-- What this exposes: the whole profiles row -- id, phone, full_name,
+-- avatar_url, city, created_at -- because RLS filters rows and not columns. If
+-- a sensitive column is ever added to profiles, it needs a column-level grant
+-- the way hosts.upi_id has one (20260808000003:214), and this policy is the
+-- reason that will matter.
+
+create policy profiles_select_for_host on profiles
+  for select using (
+    exists (
+      select 1
+        from bookings b
+       where b.attendee_id = profiles.id
+         and owns_event(b.event_id)
+    )
+  );
+```
+
+- [ ] **Step 3c: Write the function migration**
+
+```sql
+-- supabase/migrations/20260810000003_book_free_tickets.sql
 
 -- Booking a free event, as one transaction.
 --
@@ -509,7 +606,7 @@ npm run db:types
 npx vitest run lib/bookings/book-free-tickets.test.ts
 ```
 
-Expected: PASS, 8 tests.
+Expected: PASS, 11 tests — 8 for the function, 3 for `profiles_select_for_host`.
 
 **If `booking := reserve_tickets(...)` fails to compile,** the composite assignment form is the problem, not the logic. Replace it with:
 
@@ -1146,10 +1243,12 @@ git commit
   - `interface MyBooking { id: string; reference: string; quantity: number; status: string; created_at: string; events: { slug: string; title: string; starts_at: string; city: string; venue_name: string | null } | null }`
   - `listMyBookings(): Promise<MyBooking[]>`
   - `getBookingByReference(reference: string): Promise<MyBooking | null>`
-  - `interface EventAttendee { id: string; reference: string; attendee_name: string | null; quantity: number; status: string; created_at: string }`
+  - `interface EventAttendee { id: string; reference: string; attendee_name: string | null; quantity: number; status: string; created_at: string; profiles: { phone: string } | null }`
   - `listEventAttendees(eventId: string): Promise<EventAttendee[]>`
 
-**No `profiles` embed.** An earlier draft of this plan selected `profiles(full_name, phone)`; `profiles_select_own` is `id = auth.uid()` and the embed returns `null` for every attendee without erroring, so the guest list would have rendered "Guest" for everyone while passing every row-counting test. The name comes off the booking instead.
+**Name and phone come from different places, on purpose.** The name is `bookings.attendee_name` — what the attendee typed at booking, which is what belongs on a door list and does not change retroactively when they later edit their profile. The phone is embedded from `profiles`, readable only because of the `profiles_select_for_host` policy added in Task 1 Step 3b.
+
+Note the embed is `profiles(phone)` and not `profiles(full_name, phone)`: `full_name` is null for every user who has ever existed, so selecting it would put a column on screen that is always blank and invite someone to render it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1232,10 +1331,12 @@ describe('listEventAttendees', () => {
 
     expect(attendees).toHaveLength(1)
     expect(attendees[0].quantity).toBe(2)
-    // The assertion this file exists for. Counting rows cannot tell a working
-    // guest list from one where every row reads "Guest" — which is exactly what
-    // the profiles embed this replaced would have produced.
+    // The two assertions this file exists for. Counting rows cannot tell a
+    // working guest list from one where every row reads "Guest" with a blank
+    // phone — which is exactly what this query produced before
+    // profiles_select_for_host existed, silently and with no error.
     expect(attendees[0].attendee_name).toBe('Priya')
+    expect(attendees[0].profiles?.phone).toMatch(/^\+/)
   })
 
   it('shows another host nothing', async () => {
@@ -1326,23 +1427,31 @@ export interface EventAttendee {
   quantity: number
   status: string
   created_at: string
+  profiles: { phone: string } | null
 }
 
 /**
- * Who is coming to one event. Empty unless the caller hosts it.
+ * Who is coming to one event, and how to reach them. Empty unless the caller
+ * hosts it.
  *
- * The name comes off the booking, not off `profiles`. `profiles_select_own` is
- * `id = auth.uid()`, so a host embedding `profiles(...)` here gets `null` on
- * every row and no error — a guest list that looks populated and identifies
- * nobody. `profiles.full_name` is also null for every user alive, since the
- * signup trigger writes only `id` and `phone`. `bookings.attendee_name` is what
- * the attendee typed, and it is the only name in the system.
+ * Name and phone come from different places and neither is an accident.
+ *
+ * The name is `bookings.attendee_name` — what the attendee typed when booking.
+ * `profiles.full_name` is null for every user who has ever existed, because the
+ * signup trigger writes `id` and `phone` and nothing else, so there is no other
+ * name to read. A booking-time name is also the right one for a door list: it
+ * does not change retroactively when someone edits their profile a month later.
+ *
+ * The phone is embedded from `profiles`, and only resolves because
+ * `profiles_select_for_host` exists. Before that policy this embed returned
+ * `null` on every row with no error, because RLS filters rather than refuses —
+ * which is the failure mode this whole query is written against.
  */
 export async function listEventAttendees(eventId: string): Promise<EventAttendee[]> {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('bookings')
-    .select('id, reference, attendee_name, quantity, status, created_at')
+    .select('id, reference, attendee_name, quantity, status, created_at, profiles(phone)')
     .eq('event_id', eventId)
     .eq('status', 'confirmed')
     .order('created_at', { ascending: true })
@@ -1974,15 +2083,26 @@ export default async function AttendeesPage(
           {attendees.map((a) => (
             <li key={a.id} className="flex items-center justify-between gap-4 py-3">
               <div className="min-w-0">
-                {/* What the attendee typed when booking. Nullable because
-                    Phase 3 and Phase 5 booking paths do not collect it, so a
-                    fallback is needed even though 2a always writes one.
-                    No phone number: a host gets the name a guest chose to give,
-                    and nothing they did not. */}
+                {/* The name the attendee typed when booking. Nullable because
+                    the Phase 3 and Phase 5 booking paths will not collect one,
+                    so the fallback is needed even though 2a always writes it. */}
                 <p className="truncate font-medium">{a.attendee_name ?? 'Guest'}</p>
                 <p className="font-mono text-[12px] text-neutral-600">
                   {a.quantity} {a.quantity === 1 ? 'seat' : 'seats'} · {a.reference}
                 </p>
+                {/* A tel: link, because the host is on a phone and the whole
+                    point of having this is contacting the guest. Null only if
+                    profiles_select_for_host stopped matching, which would mean
+                    the policy broke — so it renders nothing rather than an
+                    empty link that looks tappable. */}
+                {a.profiles?.phone && (
+                  <a
+                    href={`tel:${a.profiles.phone}`}
+                    className="font-mono text-[12px] underline"
+                  >
+                    {a.profiles.phone}
+                  </a>
+                )}
               </div>
               <CancelAttendeeButton bookingId={a.id} eventId={id} />
             </li>

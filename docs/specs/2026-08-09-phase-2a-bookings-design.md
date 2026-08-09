@@ -218,9 +218,25 @@ row-counting test passed. `profiles.full_name` is also null for every user who
 has ever existed: `handle_new_user()` writes `id` and `phone` and nothing else
 (`20260808000001_core_schema.sql:64`).
 
-Resolved by adding `bookings.attendee_name`, filled from a required field in the
-Book panel. The host reads the name the guest chose to give; no phone number
-moves, and `profiles` stays owner-only. This also gives Phase 2b's unwritten
+Resolved in two parts, because the name and the phone number are different
+problems.
+
+A new policy, `profiles_select_for_host`, makes an attendee's `profiles` row
+readable to the host of an event they booked, scoped through the same
+`owns_event()` helper `bookings_select_for_host` already uses. A host has to be
+able to reach their guests and WhatsApp is the only channel this product has.
+The policy is additive and narrow: an attendee still cannot read another
+attendee, and a host still sees nothing about anyone who has not booked with
+them. It is worth being explicit that this widens `profiles` for the first time
+— RLS filters rows and not columns, so a host now sees the whole row. Nothing
+sensitive lives there today; the day something does, it needs a column-level
+grant the way `hosts.upi_id` has one.
+
+That supplies the phone and not a name. `full_name` is null for every user and
+nothing in this phase writes it, so the attendee types a name when booking and
+it is stored on the booking as `attendee_name`. A booking-time name is the right
+one for a door list anyway: it does not change retroactively when someone edits
+their profile a month later. This also gives Phase 2b's unwritten
 `tickets.attendee_name` its first source.
 
 **Nothing bounded how often one person could book.** `max_per_order` bounds a
