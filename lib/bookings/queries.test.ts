@@ -53,6 +53,51 @@ describe('listMyBookings', () => {
   })
 })
 
+describe('listMyBookings, for a host who is also an attendee', () => {
+  // The case every other test in this file misses, because every stranger here
+  // hosts nothing and every host has booked nothing.
+  //
+  // RLS ORs the two SELECT policies on bookings (20260808000003:126-130):
+  // bookings_select_own (attendee_id = auth.uid()) OR bookings_select_for_host
+  // (owns_event(event_id)). So for someone who both hosts an event and books
+  // things, an unfiltered read of `bookings` returns their guests' rows
+  // alongside their own — other people's names, seat counts and references,
+  // listed on the page that says "your bookings". Being visible to a host is
+  // not the same as being theirs, and RLS cannot tell the two apart here.
+  let own: SeededEvent
+  let myReference: string
+
+  beforeAll(async () => {
+    own = await seedEvent(db, { quantity: 10, pricePaise: 0, status: 'published' })
+
+    // The host books a seat on their own event — an organiser attending their
+    // own supper club, which is ordinary and not an edge case.
+    const mine = await bookFreeTickets(callerOf(own.hostProfileId), own.ticketTypeId, 1, 'Organiser')
+    if (!mine.ok) throw new Error(`setup host booking failed: ${mine.error}`)
+    myReference = mine.reference
+
+    // And a guest books the same event. A different person, because a partial
+    // unique index allows one active booking per attendee per event.
+    const theirs = await bookFreeTickets(callerOf(own.attendeeId), own.ticketTypeId, 3, 'Guest')
+    if (!theirs.ok) throw new Error(`setup guest booking failed: ${theirs.error}`)
+  })
+
+  afterAll(async () => {
+    await cleanupEvent(db, own)
+  })
+
+  it('lists only their own booking, not their guests\'', async () => {
+    signInAs(own.hostProfileId)
+    const bookings = await listMyBookings()
+
+    expect(bookings).toHaveLength(1)
+    expect(bookings[0].reference).toBe(myReference)
+    // Named explicitly: a length check alone would still pass if the one row
+    // returned were the guest's rather than the host's.
+    expect(bookings.map((b) => b.reference)).not.toContain('Guest')
+  })
+})
+
 describe('getBookingByReference', () => {
   it('finds the attendee\'s own booking', async () => {
     signInAs(event.attendeeId)
@@ -64,6 +109,13 @@ describe('getBookingByReference', () => {
     // The reference is short and quotable, so it will be overheard. It must not
     // be a password.
     signInAs(strangerId)
+    expect(await getBookingByReference(reference)).toBeNull()
+  })
+
+  it('returns null when signed out', async () => {
+    // anon holds no SELECT grant on bookings at all, so without the signed-in
+    // check this is a thrown 42501 rather than "no such booking".
+    signInAs(null)
     expect(await getBookingByReference(reference)).toBeNull()
   })
 })
@@ -94,6 +146,21 @@ describe('listEventAttendees', () => {
 
   it('shows another host nothing', async () => {
     signInAs(strangerId)
+    expect(await listEventAttendees(event.eventId)).toHaveLength(0)
+  })
+
+  it('shows an attendee of the event nothing', async () => {
+    // The same OR of policies that leaks into listMyBookings points the other
+    // way here: bookings_select_own matches this caller's own row on this
+    // event, so an unfiltered read hands a guest a one-row "guest list" —
+    // themselves — on an event they do not host. "Empty unless the caller hosts
+    // it" has to mean hosts, not merely "is on".
+    signInAs(event.attendeeId)
+    expect(await listEventAttendees(event.eventId)).toHaveLength(0)
+  })
+
+  it('shows nothing when signed out', async () => {
+    signInAs(null)
     expect(await listEventAttendees(event.eventId)).toHaveLength(0)
   })
 })
