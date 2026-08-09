@@ -18,6 +18,23 @@ const eslintConfig = defineConfig([
     // Generated from the database schema by `npm run db:types`.
     "lib/supabase/types.ts",
   ]),
+  // The service role bypasses RLS entirely. Phase 2 needs it, because bookings
+  // and tickets are deliberately not writable by `authenticated` — but it needs
+  // it in exactly one place, so that "did we check authorisation here?" has one
+  // file as its answer rather than a grep.
+  {
+    files: ["app/**/*.{ts,tsx}", "lib/**/*.{ts,tsx}"],
+    ignores: ["lib/bookings/service.ts", "lib/supabase/admin.ts"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        paths: [{
+          name: "@/lib/supabase/admin",
+          message:
+            "Only lib/bookings/service.ts may use the service role. Use @/lib/supabase/server, or add the write to that module.",
+        }],
+      }],
+    },
+  },
 ]);
 
 export default eslintConfig;
