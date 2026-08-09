@@ -52,11 +52,33 @@ export default async function FeedPage(props: PageProps<'/'>) {
     // reintroduce the auto-margin trap that once pinned every page to its own
     // max-width on a phone.
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
-      <div className="mb-6 flex items-center justify-between gap-4">
+      {/* `flex-wrap` because this row now carries two links, not one. The title
+          is `text-2xl` and both links together run past a 360px Android — the
+          width half this product is opened at. Without wrapping the h1 is the
+          only item that can give (both links are shrink-0), so it collapses to
+          its min-content width and "What is on" breaks across two lines beside
+          the links. Wrapping drops the pair onto its own line and leaves the
+          title whole. Nothing is restyled to make room: both links are the same
+          `text-sm underline` the single one was. */}
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">What is on</h1>
-        <Link href="/host" className="shrink-0 text-sm underline">
-          Host an event
-        </Link>
+        {/* The two links travel as one flex item so they wrap together rather
+            than one of them stranding itself on a line of its own. `gap-4`
+            matches the row's own spacing, so the three items read as evenly
+            spaced whether the row is on one line or two. */}
+        <div className="flex shrink-0 items-center gap-4">
+          {/* Shown to signed-out visitors too, exactly as "Host an event" is.
+              requireUser() on /bookings sends them to /login?next=/bookings and
+              safeNextPath already accepts that path, so the return trip works
+              with no code here. Hiding it would need a session read on the one
+              page that currently needs none. */}
+          <Link href="/bookings" className="text-sm underline">
+            Your bookings
+          </Link>
+          <Link href="/host" className="text-sm underline">
+            Host an event
+          </Link>
+        </div>
       </div>
 
       {/* Rendered whether or not a filter is active, so changing city costs one

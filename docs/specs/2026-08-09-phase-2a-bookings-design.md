@@ -120,7 +120,7 @@ One new function:
 
 ```sql
 book_free_tickets(p_ticket_type_id uuid, p_attendee_id uuid, p_quantity integer,
-                  p_attendee_note text default null)
+                  p_attendee_name text, p_attendee_note text default null)
   returns bookings
 ```
 
@@ -131,6 +131,14 @@ book_free_tickets(p_ticket_type_id uuid, p_attendee_id uuid, p_quantity integer,
 Body: guard that the ticket type's `price_paise = 0` and its event's
 `requires_approval` is false, raising a distinct SQLSTATE for each, then
 `reserve_tickets(...)` followed by `confirm_booking(...)`.
+
+`p_attendee_name` sits fourth and not last because it is required and
+`p_attendee_note` is not, and a defaulted parameter cannot precede one without a
+default. It is written onto the booking row between the two Phase 0 calls, in
+the same transaction, rather than passed down: `reserve_tickets` has no name
+parameter and should not grow one, being the shared path for every booking kind
+and only this one asking for a name. Why there is a name at all is in the audit
+section below — this signature was written before that audit, and omitted it.
 
 Nested plpgsql calls run inside the caller's transaction, so reserve and confirm
 are atomic without either Phase 0 function being modified — the 50-concurrent-
@@ -172,12 +180,24 @@ remain", "sales have closed"), so those pass through rather than being remapped.
 | Route | Contents |
 |---|---|
 | `/e/[slug]` | Quantity picker (1..`max_per_order`) and Book. Signed out → `/login?next=/e/[slug]`, which Phase 1 already built. Sold out → disabled with the count |
-| `/bookings/[reference]` | Confirmation: reference, event, date, venue, seat count, cancel. Readable by the attendee only. **This is the pilot's ticket** until 2b adds a QR |
+| `/bookings/[reference]` | Confirmation: reference, event, date, venue, seat count, and links to `/bookings` and the event page. **This is the pilot's ticket** until 2b adds a QR |
 | `/bookings` | The signed-in attendee's bookings, newest first, each cancellable |
 | `/host/events/[id]/attendees` | Guest list for one event: name, seats, booked-at, total seats taken, cancel any |
 
 The confirmation page is keyed on `reference`, not `id`, because it is the
 string a host reads aloud at the door and the one an attendee screenshots.
+
+Two things this table claimed of `/bookings/[reference]` are not true of the page
+that shipped. It has **no cancel control**: `app/bookings/[reference]/page.tsx` ends in
+two links and nothing else, and cancelling lives on `/bookings`, where the row
+being cancelled sits beside the others it is being chosen against. And it is
+**not readable by the attendee only** — `getBookingByReference`
+(`lib/bookings/queries.ts:114-130`) is scoped by RLS alone and deliberately
+resolves for the host of the event as well, because a host typing a code off a
+phone at the door has to be able to find the guest's booking. That widening is
+the point of the function, not an oversight in it, and is why it must never be
+used to decide that a booking belongs to the caller; `listMyBookings` is the one
+that filters to the caller, and the page's own comments say so.
 
 ## Testing
 
@@ -198,8 +218,18 @@ string a host reads aloud at the door and the one an attendee screenshots.
 
 ## Migration
 
-`supabase/migrations/20260810000001_book_free_tickets.sql`. `npm run db:types`
-after; `lib/supabase/types.ts` is committed.
+Three migrations shipped, not the one this section named. The audit below turned
+one file into three, and `20260810000001` is not the one this spec expected it
+to be — anyone grepping for that number by the name written here will find the
+wrong file:
+
+- `supabase/migrations/20260810000001_bookings_attendee_name.sql` — the
+  `attendee_name` column and the one-active-booking partial unique index
+- `supabase/migrations/20260810000002_profiles_visible_to_hosts.sql` — the
+  `profiles_select_for_host` policy
+- `supabase/migrations/20260810000003_book_free_tickets.sql` — the function
+
+`npm run db:types` after; `lib/supabase/types.ts` is committed.
 
 ## Amended after the pre-implementation audit
 
@@ -260,8 +290,26 @@ by typing the URL. Resolved by a link in the feed header beside "Host an event".
 One assumption the audit confirmed rather than corrected: every page here is
 dynamically rendered, because `lib/supabase/server.ts` awaits `cookies()` on
 every query path. The seats-left count is never stale on a fresh request.
-`revalidatePath` is still called after a booking, for Next's client Router Cache
-on back navigation.
+
+The reason this section then gave for calling `revalidatePath` anyway — Next's
+client Router Cache serving a stale page on back navigation — was measured false
+during Task 9. `staleTimes.dynamic` has defaulted to 0, "not cached", since Next
+15, and `next.config.ts` sets no `experimental.staleTimes`, so dynamic segments
+are not held client-side at all; and by the paragraph above, every segment here
+is dynamic. Measured rather than reasoned about: with the calls disabled,
+booking and then pressing Back still showed the moved count.
+
+The calls are kept, for the two reasons that are true. The RSC payload for a
+revalidated path genuinely is stale after a booking, even though nothing
+currently painted moves — the feed selects `reserved_count` in `FEED_COLUMNS`
+and never paints it, `app/_components/event-card.tsx` rendering date, title,
+venue and price and no count — so `revalidatePath('/')` corrects a payload
+rather than a number, and is what makes a "seats left" line safe to add to the
+card later. And they are the only thing standing between a raised `staleTimes`,
+or a route that stops being dynamic, and a seat count that lies on Back. The
+worked version of this reasoning is the comment at `app/e/[slug]/actions.ts`,
+which also names the wrong fix (`export const revalidate`) so the next reader
+does not reach for it; keep the two in step.
 
 ## Notes for 2b
 

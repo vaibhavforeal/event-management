@@ -3,7 +3,11 @@
 -- Posture: enable RLS on every table, then grant back only what a browser
 -- legitimately needs. Anything not listed here is denied to anon and
 -- authenticated. The service role bypasses all of this, which is why
--- lib/supabase/admin.ts is restricted to webhooks, cron and Server Actions.
+-- lib/supabase/admin.ts is restricted to a single module, lib/bookings/service.ts
+-- -- enforced by a no-restricted-imports rule in eslint.config.mjs covering
+-- app/**, lib/** and proxy.ts. Anything that needs a write those grants withhold
+-- adds it to that module, where the authorisation check RLS is not making sits
+-- next to it, rather than reaching for the service role in a new file.
 --
 -- Writes to bookings, tickets and payments are intentionally NOT grantable to
 -- clients: they go through the SECURITY DEFINER functions instead, so inventory

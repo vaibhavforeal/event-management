@@ -63,3 +63,32 @@ export function formatIst(date: Date): string {
 export function formatIstDateOnly(date: Date): string {
   return dateFormatter.format(date)
 }
+
+/**
+ * Whether an event's start time is behind us. Mirrors the EH013 guard in
+ * `book_free_tickets`, which is the authority; this only decides whether the
+ * page offers a control the database would refuse.
+ *
+ * A function rather than an inline `Date.now()` at the one call site, for two
+ * reasons. The clock is injectable, so the boundary is testable without
+ * freezing time globally — the same shape `validateForPublish` uses. And
+ * `react-hooks/purity` rejects a `Date.now()` in a component body, correctly in
+ * general: a re-render would silently change the answer. The public event page
+ * is an async Server Component that renders once per request, so reading the
+ * clock there is exactly right, but the rule cannot see the difference and this
+ * is a better answer to it than a suppression comment.
+ *
+ * Fails closed on BOTH sides. `new Date('nonsense').getTime()` is NaN and every
+ * comparison against NaN is false, so a naive `<=` would call an unreadable
+ * time "not started" and offer a Book button for it. That applies to an
+ * `Invalid Date` passed as `now` just as much as to `startsAt` — one is
+ * reachable only from a caller's mistake rather than from data, but "closed" is
+ * not a claim worth making about half a comparison. `starts_at` is a NOT NULL
+ * timestamptz today, so neither case arises in this app; the safe direction is
+ * a missing button rather than a booking against a time nobody can read.
+ */
+export function hasStarted(startsAt: string, now: Date = new Date()): boolean {
+  const time = new Date(startsAt).getTime()
+  const nowTime = now.getTime()
+  return Number.isNaN(time) || Number.isNaN(nowTime) || time <= nowTime
+}

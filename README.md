@@ -6,6 +6,11 @@ supper clubs, board-game nights, workshops, mixers, pop-ups.
 A host publishes an event in under three minutes, gets a link they can forward on
 WhatsApp, and money, attendee list and door check-in are handled.
 
+Working today: phone-OTP sign-in, a host creating, editing and publishing an event,
+the public event page, an attendee booking and cancelling a seat on a **free** event,
+and the host's guest list with a number they can ring. Paid bookings, QR tickets and
+the door scanner are not built yet.
+
 Design and rationale: [`docs/specs/2026-08-08-event-platform-v1-design.md`](docs/specs/2026-08-08-event-platform-v1-design.md).
 
 ## Stack

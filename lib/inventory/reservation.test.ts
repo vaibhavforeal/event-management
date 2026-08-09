@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   adminClient,
   cleanupEvent,
+  createTestUser,
   seedEvent,
   type SeededEvent,
 } from '@/tests/helpers/db'
@@ -28,6 +29,28 @@ async function reserve(seed: SeededEvent, quantity = 1, overrides: Record<string
     p_commission_paise: 0,
     ...overrides,
   })
+}
+
+/**
+ * A crowd of distinct buyers.
+ *
+ * The concurrency tests below contend for the same seats, and contention is
+ * only meaningful between *different* people: bookings_one_active_per_attendee
+ * (20260810000001) permits one active booking per attendee per event, so
+ * reusing a single seeded attendee id would cap every one of them at a single
+ * success and stop them proving anything about the inventory lock.
+ */
+async function distinctBuyers(n: number): Promise<string[]> {
+  return Promise.all(Array.from({ length: n }, () => createTestUser(db)))
+}
+
+async function deleteBuyers(ids: string[]): Promise<void> {
+  // Order matters. bookings.attendee_id is ON DELETE RESTRICT, so a surviving
+  // booking blocks the auth.users -> profiles cascade; delete the user first
+  // and the failure is swallowed below, leaking a user and a profile per buyer
+  // on every run.
+  await db.from('bookings').delete().in('attendee_id', ids)
+  await Promise.all(ids.map((id) => db.auth.admin.deleteUser(id).catch(() => {})))
 }
 
 async function reservedCount(ticketTypeId: string): Promise<number> {
@@ -136,45 +159,51 @@ describe('reserve_tickets', () => {
     const CONTENDERS = 50
     const SEATS = 10
 
-    const results = await Promise.all(
-      Array.from({ length: CONTENDERS }, () => reserve(seed, 1)),
-    )
+    const buyers = await distinctBuyers(CONTENDERS)
+    try {
+      const results = await Promise.all(
+        buyers.map((buyer) => reserve(seed, 1, { p_attendee_id: buyer })),
+      )
 
-    const succeeded = results.filter((r) => r.error === null)
-    const failed = results.filter((r) => r.error !== null)
+      const succeeded = results.filter((r) => r.error === null)
+      const failed = results.filter((r) => r.error !== null)
 
-    expect(succeeded).toHaveLength(SEATS)
-    expect(failed).toHaveLength(CONTENDERS - SEATS)
+      expect(succeeded).toHaveLength(SEATS)
+      expect(failed).toHaveLength(CONTENDERS - SEATS)
 
-    // Every rejection must be an out-of-stock rejection, not a crash or a
-    // deadlock. If this ever trips, the lock ordering has regressed.
-    for (const f of failed) {
-      expect(f.error!.message).toMatch(/seats remain/)
+      // Every rejection must be an out-of-stock rejection, not a crash or a
+      // deadlock. If this ever trips, the lock ordering has regressed.
+      for (const f of failed) {
+        expect(f.error!.message).toMatch(/seats remain/)
+      }
+
+      expect(await reservedCount(seed.ticketTypeId)).toBe(SEATS)
+
+      const { count } = await db
+        .from('bookings')
+        .select('*', { count: 'exact', head: true })
+        .eq('ticket_type_id', seed.ticketTypeId)
+        .eq('status', 'awaiting_payment')
+
+      expect(count).toBe(SEATS)
+
+      // Every successful buyer got a distinct booking reference.
+      const references = succeeded.map((r) => r.data.reference)
+      expect(new Set(references).size).toBe(SEATS)
+    } finally {
+      await deleteBuyers(buyers)
     }
-
-    expect(await reservedCount(seed.ticketTypeId)).toBe(SEATS)
-
-    const { count } = await db
-      .from('bookings')
-      .select('*', { count: 'exact', head: true })
-      .eq('ticket_type_id', seed.ticketTypeId)
-      .eq('status', 'awaiting_payment')
-
-    expect(count).toBe(SEATS)
-
-    // Every successful buyer got a distinct booking reference.
-    const references = succeeded.map((r) => r.data.reference)
-    expect(new Set(references).size).toBe(SEATS)
   }, 60_000)
 
   it('cannot be driven past capacity by concurrent multi-seat orders', async () => {
     const big = await seedEvent(db, { quantity: 12, maxPerOrder: 5 })
+    const buyers = await distinctBuyers(20)
     try {
       const results = await Promise.all(
-        Array.from({ length: 20 }, () =>
+        buyers.map((buyer) =>
           db.rpc('reserve_tickets', {
             p_ticket_type_id: big.ticketTypeId,
-            p_attendee_id: big.attendeeId,
+            p_attendee_id: buyer,
             p_quantity: 5,
           }),
         ),
@@ -188,6 +217,7 @@ describe('reserve_tickets', () => {
       expect(seatsSold).toBe(10)
       expect(await reservedCount(big.ticketTypeId)).toBe(seatsSold)
     } finally {
+      await deleteBuyers(buyers)
       await cleanupEvent(db, big)
     }
   }, 60_000)
@@ -322,14 +352,17 @@ describe('confirm and cancel', () => {
 describe('approval flow', () => {
   it('does not consume inventory until the host approves', async () => {
     const curated = await seedEvent(db, { quantity: 2, requiresApproval: true })
+    const buyers = await distinctBuyers(3)
     try {
       // Three people request two seats. All requests are accepted; that is the
-      // point of curation.
+      // point of curation. 'pending_approval' is inside the
+      // bookings_one_active_per_attendee predicate, so these have to be three
+      // actual people for all three to be accepted.
       const requests = await Promise.all(
-        Array.from({ length: 3 }, () =>
+        buyers.map((buyer) =>
           db.rpc('request_booking', {
             p_ticket_type_id: curated.ticketTypeId,
-            p_attendee_id: curated.attendeeId,
+            p_attendee_id: buyer,
             p_quantity: 1,
           }),
         ),
@@ -359,6 +392,7 @@ describe('approval flow', () => {
       expect(overError).not.toBeNull()
       expect(overError!.message).toContain('cannot approve')
     } finally {
+      await deleteBuyers(buyers)
       await cleanupEvent(db, curated)
     }
   })

@@ -2,9 +2,10 @@ import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { getPublishedEventBySlug } from '@/lib/events/queries'
-import { formatIst, formatIstDateOnly } from '@/lib/events/datetime'
+import { formatIst, formatIstDateOnly, hasStarted } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import { clientEnv } from '@/lib/env'
+import { BookPanel } from './book-panel'
 
 /** How much of the description WhatsApp gets. Its card shows rather less. */
 const OG_DESCRIPTION_LIMIT = 200
@@ -168,6 +169,32 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   const startsAt = new Date(event.starts_at)
   const seatsLabel = soldOut ? 'Sold out' : `${remaining} of ${ticket?.quantity ?? 0} seats left`
 
+  // Phase 2a books free, no-approval events only. Everything else keeps the
+  // inert control Phase 1 shipped, whose label is "Booking opens soon" — which
+  // is deliberately vaguer than the reason. A priced event, an approval-gated
+  // one and an event with no ticket type at all are three different problems,
+  // and none of them is the visitor's to solve; "not yet" is the honest summary
+  // of a phase that can neither take money nor run an approval queue. Only the
+  // two states the visitor can act on get their own sentence, below.
+  //
+  // `started` mirrors the EH013 guard in book_free_tickets, inclusive of the
+  // start instant. It is deliberately not a "finished" state: ends_at is
+  // nullable and most events will not set one, so there is nothing to compute
+  // that from, and the rule being mirrored is starts_at <= now() regardless.
+  // The feed already hides past events, but this page is reached by a WhatsApp
+  // link that outlives the event, so it is the surface where a started event is
+  // actually met.
+  //
+  // EH012 — the same attendee booking twice — is deliberately NOT guarded here.
+  // The page cannot know without querying this visitor's bookings, which is a
+  // round trip on every render of the app's most-shared public page, to
+  // pre-empt a case the database already refuses with a sentence the panel
+  // prints. Offering the control and losing that race is the cheaper mistake.
+  const started = hasStarted(event.starts_at)
+  const bookable =
+    !!ticket && !soldOut && !started && ticket.price_paise === 0 && !event.requires_approval
+  const maxSeats = ticket ? Math.max(1, Math.min(remaining, ticket.max_per_order ?? 10)) : 1
+
   return (
     /**
      * `w-full` alongside `mx-auto max-w-*` is the standing rule for every <main>
@@ -232,8 +259,10 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           <p className="font-mono text-[15px]">{formatIst(startsAt)}</p>
           {/* Shown because it answers "can I make it?", which is the question
               between reading the page and booking. requires_approval and
-              allows_cash are on the row too but stay unrendered: they change how
-              booking works, and booking does not exist until Phase 2. */}
+              allows_cash are on the row too and stay unrendered: the first is
+              read by `bookable` above rather than printed, and the second only
+              matters once there is a price to pay, which this phase has not
+              reached. */}
           {event.ends_at && (
             <p className="font-mono text-[13px]" style={{ color: SLATE }}>
               Ends {formatIst(new Date(event.ends_at))}
@@ -319,31 +348,44 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
         )}
       </div>
 
-      {/* Booking is Phase 2. The control is present but inert, so the page reads
-          as finished rather than broken. The safe-area padding keeps the price
-          clear of the Android gesture bar. */}
+      {/* The safe-area padding keeps the price clear of the Android gesture bar. */}
       <div
         className="fixed inset-x-0 bottom-0 border-t px-5 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur"
         style={{ borderColor: MIST, backgroundColor: 'rgba(255,255,255,0.94)' }}
       >
-        <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="font-mono text-[19px] leading-tight font-semibold">
-              {ticket ? (ticket.price_paise === 0 ? 'Free' : formatPaise(ticket.price_paise)) : '—'}
-            </p>
-            <p className="font-mono text-[12px]" style={{ color: SLATE }}>
-              {seatsLabel}
-            </p>
+        {bookable && ticket ? (
+          <BookPanel
+            ticketTypeId={ticket.id}
+            slug={slug}
+            maxSeats={maxSeats}
+            priceLabel="Free"
+            seatsLabel={seatsLabel}
+          />
+        ) : (
+          <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="font-mono text-[19px] leading-tight font-semibold">
+                {ticket ? (ticket.price_paise === 0 ? 'Free' : formatPaise(ticket.price_paise)) : '—'}
+              </p>
+              <p className="font-mono text-[12px]" style={{ color: SLATE }}>
+                {seatsLabel}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled
+              className="shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
+              style={{ borderColor: MIST, backgroundColor: '#F2EFE9', color: SLATE }}
+            >
+              {/* "already started", not "finished": a link forwarded to a
+                  WhatsApp group is opened twenty minutes into a three-hour
+                  supper club as a matter of course, and telling that visitor it
+                  is over is a lie. This wording is true at minute one and at
+                  hour three alike, and is the same thing EH013 says. */}
+              {started ? 'This event has already started' : soldOut ? 'Sold out' : 'Booking opens soon'}
+            </button>
           </div>
-          <button
-            type="button"
-            disabled
-            className="shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
-            style={{ borderColor: MIST, backgroundColor: '#F2EFE9', color: SLATE }}
-          >
-            Booking opens soon
-          </button>
-        </div>
+        )}
       </div>
     </main>
   )

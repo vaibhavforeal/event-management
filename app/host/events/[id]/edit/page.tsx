@@ -42,6 +42,12 @@ export default async function EditEventPage(props: PageProps<'/host/events/[id]/
           {event.status === 'published' ? 'Published' : 'Draft'}
           {' · '}
           <Link href={`/e/${event.slug}`} className="underline">/e/{event.slug}</Link>
+          {' · '}
+          {/* On this line rather than beside the publish panel, because that
+              panel is about the event's visibility and this is not. It is the
+              same shape of thing as the public link next to it: somewhere else
+              to go about this event. */}
+          <Link href={`/host/events/${event.id}/attendees`} className="underline">Guest list</Link>
         </p>
       </div>
 

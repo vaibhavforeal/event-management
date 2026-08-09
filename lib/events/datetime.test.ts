@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { formatIst, formatIstDateOnly, istLocalToUtc, utcToIstLocal } from '@/lib/events/datetime'
+import {
+  formatIst,
+  formatIstDateOnly,
+  hasStarted,
+  istLocalToUtc,
+  utcToIstLocal,
+} from '@/lib/events/datetime'
 
 describe('istLocalToUtc', () => {
   it('subtracts the 5:30 offset', () => {
@@ -52,5 +58,41 @@ describe('formatIstDateOnly', () => {
     // about the date, so a formatter that lost its timeZone pin renders
     // "Sat, 15 Aug" here — a whole day early on the listing page.
     expect(formatIstDateOnly(new Date('2026-08-15T20:00:00.000Z'))).toBe('Sun, 16 Aug')
+  })
+})
+
+describe('hasStarted', () => {
+  const now = new Date('2026-08-15T14:00:00.000Z')
+
+  it('is false for an event still ahead of the clock', () => {
+    expect(hasStarted('2026-08-15T14:00:00.001Z', now)).toBe(false)
+  })
+
+  it('is true once the start time has arrived', () => {
+    // Inclusive, matching book_free_tickets: an event that starts exactly now is
+    // not one a stranger should still be joining.
+    expect(hasStarted('2026-08-15T14:00:00.000Z', now)).toBe(true)
+    expect(hasStarted('2026-08-15T13:59:59.999Z', now)).toBe(true)
+  })
+
+  it('treats an unreadable start time as started', () => {
+    // Fails closed. `NaN <= anything` is false, so a naive comparison would call
+    // this "not started" and offer a Book button for an event whose date nobody
+    // can read.
+    expect(hasStarted('nonsense', now)).toBe(true)
+    expect(hasStarted('', now)).toBe(true)
+  })
+
+  it('treats an unreadable clock as started too', () => {
+    // The other side of the same comparison. `anything <= NaN` is also false, so
+    // an Invalid Date handed in as `now` would open the control rather than
+    // close it — the opposite of what the branch above is for.
+    expect(hasStarted('2026-08-15T14:00:00.001Z', new Date('nonsense'))).toBe(true)
+    expect(hasStarted('2026-08-15T13:00:00.000Z', new Date(NaN))).toBe(true)
+  })
+
+  it('reads the real clock when none is given', () => {
+    expect(hasStarted(new Date(Date.now() - 60_000).toISOString())).toBe(true)
+    expect(hasStarted(new Date(Date.now() + 60_000).toISOString())).toBe(false)
   })
 })
