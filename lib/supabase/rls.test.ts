@@ -28,6 +28,11 @@ beforeAll(async () => {
   published = await seedEvent(db, { quantity: 10, status: 'published' })
   draft = await seedEvent(db, { quantity: 10, status: 'draft' })
   outsiderId = await createTestUser(db)
+
+  // Non-zero on purpose. The column-grant test asserts the counter is unchanged
+  // after a refused write, and it tries to write 0 — so seeding 0 would make
+  // that assertion hold just as well if the write had succeeded.
+  await db.from('ticket_types').update({ reserved_count: 3 }).eq('id', draft.ticketTypeId)
 })
 
 afterAll(async () => {
@@ -106,6 +111,47 @@ describe('events', () => {
       .eq('id', published.eventId)
       .single()
     expect(after!.title).toBe('Test Supper Club')
+  })
+})
+
+describe('ticket_types columns', () => {
+  it('lets a host reprice and resize their own ticket type', async () => {
+    // The grant is narrow, not absent. If this breaks, the host edit form has
+    // lost the ability to save seats and price at all.
+    const { error } = await userClient(draft.hostProfileId)
+      .from('ticket_types')
+      .update({ price_paise: 60_000, quantity: 25 })
+      .eq('id', draft.ticketTypeId)
+
+    expect(error).toBeNull()
+
+    await db
+      .from('ticket_types')
+      .update({ price_paise: 50_000, quantity: 10 })
+      .eq('id', draft.ticketTypeId)
+  })
+
+  it('refuses to let a host write reserved_count on their own ticket type', async () => {
+    // RLS filters rows, not columns. ticket_types_write_own says this row is
+    // the host's to write, and on a table-level grant that included every
+    // column — which is what 20260808000003 gave and 20260809000002 narrowed.
+    //
+    // Zeroing this counter is a self-service oversell: every seats-remaining
+    // number is derived from it, and ticket_types_no_oversell compares it to
+    // quantity, so the CHECK has nothing to say once the counter is a lie.
+    const { error } = await userClient(draft.hostProfileId)
+      .from('ticket_types')
+      .update({ reserved_count: 0 })
+      .eq('id', draft.ticketTypeId)
+
+    expect(error?.code, 'a host must not be able to rewrite their own inventory').toBe('42501')
+
+    const { data } = await db
+      .from('ticket_types')
+      .select('reserved_count')
+      .eq('id', draft.ticketTypeId)
+      .single()
+    expect(data!.reserved_count).toBe(3) // the value seeded below, untouched
   })
 })
 
