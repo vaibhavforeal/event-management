@@ -12,7 +12,7 @@ function SubmitButton({ children }: { children: React.ReactNode }) {
     <button
       type="submit"
       disabled={pending}
-      className="w-full rounded-lg bg-neutral-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+      className="bg-ink text-paper w-full rounded-lg px-4 py-3 text-sm font-medium transition hover:bg-ink/85 disabled:opacity-50"
     >
       {pending ? 'Just a moment…' : children}
     </button>
@@ -49,9 +49,9 @@ export function LoginForm({ next }: { next: string }) {
             autoFocus
             placeholder="98765 43210"
             defaultValue={state.phone ?? ''}
-            className="rounded-lg border border-neutral-300 px-4 py-3 text-base outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:border-white"
+            className="border-line focus:border-ink rounded-lg border px-4 py-3 text-base outline-none"
           />
-          <span className="text-xs text-neutral-500">
+          <span className="text-muted text-xs">
             We&apos;ll send a code on WhatsApp.
           </span>
         </label>
@@ -68,14 +68,14 @@ export function LoginForm({ next }: { next: string }) {
             required
             autoFocus
             placeholder="123456"
-            className="rounded-lg border border-neutral-300 px-4 py-3 text-center text-2xl tracking-[0.4em] outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:border-white"
+            className="border-line focus:border-ink rounded-lg border px-4 py-3 text-center text-2xl tracking-[0.4em] outline-none"
           />
-          <span className="text-xs text-neutral-500">Sent to {state.phone}</span>
+          <span className="text-muted text-xs">Sent to {state.phone}</span>
         </label>
       )}
 
       {state.error ? (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-sm text-red-600">
           {state.error}
         </p>
       ) : null}

@@ -15,20 +15,17 @@ import Link from 'next/link'
  * shaped like "that booking is not yours" would confirm to a stranger that the
  * code they guessed is real.
  *
- * Colours are inherited rather than pinned, unlike app/e/[slug]/not-found.tsx.
- * That page pins because the page it stands in for pins; this one matches its
- * own sibling app/bookings/[reference]/page.tsx, which leaves the body colours
- * from globals.css alone. Both booking pages want the same app-wide dark-mode
- * pass, and they should still want it together after this file lands.
+ * Colours come from the globals.css tokens, like every page since the palette
+ * went app-wide and light-only.
  */
 export default function BookingNotFound() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col items-center gap-4 px-5 py-24 text-center">
-      <p className="font-mono text-[13px] tracking-wide text-neutral-500">Not found</p>
+      <p className="text-muted font-mono text-[13px] tracking-wide">Not found</p>
 
       <h1 className="text-2xl font-semibold">We cannot find that booking</h1>
 
-      <p className="text-neutral-500">
+      <p className="text-muted">
         Check the reference for a typo — it is eight characters — or open it from your list of
         bookings instead.
       </p>

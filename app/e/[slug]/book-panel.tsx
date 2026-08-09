@@ -3,8 +3,10 @@
 import { useActionState } from 'react'
 import { bookEvent, type BookState } from './actions'
 
-const MIST = '#E7E2D8'
-const SLATE = '#6B6560'
+// Colours come from the globals.css tokens. This file used to carry its own
+// MIST/SLATE literals that had drifted a few values away from the page it sits
+// inside — the kind of drift the tokens exist to end, so do not reintroduce
+// local constants here.
 
 interface Props {
   ticketTypeId: string
@@ -31,7 +33,7 @@ export function BookPanel({ ticketTypeId, slug, maxSeats, priceLabel, seatsLabel
 
       <div className="min-w-0">
         <p className="font-mono text-[19px] leading-tight font-semibold">{priceLabel}</p>
-        <p className="font-mono text-[12px]" style={{ color: SLATE }}>
+        <p className="text-muted font-mono text-[12px]">
           {state.error ?? seatsLabel}
         </p>
       </div>
@@ -48,8 +50,7 @@ export function BookPanel({ ticketTypeId, slug, maxSeats, priceLabel, seatsLabel
           maxLength={80}
           placeholder="Your name"
           disabled={pending}
-          className="w-28 rounded-lg border px-3 py-3 text-[15px]"
-          style={{ borderColor: MIST }}
+          className="border-line w-28 rounded-lg border px-3 py-3 text-[15px]"
         />
 
         <label className="sr-only" htmlFor="quantity">
@@ -60,8 +61,7 @@ export function BookPanel({ ticketTypeId, slug, maxSeats, priceLabel, seatsLabel
           name="quantity"
           defaultValue="1"
           disabled={pending}
-          className="rounded-lg border px-3 py-3 font-mono text-[15px]"
-          style={{ borderColor: MIST }}
+          className="border-line rounded-lg border px-3 py-3 font-mono text-[15px]"
         >
           {Array.from({ length: maxSeats }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>
@@ -73,8 +73,7 @@ export function BookPanel({ ticketTypeId, slug, maxSeats, priceLabel, seatsLabel
         <button
           type="submit"
           disabled={pending}
-          className="rounded-lg px-5 py-3 text-[15px] font-medium text-white disabled:opacity-60"
-          style={{ backgroundColor: '#1B1917' }}
+          className="bg-ink text-paper rounded-lg px-5 py-3 text-[15px] font-medium disabled:opacity-60"
         >
           {pending ? 'Booking…' : 'Book'}
         </button>

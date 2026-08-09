@@ -92,7 +92,7 @@ function draftFromEcho(echo: SubmittedEventValues): Draft {
   }
 }
 
-const field = 'w-full rounded-lg border border-zinc-300 px-3 py-2 text-base'
+const field = 'border-line w-full rounded-lg border px-3 py-2 text-base'
 
 export function EventForm({
   action,
@@ -243,7 +243,7 @@ export function EventForm({
           placeholder="Priya from Indore"
           className={field}
         />
-        <p className="text-sm text-zinc-500">
+        <p className="text-muted text-sm">
           Guests see this under “Host”, on all of your events.
         </p>
         {state.fieldErrors?.hostDisplayName && (
@@ -425,7 +425,7 @@ export function EventForm({
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-lg bg-black px-4 py-3 text-white disabled:opacity-50"
+        className="bg-ink text-paper w-full rounded-lg px-4 py-3 disabled:opacity-50"
       >
         {pending ? 'Saving…' : submitLabel}
       </button>

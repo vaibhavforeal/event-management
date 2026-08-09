@@ -16,7 +16,10 @@ export const metadata = { title: 'Your events' }
  * typecheck here instead of silently falling back to grey.
  */
 const STATUS_BADGE: Record<HostEvent['status'], string> = {
-  draft: 'bg-zinc-100 text-zinc-600',
+  // The palette tokens for the neutral state; the other three keep Tailwind's
+  // semantic hues — green/red/blue are statuses, not chrome, and the warm
+  // neutrals have no equivalent of "live" or "cancelled".
+  draft: 'bg-raised text-muted',
   published: 'bg-green-100 text-green-800',
   cancelled: 'bg-red-100 text-red-800',
   completed: 'bg-blue-100 text-blue-700',
@@ -37,13 +40,13 @@ export default async function HostDashboard() {
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Your events</h1>
-        <Link href="/host/events/new" className="rounded-lg bg-black px-4 py-2 text-sm text-white">
+        <Link href="/host/events/new" className="bg-ink text-paper rounded-lg px-4 py-2 text-sm">
           New event
         </Link>
       </div>
 
       {events.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-zinc-300 p-8 text-center text-zinc-500">
+        <p className="border-line text-muted rounded-xl border border-dashed p-8 text-center">
           No events yet. Create one and you will get a link to share.
         </p>
       ) : (
@@ -51,7 +54,7 @@ export default async function HostDashboard() {
           {events.map((event) => {
             const ticket = event.ticket_types[0]
             return (
-              <li key={event.id} className="rounded-xl border border-zinc-200 p-4">
+              <li key={event.id} className="border-line rounded-xl border p-4">
                 <div className="flex items-start justify-between gap-4">
                   {/* min-w-0 because a flex item defaults to min-width:auto, which
                       refuses to shrink below its content. A 140-character
@@ -67,11 +70,11 @@ export default async function HostDashboard() {
                     >
                       {event.title}
                     </Link>
-                    <p className="text-sm break-words text-zinc-500">
+                    <p className="text-muted text-sm break-words">
                       {formatIst(new Date(event.starts_at))} · {event.city}
                     </p>
                     {ticket && (
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-muted text-sm">
                         {formatPaise(ticket.price_paise)} · {ticket.reserved_count}/{ticket.quantity} taken
                       </p>
                     )}

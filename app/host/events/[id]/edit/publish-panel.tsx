@@ -36,25 +36,25 @@ export function PublishPanel({
   const [copied, setCopied] = useState(false)
 
   return (
-    <section className="space-y-3 rounded-xl border border-zinc-200 p-4">
+    <section className="border-line space-y-3 rounded-xl border p-4">
       {isPublished ? (
         <>
           <p className="text-sm font-medium">Your link is live. Send it to your group.</p>
           <div className="flex gap-2">
-            <input readOnly value={shareUrl} className="flex-1 rounded-lg bg-zinc-100 px-3 py-2 text-sm" />
+            <input readOnly value={shareUrl} className="bg-raised flex-1 rounded-lg px-3 py-2 text-sm" />
             <button
               type="button"
               onClick={() => {
                 void navigator.clipboard.writeText(shareUrl).then(() => setCopied(true))
               }}
-              className="rounded-lg bg-black px-4 py-2 text-sm text-white"
+              className="bg-ink text-paper rounded-lg px-4 py-2 text-sm"
             >
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
         </>
       ) : (
-        <p className="text-sm text-zinc-600">This event is a draft. Nobody can see it yet.</p>
+        <p className="text-muted text-sm">This event is a draft. Nobody can see it yet.</p>
       )}
 
       {state.blockers && state.blockers.length > 0 && (
@@ -71,7 +71,7 @@ export function PublishPanel({
         <button
           type="submit"
           disabled={pending}
-          className="rounded-lg border border-zinc-300 px-4 py-2 text-sm disabled:opacity-50"
+          className="border-line rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
         >
           {isPublished ? 'Unpublish' : 'Publish'}
         </button>

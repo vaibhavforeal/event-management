@@ -79,7 +79,7 @@ export function CoverUpload({ initialUrl }: { initialUrl?: string | null }) {
         // eslint-disable-next-line @next/next/no-img-element
         <img src={url} alt="Event cover preview" className="h-40 w-full rounded-lg object-cover" />
       ) : (
-        <div className="flex h-40 w-full items-center justify-center rounded-lg border border-dashed border-zinc-300 text-sm text-zinc-500">
+        <div className="border-line text-muted flex h-40 w-full items-center justify-center rounded-lg border border-dashed text-sm">
           No cover yet
         </div>
       )}
@@ -97,7 +97,7 @@ export function CoverUpload({ initialUrl }: { initialUrl?: string | null }) {
 
       <input type="hidden" name="coverImageUrl" value={url} />
 
-      {busy && <p className="text-sm text-zinc-500">Uploading…</p>}
+      {busy && <p className="text-muted text-sm">Uploading…</p>}
       {error && <p className="text-sm text-red-600">{error}</p>}
     </div>
   )

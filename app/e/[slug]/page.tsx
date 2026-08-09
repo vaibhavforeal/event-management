@@ -90,20 +90,11 @@ export async function generateMetadata(props: PageProps<'/e/[slug]'>): Promise<M
   }
 }
 
-/**
- * The palette, kept local to this route.
- *
- * Warm neutrals rather than Tailwind's zinc, which is cool-grey and reads as
- * dashboard chrome; this page should read as an invitation. Verdigris is the
- * single accent and appears twice — the section ticks and the taken seats.
- *
- * These are literals rather than @theme tokens in globals.css on purpose: that
- * file is shared with every other page and this is a one-route visual identity.
- */
-const INK = '#14110F' // body text, headings
-const SLATE = '#5C574F' // secondary text — ~6.8:1 on paper, legible in daylight
-const MIST = '#E7E3DC' // hairlines
-const VERDIGRIS = '#0F5E52' // the one accent — ~7.3:1 on paper
+// The palette this page pioneered — paper, ink, muted, line, accent — now
+// lives in globals.css as @theme tokens and covers the whole app. It was kept
+// route-local while it was a one-route visual identity; once every other page
+// adopted it, local literals stopped being an identity and became drift (this
+// route's own book-panel had already wandered three values away).
 
 /** Above this many seats the marks stop reading as seats and become confetti. */
 const SEAT_MARK_LIMIT = 40
@@ -118,11 +109,8 @@ const SEAT_MARK_LIMIT = 40
  */
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p
-      className="flex items-center gap-2 font-mono text-[11px] tracking-[0.18em] uppercase"
-      style={{ color: VERDIGRIS }}
-    >
-      <span aria-hidden className="inline-block h-px w-5" style={{ backgroundColor: VERDIGRIS }} />
+    <p className="text-accent flex items-center gap-2 font-mono text-[11px] tracking-[0.18em] uppercase">
+      <span aria-hidden className="bg-accent inline-block h-px w-5" />
       {children}
     </p>
   )
@@ -141,13 +129,14 @@ function SeatMarks({ quantity, taken }: { quantity: number; taken: number }) {
   return (
     <div aria-hidden className="flex flex-wrap gap-1">
       {Array.from({ length: quantity }, (_, index) => (
+        // An empty mark is an outline, not a fill. ring-inset rather than a
+        // border so the mark's box stays the same size either way; at 6x14px a
+        // border would visibly shrink the rounded shape.
         <span
           key={index}
-          className="h-3.5 w-1.5 rounded-full"
-          style={{
-            backgroundColor: index < taken ? VERDIGRIS : 'transparent',
-            boxShadow: index < taken ? undefined : `inset 0 0 0 1px ${MIST}`,
-          }}
+          className={`h-3.5 w-1.5 rounded-full ${
+            index < taken ? 'bg-accent' : 'ring-line ring-1 ring-inset'
+          }`}
         />
       ))}
     </div>
@@ -201,20 +190,18 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
      * here, after auto margins on a flex item pinned each page to its own
      * max-width on a phone.
      *
-     * The colours are pinned rather than inherited. globals.css flips
-     * --background and --foreground under `prefers-color-scheme: dark`, so on an
-     * Android with dark mode on this page would otherwise paint zinc-800 prose
-     * onto a near-black body — the description would vanish. Nothing else in the
-     * app has a dark treatment yet, and the one page a stranger judges the event
-     * on is not the place to debut a half-built one.
+     * The colours are inherited now, and that is safe where it once was not:
+     * this page used to pin paper and ink inline because globals.css flipped
+     * --background/--foreground under `prefers-color-scheme: dark` and would
+     * have painted the prose onto a near-black body. globals.css is light-only
+     * today and the body IS this palette, so pinning here would just be the
+     * same values twice.
      *
-     * min-h-screen so a sparse event — no cover, no description — still paints a
-     * full surface rather than ending mid-viewport with white <body> below it.
+     * min-h-screen is vestigial now that main paints no surface of its own —
+     * the body behind it is the same paper — but it stays so that giving this
+     * page a distinct background again cannot quietly end mid-viewport.
      */
-    <main
-      className="mx-auto min-h-screen w-full max-w-2xl pb-36"
-      style={{ backgroundColor: '#FBFAF7', color: INK }}
-    >
+    <main className="mx-auto min-h-screen w-full max-w-2xl pb-36">
       {event.cover_image_url && (
         /**
          * 1200x630 is the same crop the OpenGraph card used, so the page opens
@@ -237,7 +224,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
 
       <div className="px-5 pt-7">
         <header className="space-y-3">
-          <p className="font-mono text-[11px] tracking-[0.18em] uppercase" style={{ color: VERDIGRIS }}>
+          <p className="text-accent font-mono text-[11px] tracking-[0.18em] uppercase">
             {formatIstDateOnly(startsAt)}
           </p>
           {/* break-words on every host-supplied string on this page. A
@@ -254,7 +241,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               the city when there is no description to show. */}
         </header>
 
-        <section className="mt-8 space-y-2 border-t pt-6" style={{ borderColor: MIST }}>
+        <section className="border-line mt-8 space-y-2 border-t pt-6">
           <SectionLabel>When</SectionLabel>
           <p className="font-mono text-[15px]">{formatIst(startsAt)}</p>
           {/* Shown because it answers "can I make it?", which is the question
@@ -264,23 +251,23 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               matters once there is a price to pay, which this phase has not
               reached. */}
           {event.ends_at && (
-            <p className="font-mono text-[13px]" style={{ color: SLATE }}>
+            <p className="text-muted font-mono text-[13px]">
               Ends {formatIst(new Date(event.ends_at))}
             </p>
           )}
         </section>
 
-        <section className="mt-6 space-y-2 border-t pt-6" style={{ borderColor: MIST }}>
+        <section className="border-line mt-6 space-y-2 border-t pt-6">
           <SectionLabel>Where</SectionLabel>
           <p className="text-[15px] font-medium break-words">{event.venue_name ?? event.city}</p>
           {/* Luma-style: the exact address is withheld until the host approves. */}
           {event.hide_venue_until_approved ? (
-            <p className="text-[14px]" style={{ color: SLATE }}>
+            <p className="text-muted text-[14px]">
               The host shares the exact address once they approve you.
             </p>
           ) : (
             event.venue_address && (
-              <p className="text-[14px] break-words" style={{ color: SLATE }}>
+              <p className="text-muted text-[14px] break-words">
                 {event.venue_address}
               </p>
             )
@@ -294,14 +281,14 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               above never fires. The guard costs a boolean and means relaxing
               that rule cannot quietly reintroduce the duplicate. */}
           {event.venue_name && (
-            <p className="font-mono text-[13px] break-words" style={{ color: SLATE }}>
+            <p className="text-muted font-mono text-[13px] break-words">
               {event.city}
             </p>
           )}
         </section>
 
         {event.description && (
-          <section className="mt-6 border-t pt-6" style={{ borderColor: MIST }}>
+          <section className="border-line mt-6 border-t pt-6">
             <SectionLabel>About</SectionLabel>
             <div className="mt-3 text-[16px] leading-[1.7] whitespace-pre-wrap break-words">
               {event.description}
@@ -310,7 +297,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
         )}
 
         {event.hosts && (
-          <section className="mt-6 border-t pt-6" style={{ borderColor: MIST }}>
+          <section className="border-line mt-6 border-t pt-6">
             <SectionLabel>Host</SectionLabel>
             <div className="mt-3 flex items-center gap-3">
               {event.hosts.avatar_url && (
@@ -328,7 +315,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               <div className="min-w-0">
                 <p className="text-[15px] font-medium break-words">{event.hosts.display_name}</p>
                 {event.hosts.bio && (
-                  <p className="text-[14px] break-words" style={{ color: SLATE }}>
+                  <p className="text-muted text-[14px] break-words">
                     {event.hosts.bio}
                   </p>
                 )}
@@ -338,21 +325,20 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
         )}
 
         {ticket && (
-          <section className="mt-6 space-y-3 border-t pt-6" style={{ borderColor: MIST }}>
+          <section className="border-line mt-6 space-y-3 border-t pt-6">
             <SectionLabel>Seats</SectionLabel>
             <SeatMarks quantity={ticket.quantity} taken={taken} />
-            <p className="font-mono text-[13px]" style={{ color: soldOut ? SLATE : INK }}>
+            <p className={`font-mono text-[13px] ${soldOut ? 'text-muted' : 'text-ink'}`}>
               {seatsLabel}
             </p>
           </section>
         )}
       </div>
 
-      {/* The safe-area padding keeps the price clear of the Android gesture bar. */}
-      <div
-        className="fixed inset-x-0 bottom-0 border-t px-5 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur"
-        style={{ borderColor: MIST, backgroundColor: 'rgba(255,255,255,0.94)' }}
-      >
+      {/* The safe-area padding keeps the price clear of the Android gesture bar.
+          bg-paper/95 rather than opaque paper so the backdrop-blur has something
+          to do — content scrolling under the bar reads as under it. */}
+      <div className="border-line bg-paper/95 fixed inset-x-0 bottom-0 border-t px-5 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur">
         {bookable && ticket ? (
           <BookPanel
             ticketTypeId={ticket.id}
@@ -367,15 +353,14 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               <p className="font-mono text-[19px] leading-tight font-semibold">
                 {ticket ? (ticket.price_paise === 0 ? 'Free' : formatPaise(ticket.price_paise)) : '—'}
               </p>
-              <p className="font-mono text-[12px]" style={{ color: SLATE }}>
+              <p className="text-muted font-mono text-[12px]">
                 {seatsLabel}
               </p>
             </div>
             <button
               type="button"
               disabled
-              className="shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
-              style={{ borderColor: MIST, backgroundColor: '#F2EFE9', color: SLATE }}
+              className="border-line bg-raised text-muted shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
             >
               {/* "already started", not "finished": a link forwarded to a
                   WhatsApp group is opened twenty minutes into a three-hour

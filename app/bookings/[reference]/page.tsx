@@ -21,7 +21,7 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-2xl px-5 py-10">
-      <p className="font-mono text-[13px] tracking-wide text-neutral-500">
+      <p className="font-mono text-[13px] tracking-wide text-muted">
         {booking.status === 'confirmed' ? "You're going" : `Booking ${booking.status}`}
       </p>
 
@@ -29,14 +29,14 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
 
       <dl className="mt-8 space-y-4 font-mono text-[14px]">
         <div>
-          <dt className="text-neutral-500">Reference</dt>
+          <dt className="text-muted">Reference</dt>
           {/* The string a host reads aloud at the door. Big, and selectable. */}
           <dd className="text-[22px] font-semibold tracking-[0.2em] select-all">
             {booking.reference}
           </dd>
         </div>
         <div>
-          <dt className="text-neutral-500">Seats</dt>
+          <dt className="text-muted">Seats</dt>
           <dd>{booking.quantity}</dd>
         </div>
         {/* The whole block is conditional because the embed is nullable in the
@@ -46,12 +46,12 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
         {event && (
           <>
             <div>
-              <dt className="text-neutral-500">When</dt>
+              <dt className="text-muted">When</dt>
               {/* formatIst takes a Date; starts_at arrives as an ISO string. */}
               <dd>{formatIst(new Date(event.starts_at))}</dd>
             </div>
             <div>
-              <dt className="text-neutral-500">Where</dt>
+              <dt className="text-muted">Where</dt>
               <dd className="break-words">{[event.venue_name, event.city].filter(Boolean).join(', ')}</dd>
             </div>
           </>

@@ -19,7 +19,7 @@ export default async function BookingsPage() {
       <h1 className="text-2xl font-semibold">Your bookings</h1>
 
       {bookings.length === 0 ? (
-        <p className="mt-8 text-[15px] text-neutral-600">
+        <p className="text-muted mt-8 text-[15px]">
           Nothing booked yet.{' '}
           <Link href="/" className="underline">
             Find something to go to
@@ -29,7 +29,7 @@ export default async function BookingsPage() {
       ) : (
         <ul className="mt-8 space-y-4">
           {bookings.map((booking) => (
-            <li key={booking.id} className="rounded-xl border border-zinc-200 p-4">
+            <li key={booking.id} className="border-line rounded-xl border p-4">
               {/* break-words on the title: a 140-character unbroken one is valid
                   under the schema CHECK, and without this it scrolls the whole
                   page sideways. Same rule as the host dashboard. */}
@@ -39,7 +39,7 @@ export default async function BookingsPage() {
               >
                 {booking.events?.title ?? 'Event'}
               </Link>
-              <p className="mt-1 font-mono text-[13px] text-neutral-600">
+              <p className="text-muted mt-1 font-mono text-[13px]">
                 {booking.events && `${formatIst(new Date(booking.events.starts_at))} · `}
                 {booking.quantity} {booking.quantity === 1 ? 'seat' : 'seats'} · {booking.status}
               </p>

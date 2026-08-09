@@ -105,7 +105,7 @@ export default async function FeedPage(props: PageProps<'/'>) {
                 href={selected ? '/' : `/?city=${encodeURIComponent(name)}`}
                 aria-current={selected ? 'true' : undefined}
                 className={`min-w-0 rounded-full px-3 py-1 break-words ${
-                  selected ? 'bg-black text-white' : 'border border-zinc-300'
+                  selected ? 'bg-ink text-paper' : 'border-line border'
                 }`}
               >
                 {name}
@@ -120,7 +120,7 @@ export default async function FeedPage(props: PageProps<'/'>) {
               into a group chat that renders the feed as one enormous black bar,
               and this product travels by forwarded link. */}
           {selectedCity && !selectionIsKnown && (
-            <span className="min-w-0 rounded-full bg-black px-3 py-1 break-words text-white">
+            <span className="bg-ink text-paper min-w-0 rounded-full px-3 py-1 break-words">
               {selectedCity.trim().slice(0, MAX_CITY_LENGTH)}
             </span>
           )}
@@ -134,7 +134,7 @@ export default async function FeedPage(props: PageProps<'/'>) {
       )}
 
       {events.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-zinc-300 p-8 text-center text-zinc-500">
+        <p className="border-line text-muted rounded-xl border border-dashed p-8 text-center">
           Nothing on right now. <Link href="/host/events/new" className="underline">Host something.</Link>
         </p>
       ) : (

@@ -1,22 +1,48 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+  One palette, app-wide, light only.
 
+  The palette is the one app/e/[slug] carried as local hex literals — warm
+  neutrals rather than Tailwind's zinc, which is cool-grey and reads as
+  dashboard chrome. It was kept route-local while it was a one-route visual
+  identity; promoting it here is what ended the app having three colour systems
+  at once (pinned hex on the public event page, zinc utilities on the signed-in
+  pages, dark: variants on login alone).
+
+  Light only is a decision, not an omission. No dark palette has been designed,
+  and the halfway state was worse than none: this file used to flip
+  --background/--foreground under `prefers-color-scheme: dark`, which turned
+  the signed-in pages near-black behind text and borders that never moved. If a
+  dark theme is ever wanted, it is one media-query block here — every colour in
+  the app now resolves through these tokens — plus removing `only light` below.
+
+  Contrast, measured on paper (#fbfaf7): ink ~16.4:1, muted ~6.8:1,
+  accent ~7.3:1. Keep any replacement above 4.5:1; this app is read outdoors
+  in daylight.
+*/
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-paper: #fbfaf7; /* page background */
+  --color-ink: #14110f; /* body text, headings, solid buttons */
+  --color-muted: #5c574f; /* secondary text */
+  --color-line: #e7e3dc; /* hairlines, input borders */
+  --color-accent: #0f5e52; /* verdigris — section ticks, taken seats */
+  --color-raised: #f2efe9; /* disabled controls, quiet fills */
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/*
+  `only light` rather than `light`: both declare that this page renders one
+  scheme — form controls, scrollbars and all — but the `only` keyword is also
+  the documented opt-out from Chrome on Android's auto-darkening, which
+  otherwise repaints "light-only" pages by force. Half the point of forcing
+  light is that mid-range Android in dark mode, so the stronger form is the one
+  that means it.
+*/
+:root {
+  color-scheme: only light;
 }
 
 /*
@@ -38,6 +64,6 @@
   exactly how the last one hid for so long.
 */
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--color-paper);
+  color: var(--color-ink);
 }

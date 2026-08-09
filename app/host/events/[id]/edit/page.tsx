@@ -38,7 +38,7 @@ export default async function EditEventPage(props: PageProps<'/host/events/[id]/
             of horizontal overflow. Sizing main correctly cannot make an
             unbreakable word wrap. */}
         <h1 className="text-2xl font-semibold break-words">{event.title}</h1>
-        <p className="text-sm break-words text-zinc-500">
+        <p className="text-muted text-sm break-words">
           {event.status === 'published' ? 'Published' : 'Draft'}
           {' · '}
           <Link href={`/e/${event.slug}`} className="underline">/e/{event.slug}</Link>

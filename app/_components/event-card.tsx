@@ -23,7 +23,7 @@ export function EventCard({ event, preload = false }: { event: FeedEvent; preloa
   return (
     <Link
       href={`/e/${event.slug}`}
-      className="block overflow-hidden rounded-xl border border-zinc-200 transition hover:border-zinc-400"
+      className="border-line hover:border-muted block overflow-hidden rounded-xl border transition"
     >
       {event.cover_image_url ? (
         <Image
@@ -42,10 +42,10 @@ export function EventCard({ event, preload = false }: { event: FeedEvent; preloa
           className="h-40 w-full object-cover"
         />
       ) : (
-        <div className="h-40 w-full bg-gradient-to-br from-zinc-200 to-zinc-100" />
+        <div className="from-line to-raised h-40 w-full bg-gradient-to-br" />
       )}
       <div className="space-y-1 p-4">
-        <p className="text-sm text-zinc-500">{formatIst(new Date(event.starts_at))}</p>
+        <p className="text-muted text-sm">{formatIst(new Date(event.starts_at))}</p>
         {/* break-words on every host-supplied string, the standing rule in this
             app. A 140-character title with no space in it is valid under both
             the Zod schema and the events.title CHECK, and hosts do write them.
@@ -59,7 +59,7 @@ export function EventCard({ event, preload = false }: { event: FeedEvent; preloa
             with no ellipsis and no way to see the rest. Clipping is the failure
             here, not overflow. */}
         <h2 className="font-medium leading-snug break-words">{event.title}</h2>
-        <p className="text-sm break-words text-zinc-500">{event.venue_name ?? event.city}</p>
+        <p className="text-muted text-sm break-words">{event.venue_name ?? event.city}</p>
         {ticket && (
           <p className="text-sm font-medium">
             {ticket.price_paise === 0 ? 'Free' : formatPaise(ticket.price_paise)}
