@@ -119,6 +119,15 @@ exception
   -- The pre-check above loses the race sometimes; the index never does. Both
   -- must say the same thing to the attendee, or the same situation reads as a
   -- refusal one time and a database fault the next.
+  --
+  -- Not dead code, and no test reaches it: single-threaded, the pre-check
+  -- always wins, so this branch only runs when two requests interleave.
+  -- Verified by hand instead, with two concurrent sessions -- the second past
+  -- its pre-check before the first committed, blocking on reserve_tickets' row
+  -- lock on ticket_types, then tripping the index once the first committed. It
+  -- came back EH012 from this handler (confirmed by the RAISE line number in
+  -- the error CONTEXT, since both sites share message text). See the Task 1
+  -- report for the transcript before deleting this as unreachable.
   when unique_violation then
     if sqlerrm like '%bookings_one_active_per_attendee%' then
       raise exception 'this attendee already has an active booking on event %', ev.id
