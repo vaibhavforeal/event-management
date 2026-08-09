@@ -38,6 +38,7 @@ export type Database = {
         Row: {
           approved_at: string | null
           attendee_id: string
+          attendee_name: string | null
           attendee_note: string | null
           cancellation_reason: string | null
           cancelled_at: string | null
@@ -60,6 +61,7 @@ export type Database = {
         Insert: {
           approved_at?: string | null
           attendee_id: string
+          attendee_name?: string | null
           attendee_note?: string | null
           cancellation_reason?: string | null
           cancelled_at?: string | null
@@ -82,6 +84,7 @@ export type Database = {
         Update: {
           approved_at?: string | null
           attendee_id?: string
+          attendee_name?: string | null
           attendee_note?: string | null
           cancellation_reason?: string | null
           cancelled_at?: string | null
@@ -688,6 +691,45 @@ export type Database = {
         Returns: {
           approved_at: string | null
           attendee_id: string
+          attendee_name: string | null
+          attendee_note: string | null
+          cancellation_reason: string | null
+          cancelled_at: string | null
+          commission_paise: number
+          confirmed_at: string | null
+          convenience_fee_paise: number
+          created_at: string
+          event_id: string
+          hold_expires_at: string | null
+          id: string
+          payment_mode: Database["public"]["Enums"]["payment_mode"]
+          quantity: number
+          reference: string
+          status: Database["public"]["Enums"]["booking_status"]
+          subtotal_paise: number
+          ticket_type_id: string
+          total_paise: number
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "bookings"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      book_free_tickets: {
+        Args: {
+          p_attendee_id: string
+          p_attendee_name: string
+          p_attendee_note?: string
+          p_quantity: number
+          p_ticket_type_id: string
+        }
+        Returns: {
+          approved_at: string | null
+          attendee_id: string
+          attendee_name: string | null
           attendee_note: string | null
           cancellation_reason: string | null
           cancelled_at: string | null
@@ -719,6 +761,7 @@ export type Database = {
         Returns: {
           approved_at: string | null
           attendee_id: string
+          attendee_name: string | null
           attendee_note: string | null
           cancellation_reason: string | null
           cancelled_at: string | null
@@ -750,6 +793,7 @@ export type Database = {
         Returns: {
           approved_at: string | null
           attendee_id: string
+          attendee_name: string | null
           attendee_note: string | null
           cancellation_reason: string | null
           cancelled_at: string | null
@@ -841,6 +885,7 @@ export type Database = {
         Returns: {
           approved_at: string | null
           attendee_id: string
+          attendee_name: string | null
           attendee_note: string | null
           cancellation_reason: string | null
           cancelled_at: string | null
@@ -881,6 +926,7 @@ export type Database = {
         Returns: {
           approved_at: string | null
           attendee_id: string
+          attendee_name: string | null
           attendee_note: string | null
           cancellation_reason: string | null
           cancelled_at: string | null
