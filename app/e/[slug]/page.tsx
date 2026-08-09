@@ -2,9 +2,10 @@ import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { getPublishedEventBySlug } from '@/lib/events/queries'
-import { formatIst, formatIstDateOnly } from '@/lib/events/datetime'
+import { formatIst, formatIstDateOnly, hasStarted } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import { clientEnv } from '@/lib/env'
+import { BookPanel } from './book-panel'
 
 /** How much of the description WhatsApp gets. Its card shows rather less. */
 const OG_DESCRIPTION_LIMIT = 200
@@ -168,6 +169,20 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   const startsAt = new Date(event.starts_at)
   const seatsLabel = soldOut ? 'Sold out' : `${remaining} of ${ticket?.quantity ?? 0} seats left`
 
+  // Phase 2a books free, no-approval events only. Anything else keeps the inert
+  // control Phase 1 shipped: a host who set a price or ticked approval has built
+  // something this phase cannot honour, and saying so is better than confirming
+  // strangers at their door or letting people in free.
+  //
+  // `finished` mirrors the EH013 guard in book_free_tickets. The feed already
+  // hides past events, but this page is reached by a link in a WhatsApp group
+  // that outlives the event, so it is the surface where a finished event is
+  // actually met.
+  const finished = hasStarted(event.starts_at)
+  const bookable =
+    !!ticket && !soldOut && !finished && ticket.price_paise === 0 && !event.requires_approval
+  const maxSeats = ticket ? Math.max(1, Math.min(remaining, ticket.max_per_order ?? 10)) : 1
+
   return (
     /**
      * `w-full` alongside `mx-auto max-w-*` is the standing rule for every <main>
@@ -232,8 +247,10 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           <p className="font-mono text-[15px]">{formatIst(startsAt)}</p>
           {/* Shown because it answers "can I make it?", which is the question
               between reading the page and booking. requires_approval and
-              allows_cash are on the row too but stay unrendered: they change how
-              booking works, and booking does not exist until Phase 2. */}
+              allows_cash are on the row too and stay unrendered: the first is
+              read by `bookable` above rather than printed, and the second only
+              matters once there is a price to pay, which this phase has not
+              reached. */}
           {event.ends_at && (
             <p className="font-mono text-[13px]" style={{ color: SLATE }}>
               Ends {formatIst(new Date(event.ends_at))}
@@ -319,31 +336,39 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
         )}
       </div>
 
-      {/* Booking is Phase 2. The control is present but inert, so the page reads
-          as finished rather than broken. The safe-area padding keeps the price
-          clear of the Android gesture bar. */}
+      {/* The safe-area padding keeps the price clear of the Android gesture bar. */}
       <div
         className="fixed inset-x-0 bottom-0 border-t px-5 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur"
         style={{ borderColor: MIST, backgroundColor: 'rgba(255,255,255,0.94)' }}
       >
-        <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="font-mono text-[19px] leading-tight font-semibold">
-              {ticket ? (ticket.price_paise === 0 ? 'Free' : formatPaise(ticket.price_paise)) : '—'}
-            </p>
-            <p className="font-mono text-[12px]" style={{ color: SLATE }}>
-              {seatsLabel}
-            </p>
+        {bookable && ticket ? (
+          <BookPanel
+            ticketTypeId={ticket.id}
+            slug={slug}
+            maxSeats={maxSeats}
+            priceLabel="Free"
+            seatsLabel={seatsLabel}
+          />
+        ) : (
+          <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="font-mono text-[19px] leading-tight font-semibold">
+                {ticket ? (ticket.price_paise === 0 ? 'Free' : formatPaise(ticket.price_paise)) : '—'}
+              </p>
+              <p className="font-mono text-[12px]" style={{ color: SLATE }}>
+                {seatsLabel}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled
+              className="shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
+              style={{ borderColor: MIST, backgroundColor: '#F2EFE9', color: SLATE }}
+            >
+              {finished ? 'This event has finished' : soldOut ? 'Sold out' : 'Booking opens soon'}
+            </button>
           </div>
-          <button
-            type="button"
-            disabled
-            className="shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
-            style={{ borderColor: MIST, backgroundColor: '#F2EFE9', color: SLATE }}
-          >
-            Booking opens soon
-          </button>
-        </div>
+        )}
       </div>
     </main>
   )

@@ -11,8 +11,13 @@ import { createClient } from '@/lib/supabase/server'
  * on RLS alone here would show a host the entire platform's catalogue.
  */
 
+// `id` and `max_per_order` are here for the public event page's Book control:
+// the first is what a booking is placed against, the second bounds its quantity
+// picker. The feed card does not read either, but the two surfaces share this
+// list — see getPublishedEventBySlug — and one wider select is cheaper than a
+// second column list to keep in step with this one.
 const FEED_COLUMNS =
-  'id, slug, title, cover_image_url, city, venue_name, starts_at, ticket_types(price_paise, quantity, reserved_count)'
+  'id, slug, title, cover_image_url, city, venue_name, starts_at, ticket_types(id, price_paise, quantity, reserved_count, max_per_order)'
 
 /**
  * The order embedded ticket types come back in, everywhere.
@@ -38,7 +43,13 @@ export interface FeedEvent {
   city: string
   venue_name: string | null
   starts_at: string
-  ticket_types: Array<{ price_paise: number; quantity: number; reserved_count: number }>
+  ticket_types: Array<{
+    id: string
+    price_paise: number
+    quantity: number
+    reserved_count: number
+    max_per_order: number
+  }>
 }
 
 export interface Host {
