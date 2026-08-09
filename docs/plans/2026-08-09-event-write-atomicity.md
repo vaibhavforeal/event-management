@@ -1088,7 +1088,44 @@ git commit
 _Filled in by Task 1, Step 4. Quoted by Task 5's commit._
 
 ```
-(paste the probe output here)
+ RUN  v4.1.10 D:/Software Ideas/Event Hoster
+
+stdout | lib/events/probe.throwaway.test.ts > PROBE: the first write survives when the second is refused
+events write refused with: 23514 new row for relation "events" violates check constraint "events_end_after_start"
+
+stdout | lib/events/probe.throwaway.test.ts > PROBE: the first write survives when the second is refused
+AFTER  quantity: 33 price: 12300
+AFTER  title: Test Supper Club (unchanged: true )
+
+ ❯ lib/events/probe.throwaway.test.ts (1 test | 1 failed) 508ms
+   × PROBE: the first write survives when the second is refused 36ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  lib/events/probe.throwaway.test.ts > PROBE: the first write survives when the second is refused
+AssertionError: expected 33 to be 20 // Object.is equality
+
+- Expected
++ Received
+
+- 20
++ 33
+
+ ❯ lib/events/probe.throwaway.test.ts:52:27
+     50|
+     51|   // The gap, stated as an assertion. This SHOULD FAIL today.
+     52|   expect(after!.quantity).toBe(20)
+       |                           ^
+     53| })
+     54|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  13:45:12
+   Duration  824ms (transform 42ms, setup 0ms, import 134ms, tests 508ms, environment 0ms)
 ```
 
 ## Self-review notes
