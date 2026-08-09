@@ -3,6 +3,14 @@ import { config } from 'dotenv'
 
 // Integration tests run against the local Supabase stack (`npm run db:start`).
 config({ path: '.env.local', quiet: true })
+// `.env` as well, and after `.env.local` so that file still wins — dotenv does
+// not overwrite a variable that is already set. Both are needed because
+// serverEnv() validates the whole server schema at once, so production code
+// under test (lib/supabase/admin.ts, reached from lib/bookings/service.ts)
+// throws on a missing SEND_SMS_HOOK_SECRET even though it wants only the
+// service-role key. That secret lives in `.env` rather than `.env.local`
+// because supabase/config.toml substitutes it too.
+config({ path: '.env', quiet: true })
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
