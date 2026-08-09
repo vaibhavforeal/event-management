@@ -1336,7 +1336,16 @@ describe('listEventAttendees', () => {
     // phone — which is exactly what this query produced before
     // profiles_select_for_host existed, silently and with no error.
     expect(attendees[0].attendee_name).toBe('Priya')
-    expect(attendees[0].profiles?.phone).toMatch(/^\+/)
+    // Compared against the seeded user's stored phone, not a pattern. GoTrue
+    // strips the leading `+` on the way in — `lib/auth/phone-otp.test.ts:69`
+    // has pinned that since Phase 0 — so `/^\+/` is unsatisfiable, and a
+    // pattern loose enough to pass would not prove the right row came back.
+    const { data: expected } = await db
+      .from('profiles')
+      .select('phone')
+      .eq('id', event.attendeeId)
+      .single()
+    expect(attendees[0].profiles?.phone).toBe(expected!.phone)
   })
 
   it('shows another host nothing', async () => {
