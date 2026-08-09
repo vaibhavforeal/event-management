@@ -285,6 +285,81 @@ describe('listFeedCities', () => {
   })
 })
 
+describe('embedded ticket types', () => {
+  it('come back in sort_order on every surface that reads ticket_types[0]', async () => {
+    // Four surfaces call ticket_types[0] "the" ticket type. Without an explicit
+    // ORDER BY, which row that is comes down to the planner.
+    //
+    // Two seeded rows, because the ordering is two keys and each has to be
+    // falsifiable on its own:
+    //
+    //   - "Early bird" sorts first on sort_order and LAST on created_at, so
+    //     dropping the sort_order key moves it to the back.
+    //   - "Backdated" ties on sort_order — 0 is the default every row gets, so
+    //     ties are the ordinary case — and sorts before the seeded row on
+    //     created_at, so dropping the created_at key moves it behind.
+    //
+    // Both are stored after the row seedEvent made, so physical order agrees
+    // with neither. Note that sort_order alone is not enough to fail this: the
+    // (event_id, sort_order) index hands back sorted rows whether or not the
+    // query asks, so a test built on sort_order alone passed with every ORDER
+    // BY in this file deleted.
+    const { data: original } = await db
+      .from('ticket_types')
+      .select('created_at')
+      .eq('event_id', published.eventId)
+      .single()
+    const originalCreatedAt = new Date(original!.created_at).getTime()
+
+    const { data: extras, error } = await db
+      .from('ticket_types')
+      .insert([
+        {
+          event_id: published.eventId,
+          name: 'Early bird',
+          price_paise: 10_000,
+          quantity: 5,
+          sort_order: -1,
+          created_at: new Date(originalCreatedAt + 60_000).toISOString(),
+        },
+        {
+          event_id: published.eventId,
+          name: 'Backdated',
+          price_paise: 25_000,
+          quantity: 5,
+          // The column default, spelled out: a bulk insert through PostgREST
+          // sends one column list for every row, so an omitted key here arrives
+          // as an explicit NULL rather than falling back to the default.
+          sort_order: 0,
+          created_at: new Date(originalCreatedAt - 60_000).toISOString(),
+        },
+      ])
+      .select('id')
+    if (error) throw new Error(`seeding extra ticket types failed: ${error.message}`)
+
+    const prices = [10_000, 25_000, 50_000]
+
+    signInAs(null)
+    const bySlug = await getPublishedEventBySlug(publishedSlug)
+    expect(bySlug!.ticket_types.map((t) => t.price_paise)).toEqual(prices)
+
+    const feedEvent = (await listCityFeed()).find((e) => e.id === published.eventId)
+    expect(feedEvent!.ticket_types.map((t) => t.price_paise)).toEqual(prices)
+
+    signInAs(published.hostProfileId)
+    const mine = (await listHostEvents()).find((e) => e.id === published.eventId)
+    expect(mine!.ticket_types.map((t) => t.price_paise)).toEqual(prices)
+
+    const owned = await getOwnedEvent(published.eventId)
+    expect(owned!.ticket_types.map((t) => t.price_paise)).toEqual(prices)
+
+    await db
+      .from('ticket_types')
+      .delete()
+      .in('id', extras!.map((row) => row.id))
+  })
+})
+
 describe('getCurrentHostId', () => {
   it('returns the host id for a signed-in host', async () => {
     signInAs(draft.hostProfileId)

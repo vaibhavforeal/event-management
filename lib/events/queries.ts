@@ -14,6 +14,22 @@ import { createClient } from '@/lib/supabase/server'
 const FEED_COLUMNS =
   'id, slug, title, cover_image_url, city, venue_name, starts_at, ticket_types(price_paise, quantity, reserved_count)'
 
+/**
+ * The order embedded ticket types come back in, everywhere.
+ *
+ * Four surfaces — the feed card, the public page, the dashboard row and the
+ * edit form — read `ticket_types[0]` and call it "the" ticket type. Without an
+ * ORDER BY, PostgREST hands back whatever order the planner produced, so which
+ * row that is, is unspecified: today it is the only row, and the day a second
+ * one exists the price on a card could differ from the price on the page it
+ * links to, with nothing in the code to point at.
+ *
+ * `sort_order` is the column the schema put there for this, and it defaults to
+ * 0 for every row, so `created_at` breaks the tie that leaves. The pair is
+ * total — created_at is NOT NULL — which is what makes `[0]` mean something.
+ */
+const TICKET_TYPE_ORDER = { referencedTable: 'ticket_types', ascending: true } as const
+
 export interface FeedEvent {
   id: string
   slug: string
@@ -223,6 +239,8 @@ export async function listCityFeed(city?: string): Promise<FeedEvent[]> {
     .eq('status', 'published')
     .gte('starts_at', new Date().toISOString())
     .order('starts_at', { ascending: true })
+    .order('sort_order', TICKET_TYPE_ORDER)
+    .order('created_at', TICKET_TYPE_ORDER)
     .limit(50)
 
   // Resolved against the database directly, never against listFeedCities(): the
@@ -265,6 +283,8 @@ export async function getPublishedEventBySlug(slug: string): Promise<PublicEvent
     )
     .eq('slug', slug)
     .eq('status', 'published')
+    .order('sort_order', TICKET_TYPE_ORDER)
+    .order('created_at', TICKET_TYPE_ORDER)
     .maybeSingle()
 
   if (error) throw new Error(`Could not load the event: ${error.message}`)
@@ -296,6 +316,8 @@ export async function listHostEvents(): Promise<HostEvent[]> {
     )
     .eq('host_id', hostId)
     .order('starts_at', { ascending: false })
+    .order('sort_order', TICKET_TYPE_ORDER)
+    .order('created_at', TICKET_TYPE_ORDER)
 
   if (error) throw new Error(`Could not load your events: ${error.message}`)
   return (data ?? []) as HostEvent[]
@@ -334,6 +356,8 @@ export async function getOwnedEvent(id: string): Promise<OwnedEvent | null> {
     )
     .eq('id', id)
     .eq('host_id', hostId) // not just RLS: a published event is readable by anyone
+    .order('sort_order', TICKET_TYPE_ORDER)
+    .order('created_at', TICKET_TYPE_ORDER)
     .maybeSingle()
 
   if (error) throw new Error(`Could not load the event: ${error.message}`)
