@@ -160,6 +160,8 @@ Following the pattern `lib/events/rpc-errors.ts` established:
 |---|---|---|
 | `EH010` | ticket type is not free | "This event is not free yet" |
 | `EH011` | event requires approval | "This host approves guests before booking" |
+| `EH012` | the attendee already holds an active booking on this event | "You have already booked this event. Cancel that booking first to change it." |
+| `EH013` | `starts_at` has passed | "This event has already started." |
 | existing | `reserve_tickets` raises `check_violation` for sold out, closed sales, over `max_per_order` | the raised message, which is already written for a human |
 
 `reserve_tickets` already produces sentences a person can read ("only 3 seats
@@ -198,6 +200,52 @@ string a host reads aloud at the door and the one an attendee screenshots.
 
 `supabase/migrations/20260810000001_book_free_tickets.sql`. `npm run db:types`
 after; `lib/supabase/types.ts` is committed.
+
+## Amended after the pre-implementation audit
+
+Four things in this spec were checked against the codebase before the plan was
+executed, and each was wrong. Recorded here rather than silently rewritten
+above, because the reasoning that produced them is the reasoning most likely to
+produce them again.
+
+**The host guest list could not have worked.** It was to read
+`bookings.profiles(full_name, phone)`. `profiles_select_own` is `id =
+auth.uid()` and is the entire SELECT surface on that table
+(`20260808000003_rls_policies.sql:61`), so the embed returns `null` for every
+attendee — with no error, because RLS filters rather than refuses. The page
+would have rendered "Guest" and a blank phone for every row while every
+row-counting test passed. `profiles.full_name` is also null for every user who
+has ever existed: `handle_new_user()` writes `id` and `phone` and nothing else
+(`20260808000001_core_schema.sql:64`).
+
+Resolved by adding `bookings.attendee_name`, filled from a required field in the
+Book panel. The host reads the name the guest chose to give; no phone number
+moves, and `profiles` stays owner-only. This also gives Phase 2b's unwritten
+`tickets.attendee_name` its first source.
+
+**Nothing bounded how often one person could book.** `max_per_order` bounds a
+single order, so ten single-seat bookings take a ten-seat supper club, each one
+individually within the rules. Resolved by one active booking per attendee per
+event, enforced by a partial unique index on the active statuses — not by a
+check in the function, which would race with itself. Cancelling frees the slot,
+so it is "one at a time", not "one ever".
+
+**A finished event stayed bookable.** `reserve_tickets` validates published
+status and the sales window; a past event passes both, and `sales_start` /
+`sales_end` are null on every event this product creates. The feed hides past
+events but the WhatsApp link does not, and the link is the whole distribution
+model. Resolved by a `starts_at` guard.
+
+**There was no way to reach `/bookings`.** This app has no navigation at all —
+`app/layout.tsx` is `<body>{children}</body>`, and every link in the product is
+hard-coded into the page that needs it. The route would have been reachable only
+by typing the URL. Resolved by a link in the feed header beside "Host an event".
+
+One assumption the audit confirmed rather than corrected: every page here is
+dynamically rendered, because `lib/supabase/server.ts` awaits `cookies()` on
+every query path. The seats-left count is never stale on a fresh request.
+`revalidatePath` is still called after a booking, for Next's client Router Cache
+on back navigation.
 
 ## Notes for 2b
 

@@ -15,7 +15,9 @@
 - **Money is always integer paise.** `rupeesToPaise()` / `formatPaise()` from `lib/money.ts`. Never floats, never rupees in the database.
 - **`lib/bookings/service.ts` is the ONLY file in `app/` or `lib/` that may import `lib/supabase/admin.ts`.** A lint rule enforces this from Task 2 onward. Everything else uses `@/lib/supabase/server`.
 - **Identity never comes from a form.** Every write takes a `Caller`, which only `currentCaller()` can produce. A posted `attendeeId` field must not exist anywhere.
-- **Only free, no-approval events are bookable.** `price_paise = 0` and `requires_approval = false`. Enforced in SQL, not only in the action.
+- **Only free, no-approval, not-yet-started events are bookable.** `price_paise = 0`, `requires_approval = false`, `starts_at > now()`. Enforced in SQL, not only in the action.
+- **One active booking per attendee per event.** Enforced by a partial unique index, not by an application check, because an application check races with itself.
+- **A host never sees an attendee's phone number.** The guest list shows the name the attendee typed. `profiles` stays readable only by its owner.
 - **`params` and `searchParams` are Promises** in Next.js 16. Use the generated `PageProps<'/route'>` from `next typegen`; never hand-write page prop types.
 - **`cookies()` is async.** `lib/supabase/server.ts#createClient` must be awaited.
 - **IST is UTC+05:30 year-round, no DST.** Use `lib/events/datetime.ts`; never `new Date(localString)` on a zoneless value.
@@ -29,7 +31,8 @@
 
 | File | Responsibility |
 |---|---|
-| `supabase/migrations/20260810000001_book_free_tickets.sql` | **New.** `book_free_tickets()`, its guards, its revoke/grant pair. |
+| `supabase/migrations/20260810000001_bookings_attendee_name.sql` | **New.** `bookings.attendee_name`, and the partial unique index enforcing one active booking per attendee per event. |
+| `supabase/migrations/20260810000002_book_free_tickets.sql` | **New.** `book_free_tickets()`, its four guards, its revoke/grant pair. |
 | `lib/supabase/types.ts` | **Regenerated.** Gains the new function's `Args`. |
 | `lib/bookings/caller.ts` | **New.** The branded `Caller` type and the only way to make one. |
 | `lib/bookings/authorize.ts` | **New.** Pure. `mayCancel()`. No database, no imports beyond the `Caller` type. |
@@ -45,21 +48,39 @@
 | `app/bookings/actions.ts` | **New.** `cancelMyBooking` Server Action. |
 | `app/host/events/[id]/attendees/page.tsx` | **New.** Host guest list. |
 | `app/host/events/[id]/attendees/actions.ts` | **New.** `cancelAttendeeBooking` Server Action. |
+| `app/page.tsx` | **Modified**, line 57: a "Your bookings" link beside "Host an event". |
 
 Reads and writes are split into two modules on purpose: `queries.ts` runs under RLS like every other read in this repo, and `service.ts` is the single quarantined place where RLS does not apply.
 
+## Findings from the pre-implementation audit
+
+Four things were checked against the codebase after this plan was first written, and each changed it. They are recorded here because each is invisible from the task list and each would have cost a build.
+
+**A host cannot read an attendee's `profiles` row.** `profiles_select_own` is `id = auth.uid()` and that is the entire SELECT surface on the table (`20260808000003_rls_policies.sql:61`). An embed of `bookings.profiles(full_name, phone)` therefore returns `null` for every attendee — PostgREST raises nothing, so a guest list built that way renders "Guest" and a blank phone for every row while every test that counts rows passes. Compounding it, `full_name` is null for every user who has ever existed: the signup trigger writes `id` and `phone` only (`20260808000001_core_schema.sql:64`) and nothing in the repo writes it. **Resolution:** the attendee types a name when booking and it is stored on the booking. No RLS change, and hosts never see phone numbers.
+
+**Nothing stopped an attendee booking the same event repeatedly.** `max_per_order` bounds one order, not a person, so ten single-seat bookings take a ten-seat room. **Resolution:** one active booking per attendee per event, enforced by a partial unique index.
+
+**`reserve_tickets` never checks `starts_at`.** It validates published status and the sales window, both of which a finished event still passes, so anyone scrolling back through WhatsApp could book last month's supper club. **Resolution:** an explicit guard.
+
+**There is no navigation anywhere in the app.** `app/layout.tsx:58` is `<body className="min-h-full">{children}</body>` — no header, no nav, no shell. Without a link added deliberately, `/bookings` is reachable only by typing the URL. **Resolution:** Task 9.
+
+One thing the audit cleared rather than changed: every page in this app is dynamically rendered, because `lib/supabase/server.ts:13` awaits `cookies()` on every query path. There is no ISR window and no data cache in front of the seats-left count, so a reload always shows the truth. `revalidatePath` still matters for Next's client Router Cache on back/forward navigation, which is why the booking actions call it.
+
 ---
 
-### Task 1: `book_free_tickets()`
+### Task 1: `attendee_name`, the one-booking rule, and `book_free_tickets()`
 
 **Files:**
-- Create: `supabase/migrations/20260810000001_book_free_tickets.sql`
+- Create: `supabase/migrations/20260810000001_bookings_attendee_name.sql`
+- Create: `supabase/migrations/20260810000002_book_free_tickets.sql`
 - Modify: `lib/supabase/types.ts` (regenerated, never hand-edited)
 - Test: `lib/bookings/book-free-tickets.test.ts`
 
 **Interfaces:**
 - Consumes: `reserve_tickets`, `confirm_booking` from `20260808000002_reservation_functions.sql`
-- Produces: `book_free_tickets(p_ticket_type_id uuid, p_attendee_id uuid, p_quantity integer, p_attendee_note text) returns bookings`; SQLSTATE `EH010` (not free), `EH011` (requires approval)
+- Produces: `book_free_tickets(p_ticket_type_id uuid, p_attendee_id uuid, p_quantity integer, p_attendee_name text, p_attendee_note text) returns bookings`; `bookings.attendee_name`; SQLSTATE `EH010` (not free), `EH011` (requires approval), `EH012` (already booked), `EH013` (event has started)
+
+Two migrations, not one: the column and the index are schema, the function is behaviour, and this repo's history is one focused change per file.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -80,16 +101,18 @@ afterAll(async () => {
 })
 
 describe('book_free_tickets', () => {
-  it('confirms the booking and issues one ticket per seat', async () => {
+  it('confirms the booking, records the name and issues one ticket per seat', async () => {
     const { data, error } = await db.rpc('book_free_tickets', {
       p_ticket_type_id: free.ticketTypeId,
       p_attendee_id: free.attendeeId,
       p_quantity: 3,
+      p_attendee_name: '  Priya  ',
       p_attendee_note: null,
     })
 
     expect(error).toBeNull()
-    expect(data).toMatchObject({ status: 'confirmed', quantity: 3, total_paise: 0 })
+    // Trimmed on the way in: the host reads this at a door.
+    expect(data).toMatchObject({ status: 'confirmed', quantity: 3, total_paise: 0, attendee_name: 'Priya' })
     expect((data as { hold_expires_at: string | null }).hold_expires_at).toBeNull()
 
     const bookingId = (data as { id: string }).id
@@ -113,6 +136,7 @@ describe('book_free_tickets', () => {
       p_ticket_type_id: paid.ticketTypeId,
       p_attendee_id: paid.attendeeId,
       p_quantity: 1,
+      p_attendee_name: 'Priya',
       p_attendee_note: null,
     })
 
@@ -143,6 +167,7 @@ describe('book_free_tickets', () => {
       p_ticket_type_id: gated.ticketTypeId,
       p_attendee_id: gated.attendeeId,
       p_quantity: 1,
+      p_attendee_name: 'Priya',
       p_attendee_note: null,
     })
 
@@ -151,16 +176,108 @@ describe('book_free_tickets', () => {
     await cleanupEvent(db, gated)
   })
 
+  it('refuses a second active booking by the same attendee as EH012', async () => {
+    // max_per_order bounds one order, not one person. Without this rule, ten
+    // single-seat bookings take a ten-seat room.
+    const solo = await seedEvent(db, { quantity: 10, pricePaise: 0, status: 'published' })
+
+    const first = await db.rpc('book_free_tickets', {
+      p_ticket_type_id: solo.ticketTypeId,
+      p_attendee_id: solo.attendeeId,
+      p_quantity: 1,
+      p_attendee_name: 'Priya',
+      p_attendee_note: null,
+    })
+    expect(first.error).toBeNull()
+
+    const second = await db.rpc('book_free_tickets', {
+      p_ticket_type_id: solo.ticketTypeId,
+      p_attendee_id: solo.attendeeId,
+      p_quantity: 1,
+      p_attendee_name: 'Priya',
+      p_attendee_note: null,
+    })
+    expect(second.error?.code).toBe('EH012')
+
+    // Exactly one seat moved, so the refusal rolled its reservation back.
+    const { data: tt } = await db
+      .from('ticket_types')
+      .select('reserved_count')
+      .eq('id', solo.ticketTypeId)
+      .single()
+    expect(tt!.reserved_count).toBe(1)
+
+    await cleanupEvent(db, solo)
+  })
+
+  it('lets an attendee rebook after cancelling', async () => {
+    // The index predicate covers only active statuses, so cancelling frees the
+    // slot. Without this the rule would be "one booking ever", which is not it.
+    const again = await seedEvent(db, { quantity: 10, pricePaise: 0, status: 'published' })
+
+    const first = await db.rpc('book_free_tickets', {
+      p_ticket_type_id: again.ticketTypeId,
+      p_attendee_id: again.attendeeId,
+      p_quantity: 1,
+      p_attendee_name: 'Priya',
+      p_attendee_note: null,
+    })
+    await db.rpc('cancel_booking', {
+      p_booking_id: (first.data as { id: string }).id,
+      p_reason: 'changed my mind',
+    })
+
+    const second = await db.rpc('book_free_tickets', {
+      p_ticket_type_id: again.ticketTypeId,
+      p_attendee_id: again.attendeeId,
+      p_quantity: 4,
+      p_attendee_name: 'Priya',
+      p_attendee_note: null,
+    })
+    expect(second.error).toBeNull()
+
+    await cleanupEvent(db, again)
+  })
+
+  it('refuses an event that has already started as EH013', async () => {
+    // reserve_tickets checks published status and the sales window; a finished
+    // event passes both. Anyone scrolling back through WhatsApp could book it.
+    const past = await seedEvent(db, { quantity: 10, pricePaise: 0, status: 'published' })
+    await db
+      .from('events')
+      .update({ starts_at: new Date(Date.now() - 3600_000).toISOString() })
+      .eq('id', past.eventId)
+
+    const { error } = await db.rpc('book_free_tickets', {
+      p_ticket_type_id: past.ticketTypeId,
+      p_attendee_id: past.attendeeId,
+      p_quantity: 1,
+      p_attendee_name: 'Priya',
+      p_attendee_note: null,
+    })
+
+    expect(error?.code).toBe('EH013')
+
+    await cleanupEvent(db, past)
+  })
+
   it('passes through reserve_tickets\' own refusals', async () => {
     // Not remapped: "only N seats remain" is already a sentence for a human.
+    // A fresh attendee, because `free.attendeeId` already booked above and
+    // would now be refused by EH012 before availability was ever consulted.
+    const { createTestUser } = await import('@/tests/helpers/db')
+    const hopeful = await createTestUser(db)
+
     const { error } = await db.rpc('book_free_tickets', {
       p_ticket_type_id: free.ticketTypeId,
-      p_attendee_id: free.attendeeId,
+      p_attendee_id: hopeful,
       p_quantity: 99,
+      p_attendee_name: 'Priya',
       p_attendee_note: null,
     })
 
     expect(error?.message).toContain('seats remain')
+    await db.auth.admin.deleteUser(hopeful).catch(() => {})
   })
 
   it('is unreachable by a signed-in user over the public API', async () => {
@@ -170,6 +287,7 @@ describe('book_free_tickets', () => {
       p_ticket_type_id: free.ticketTypeId,
       p_attendee_id: free.attendeeId,
       p_quantity: 1,
+      p_attendee_name: 'Priya',
       p_attendee_note: null,
     })
 
@@ -186,10 +304,53 @@ npx vitest run lib/bookings/book-free-tickets.test.ts
 
 Expected: FAIL, PostgREST `PGRST202` — `Could not find the function public.book_free_tickets`.
 
-- [ ] **Step 3: Write the migration**
+- [ ] **Step 3a: Write the schema migration**
 
 ```sql
--- supabase/migrations/20260810000001_book_free_tickets.sql
+-- supabase/migrations/20260810000001_bookings_attendee_name.sql
+
+-- Who is coming, and how many times they may say so.
+--
+-- attendee_name: a host needs to know who is at the door, and cannot find out
+-- any other way. profiles_select_own (20260808000003:61) is the entire SELECT
+-- surface on profiles -- `id = auth.uid()`, own row only -- so an embed of
+-- bookings.profiles(...) returns null for every attendee without erroring, and
+-- a guest list built on one silently lists nobody. profiles.full_name is null
+-- for every user in any case: handle_new_user() writes id and phone and nothing
+-- else, and nothing in this repo has ever written full_name.
+--
+-- So the attendee types a name when booking and it lands here. The host sees
+-- what the guest chose to be called; nobody's phone number moves. Nullable
+-- because request_booking (Phase 5) and the payment path (Phase 3) do not
+-- collect it.
+
+alter table bookings add column attendee_name text;
+
+-- One active booking per attendee per event.
+--
+-- max_per_order bounds a single order, not a person, so ten single-seat
+-- bookings take a ten-seat supper club and every one of them is individually
+-- within the rules. This is the rule that says otherwise.
+--
+-- A unique index rather than a check inside book_free_tickets, because the
+-- check would race with itself: two concurrent requests both read "no existing
+-- booking" and both insert. The index is decided by Postgres at write time and
+-- cannot be lost that way. The function still pre-checks, so the common case
+-- gets a sentence instead of a constraint name; this is the backstop.
+--
+-- Partial on the active statuses only. cancel_booking sets 'cancelled' and
+-- release_expired_holds sets 'expired', both outside the predicate, so
+-- cancelling frees the attendee to book again -- which is the difference
+-- between this rule and "one booking ever".
+create unique index bookings_one_active_per_attendee
+  on bookings (event_id, attendee_id)
+  where status in ('pending_approval', 'awaiting_payment', 'confirmed');
+```
+
+- [ ] **Step 3b: Write the function migration**
+
+```sql
+-- supabase/migrations/20260810000002_book_free_tickets.sql
 
 -- Booking a free event, as one transaction.
 --
@@ -209,6 +370,8 @@ Expected: FAIL, PostgREST `PGRST202` — `Could not find the function public.boo
 --
 --   EH010  the ticket type is not free; payment is Phase 3
 --   EH011  the event requires host approval; that flow is Phase 5
+--   EH012  this attendee already has an active booking on this event
+--   EH013  the event has already started
 --
 -- `extensions` on the search_path because confirm_booking needs pgcrypto's
 -- gen_random_bytes for ticket codes, and it inherits this setting when called
@@ -218,6 +381,7 @@ create or replace function book_free_tickets(
   p_ticket_type_id uuid,
   p_attendee_id    uuid,
   p_quantity       integer,
+  p_attendee_name  text,
   p_attendee_note  text default null
 )
 returns bookings
@@ -257,6 +421,29 @@ begin
       using errcode = 'EH011';
   end if;
 
+  -- reserve_tickets checks published status and the sales window, and a
+  -- finished event passes both -- sales_start and sales_end are null on every
+  -- event this product creates. Without this, last month's supper club is still
+  -- bookable by anyone scrolling back through a WhatsApp group.
+  if ev.starts_at <= now() then
+    raise exception 'this event started at %', ev.starts_at
+      using errcode = 'EH013';
+  end if;
+
+  -- The friendly half of the one-booking rule. bookings_one_active_per_attendee
+  -- is the half that actually holds under concurrency; this exists so the
+  -- ordinary case gets a sentence rather than an index name, and it is checked
+  -- before inventory moves so the refusal costs nothing.
+  if exists (
+    select 1 from bookings b
+     where b.event_id = ev.id
+       and b.attendee_id = p_attendee_id
+       and b.status in ('pending_approval', 'awaiting_payment', 'confirmed')
+  ) then
+    raise exception 'this attendee already has an active booking on event %', ev.id
+      using errcode = 'EH012';
+  end if;
+
   -- Everything else -- published status, sales window, max_per_order,
   -- availability under a row lock -- is already reserve_tickets' job, and its
   -- refusals are already sentences a person can read. They pass through.
@@ -273,7 +460,25 @@ begin
     p_attendee_note  => p_attendee_note
   );
 
+  -- reserve_tickets has no name parameter and should not grow one: it is the
+  -- shared path for every booking kind, and only this one asks for a name.
+  -- Written here instead, inside the same transaction.
+  update bookings
+     set attendee_name = nullif(btrim(p_attendee_name), '')
+   where id = booking.id;
+
   return confirm_booking(booking.id);
+
+exception
+  -- The pre-check above loses the race sometimes; the index never does. Both
+  -- must say the same thing to the attendee, or the same situation reads as a
+  -- refusal one time and a database fault the next.
+  when unique_violation then
+    if sqlerrm like '%bookings_one_active_per_attendee%' then
+      raise exception 'this attendee already has an active booking on event %', ev.id
+        using errcode = 'EH012';
+    end if;
+    raise;
 end;
 $$;
 
@@ -282,12 +487,14 @@ $$;
 -- authenticated -- so the grant back is required, not decorative. anon is named
 -- explicitly because a hosted project may carry default privileges that survive
 -- a revoke from PUBLIC.
-revoke execute on function book_free_tickets(uuid, uuid, integer, text)
+revoke execute on function book_free_tickets(uuid, uuid, integer, text, text)
   from public, anon, authenticated;
 
-grant execute on function book_free_tickets(uuid, uuid, integer, text)
+grant execute on function book_free_tickets(uuid, uuid, integer, text, text)
   to service_role;
 ```
+
+**Two `text` arguments, not one** — `p_attendee_name` and `p_attendee_note`. A mismatched list fails with `function … does not exist`, which is the good failure, but count them against the definition rather than trusting the shape.
 
 - [ ] **Step 4: Apply and regenerate types**
 
@@ -302,7 +509,7 @@ npm run db:types
 npx vitest run lib/bookings/book-free-tickets.test.ts
 ```
 
-Expected: PASS, 5 tests.
+Expected: PASS, 8 tests.
 
 **If `booking := reserve_tickets(...)` fails to compile,** the composite assignment form is the problem, not the logic. Replace it with:
 
@@ -317,9 +524,11 @@ and say in your report which form you used.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add supabase/migrations/20260810000001_book_free_tickets.sql lib/supabase/types.ts lib/bookings/book-free-tickets.test.ts
+git add supabase/migrations/ lib/supabase/types.ts lib/bookings/book-free-tickets.test.ts
 git commit
 ```
+
+Two commits if you prefer — schema, then function. One is acceptable here because the function's guards are meaningless without the index.
 
 ---
 
@@ -510,7 +719,7 @@ git commit
 - Consumes: `book_free_tickets` (Task 1); `Caller`, `mayCancel`, `CancellableBooking` (Task 2); `cancel_booking(p_booking_id uuid, p_reason text)` from Phase 0
 - Produces:
   - `mapBookingRpcError(error: PostgrestError): string`
-  - `bookFreeTickets(caller: Caller, ticketTypeId: string, quantity: number, note?: string): Promise<BookingResult>` where `type BookingResult = { ok: true; reference: string } | { ok: false; error: string }`
+  - `bookFreeTickets(caller: Caller, ticketTypeId: string, quantity: number, attendeeName: string, note?: string): Promise<BookingResult>` where `type BookingResult = { ok: true; reference: string } | { ok: false; error: string }`
   - `cancelBooking(caller: Caller, bookingId: string, reason?: string): Promise<CancelResult>` where `type CancelResult = { ok: true } | { ok: false; error: string }`
 
 - [ ] **Step 1: Write the error-mapper test**
@@ -545,6 +754,18 @@ describe('mapBookingRpcError', () => {
     )
   })
 
+  it('tells an attendee who already booked what to do about it', () => {
+    // Not "duplicate key value violates unique constraint". The attendee's
+    // next move is in the sentence, because there is a screen for it.
+    expect(mapBookingRpcError(pgError({ code: 'EH012' }))).toBe(
+      'You have already booked this event. Cancel that booking first to change it.',
+    )
+  })
+
+  it('explains EH013 without a timestamp', () => {
+    expect(mapBookingRpcError(pgError({ code: 'EH013' }))).toBe('This event has already started.')
+  })
+
   it('passes reserve_tickets\' own message through untouched', () => {
     // These are already written for a person: "only 3 seats remain",
     // "sales have closed". Remapping them would lose the number.
@@ -572,6 +793,10 @@ import type { PostgrestError } from '@supabase/supabase-js'
 const NOT_FREE = 'EH010'
 /** The event requires host approval. That flow is Phase 5. */
 const NEEDS_APPROVAL = 'EH011'
+/** This attendee already holds an active booking on this event. */
+const ALREADY_BOOKED = 'EH012'
+/** The event has started. */
+const STARTED = 'EH013'
 
 /**
  * Turns a refusal from book_free_tickets into a sentence an attendee can read.
@@ -587,6 +812,11 @@ export function mapBookingRpcError(error: PostgrestError): string {
   if (error.code === NEEDS_APPROVAL) {
     return 'This host approves guests before booking, which is not available yet.'
   }
+  if (error.code === ALREADY_BOOKED) {
+    // Names the next move, because there is a screen for it: /bookings.
+    return 'You have already booked this event. Cancel that booking first to change it.'
+  }
+  if (error.code === STARTED) return 'This event has already started.'
   return error.message
 }
 ```
@@ -603,26 +833,47 @@ import { bookFreeTickets, cancelBooking } from '@/lib/bookings/service'
 const db = adminClient()
 let event: SeededEvent
 let strangerId: string
+/** Every attendee this file mints, so afterAll can clear them. */
+const minted: string[] = []
 
 /** Application code cannot fabricate a Caller; a test may. */
 function callerOf(id: string): Caller {
   return { id } as Caller
 }
 
+/**
+ * A brand-new attendee.
+ *
+ * One active booking per attendee per event is enforced by
+ * bookings_one_active_per_attendee, so a test that reuses one attendee for two
+ * bookings on the same event fails on the index rather than on what it meant to
+ * assert. Every booking below therefore gets its own person.
+ */
+async function newAttendee(): Promise<string> {
+  const { createTestUser } = await import('@/tests/helpers/db')
+  const id = await createTestUser(db)
+  minted.push(id)
+  return id
+}
+
 beforeAll(async () => {
   event = await seedEvent(db, { quantity: 10, pricePaise: 0, status: 'published' })
-  const { createTestUser } = await import('@/tests/helpers/db')
-  strangerId = await createTestUser(db)
+  strangerId = await newAttendee()
 })
 
 afterAll(async () => {
   await cleanupEvent(db, event)
-  await db.auth.admin.deleteUser(strangerId).catch(() => {})
+  for (const id of minted) await db.auth.admin.deleteUser(id).catch(() => {})
 })
 
 describe('bookFreeTickets', () => {
   it('returns the reference a host reads at the door', async () => {
-    const result = await bookFreeTickets(callerOf(event.attendeeId), event.ticketTypeId, 2)
+    const result = await bookFreeTickets(
+      callerOf(event.attendeeId),
+      event.ticketTypeId,
+      2,
+      'Priya',
+    )
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
@@ -633,48 +884,70 @@ describe('bookFreeTickets', () => {
     // The signature has no attendee-id parameter at all. This asserts the row
     // that lands carries the caller's id, so a future refactor that adds one
     // and threads a form field through it fails here.
-    const result = await bookFreeTickets(callerOf(strangerId), event.ticketTypeId, 1)
+    const result = await bookFreeTickets(callerOf(strangerId), event.ticketTypeId, 1, 'Stranger')
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
     const { data } = await db
       .from('bookings')
-      .select('attendee_id')
+      .select('attendee_id, attendee_name')
       .eq('reference', result.reference)
       .single()
     expect(data!.attendee_id).toBe(strangerId)
+    expect(data!.attendee_name).toBe('Stranger')
   })
 
   it('reports a refusal as a sentence, not a constraint', async () => {
-    const result = await bookFreeTickets(callerOf(event.attendeeId), event.ticketTypeId, 99)
+    const result = await bookFreeTickets(
+      callerOf(await newAttendee()),
+      event.ticketTypeId,
+      99,
+      'Hopeful',
+    )
 
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error).toContain('seats remain')
   })
+
+  it('tells a repeat booker what to do instead of showing them an index name', async () => {
+    const twice = await newAttendee()
+    const first = await bookFreeTickets(callerOf(twice), event.ticketTypeId, 1, 'Priya')
+    expect(first.ok).toBe(true)
+
+    const second = await bookFreeTickets(callerOf(twice), event.ticketTypeId, 1, 'Priya')
+
+    expect(second.ok).toBe(false)
+    if (second.ok) return
+    expect(second.error).toBe(
+      'You have already booked this event. Cancel that booking first to change it.',
+    )
+  })
 })
 
 describe('cancelBooking', () => {
-  async function freshBooking(): Promise<string> {
-    const result = await bookFreeTickets(callerOf(event.attendeeId), event.ticketTypeId, 1)
+  /** A booking by a fresh attendee, so the one-active-booking rule is never in play. */
+  async function freshBooking(): Promise<{ bookingId: string; attendeeId: string }> {
+    const attendeeId = await newAttendee()
+    const result = await bookFreeTickets(callerOf(attendeeId), event.ticketTypeId, 1, 'Guest')
     if (!result.ok) throw new Error(`setup booking failed: ${result.error}`)
     const { data } = await db
       .from('bookings')
       .select('id')
       .eq('reference', result.reference)
       .single()
-    return data!.id
+    return { bookingId: data!.id, attendeeId }
   }
 
   it('lets the attendee cancel and returns the seat', async () => {
-    const bookingId = await freshBooking()
+    const { bookingId, attendeeId } = await freshBooking()
     const { data: before } = await db
       .from('ticket_types')
       .select('reserved_count')
       .eq('id', event.ticketTypeId)
       .single()
 
-    const result = await cancelBooking(callerOf(event.attendeeId), bookingId)
+    const result = await cancelBooking(callerOf(attendeeId), bookingId)
     expect(result.ok).toBe(true)
 
     const { data: after } = await db
@@ -685,8 +958,18 @@ describe('cancelBooking', () => {
     expect(after!.reserved_count).toBe(before!.reserved_count - 1)
   })
 
+  it('lets a cancelled attendee book again', async () => {
+    // The rule is one *active* booking, not one ever. If this fails, the index
+    // predicate is wider than the active statuses.
+    const { bookingId, attendeeId } = await freshBooking()
+    await cancelBooking(callerOf(attendeeId), bookingId)
+
+    const again = await bookFreeTickets(callerOf(attendeeId), event.ticketTypeId, 2, 'Guest')
+    expect(again.ok).toBe(true)
+  })
+
   it('lets the host of the event cancel it', async () => {
-    const bookingId = await freshBooking()
+    const { bookingId } = await freshBooking()
 
     const result = await cancelBooking(callerOf(event.hostProfileId), bookingId)
 
@@ -699,7 +982,7 @@ describe('cancelBooking', () => {
     // RLS is not in this path — the write goes through the service role — so
     // this assertion is the only thing standing between a stranger and someone
     // else's seat.
-    const bookingId = await freshBooking()
+    const { bookingId, attendeeId } = await freshBooking()
 
     const result = await cancelBooking(callerOf(strangerId), bookingId)
 
@@ -707,7 +990,7 @@ describe('cancelBooking', () => {
     const { data } = await db.from('bookings').select('status').eq('id', bookingId).single()
     expect(data!.status).toBe('confirmed')
 
-    await cancelBooking(callerOf(event.attendeeId), bookingId)
+    await cancelBooking(callerOf(attendeeId), bookingId)
   })
 
   it('refuses a booking that does not exist without leaking that fact', async () => {
@@ -769,6 +1052,7 @@ export async function bookFreeTickets(
   caller: Caller,
   ticketTypeId: string,
   quantity: number,
+  attendeeName: string,
   note?: string,
 ): Promise<BookingResult> {
   const db = createAdminClient()
@@ -779,6 +1063,10 @@ export async function bookFreeTickets(
     // supply someone else's, and there must never be one.
     p_attendee_id: caller.id,
     p_quantity: quantity,
+    // What the host will read at the door. Free text the attendee chose, not an
+    // identity claim — profiles are unreadable to a host and full_name is null
+    // for everyone, so this is the only name there is.
+    p_attendee_name: attendeeName,
     p_attendee_note: note ?? null,
   })
 
@@ -828,7 +1116,7 @@ export async function cancelBooking(
 npx vitest run lib/bookings/rpc-errors.test.ts lib/bookings/service.test.ts
 ```
 
-Expected: PASS, 3 + 8 tests.
+Expected: PASS, 5 + 10 tests.
 
 - [ ] **Step 8: Confirm the lint rule allows exactly this file**
 
@@ -858,8 +1146,10 @@ git commit
   - `interface MyBooking { id: string; reference: string; quantity: number; status: string; created_at: string; events: { slug: string; title: string; starts_at: string; city: string; venue_name: string | null } | null }`
   - `listMyBookings(): Promise<MyBooking[]>`
   - `getBookingByReference(reference: string): Promise<MyBooking | null>`
-  - `interface EventAttendee { id: string; reference: string; quantity: number; status: string; created_at: string; profiles: { full_name: string | null; phone: string } | null }`
+  - `interface EventAttendee { id: string; reference: string; attendee_name: string | null; quantity: number; status: string; created_at: string }`
   - `listEventAttendees(eventId: string): Promise<EventAttendee[]>`
+
+**No `profiles` embed.** An earlier draft of this plan selected `profiles(full_name, phone)`; `profiles_select_own` is `id = auth.uid()` and the embed returns `null` for every attendee without erroring, so the guest list would have rendered "Guest" for everyone while passing every row-counting test. The name comes off the booking instead.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -888,7 +1178,7 @@ beforeAll(async () => {
   event = await seedEvent(db, { quantity: 10, pricePaise: 0, status: 'published' })
   strangerId = await createTestUser(db)
 
-  const result = await bookFreeTickets(callerOf(event.attendeeId), event.ticketTypeId, 2)
+  const result = await bookFreeTickets(callerOf(event.attendeeId), event.ticketTypeId, 2, 'Priya')
   if (!result.ok) throw new Error(`setup booking failed: ${result.error}`)
   reference = result.reference
 })
@@ -936,12 +1226,16 @@ describe('getBookingByReference', () => {
 })
 
 describe('listEventAttendees', () => {
-  it('lets the host see who is coming', async () => {
+  it('lets the host see who is coming, by name', async () => {
     signInAs(event.hostProfileId)
     const attendees = await listEventAttendees(event.eventId)
 
     expect(attendees).toHaveLength(1)
     expect(attendees[0].quantity).toBe(2)
+    // The assertion this file exists for. Counting rows cannot tell a working
+    // guest list from one where every row reads "Guest" — which is exactly what
+    // the profiles embed this replaced would have produced.
+    expect(attendees[0].attendee_name).toBe('Priya')
   })
 
   it('shows another host nothing', async () => {
@@ -1028,18 +1322,27 @@ export async function getBookingByReference(reference: string): Promise<MyBookin
 export interface EventAttendee {
   id: string
   reference: string
+  attendee_name: string | null
   quantity: number
   status: string
   created_at: string
-  profiles: { full_name: string | null; phone: string } | null
 }
 
-/** Who is coming to one event. Empty unless the caller hosts it. */
+/**
+ * Who is coming to one event. Empty unless the caller hosts it.
+ *
+ * The name comes off the booking, not off `profiles`. `profiles_select_own` is
+ * `id = auth.uid()`, so a host embedding `profiles(...)` here gets `null` on
+ * every row and no error — a guest list that looks populated and identifies
+ * nobody. `profiles.full_name` is also null for every user alive, since the
+ * signup trigger writes only `id` and `phone`. `bookings.attendee_name` is what
+ * the attendee typed, and it is the only name in the system.
+ */
 export async function listEventAttendees(eventId: string): Promise<EventAttendee[]> {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('bookings')
-    .select('id, reference, quantity, status, created_at, profiles(full_name, phone)')
+    .select('id, reference, attendee_name, quantity, status, created_at')
     .eq('event_id', eventId)
     .eq('status', 'confirmed')
     .order('created_at', { ascending: true })
@@ -1113,7 +1416,13 @@ export async function bookEvent(_previous: BookState, formData: FormData): Promi
     return { error: 'Choose how many seats you need.' }
   }
 
-  const result = await bookFreeTickets(caller, ticketTypeId, quantity)
+  // The only name the host will ever see: profiles are unreadable to them and
+  // full_name is null for everyone. Capped here as well as by maxLength on the
+  // input, which a handcrafted POST ignores.
+  const attendeeName = String(formData.get('attendeeName') ?? '').trim().slice(0, 80)
+  if (!attendeeName) return { error: 'Tell the host who to expect.' }
+
+  const result = await bookFreeTickets(caller, ticketTypeId, quantity, attendeeName)
   if (!result.ok) return { error: result.error }
 
   const slug = String(formData.get('slug') ?? '')
@@ -1165,6 +1474,21 @@ export function BookPanel({ ticketTypeId, slug, maxSeats, priceLabel, seatsLabel
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
+        <label className="sr-only" htmlFor="attendeeName">
+          Your name
+        </label>
+        <input
+          id="attendeeName"
+          name="attendeeName"
+          type="text"
+          required
+          maxLength={80}
+          placeholder="Your name"
+          disabled={pending}
+          className="w-28 rounded-lg border px-3 py-3 text-[15px]"
+          style={{ borderColor: MIST }}
+        />
+
         <label className="sr-only" htmlFor="quantity">
           Seats
         </label>
@@ -1206,8 +1530,14 @@ In `app/e/[slug]/page.tsx`, add near the other derived values around line 162:
   // control Phase 1 shipped: a host who set a price or ticked approval has built
   // something this phase cannot honour, and saying so is better than confirming
   // strangers at their door or letting people in free.
+  //
+  // `finished` mirrors the EH013 guard in book_free_tickets. The feed already
+  // hides past events, but this page is reached by a link in a WhatsApp group
+  // that outlives the event, so it is the surface where a finished event is
+  // actually met.
+  const finished = new Date(event.starts_at).getTime() <= Date.now()
   const bookable =
-    !!ticket && !soldOut && ticket.price_paise === 0 && !event.requires_approval
+    !!ticket && !soldOut && !finished && ticket.price_paise === 0 && !event.requires_approval
   const maxSeats = ticket ? Math.max(1, Math.min(remaining, ticket.max_per_order ?? 10)) : 1
 ```
 
@@ -1238,7 +1568,7 @@ Then replace the contents of the fixed bottom bar (`page.tsx:329-346`, the inner
               className="shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
               style={{ borderColor: MIST, backgroundColor: '#F2EFE9', color: SLATE }}
             >
-              {soldOut ? 'Sold out' : 'Booking opens soon'}
+              {finished ? 'This event has finished' : soldOut ? 'Sold out' : 'Booking opens soon'}
             </button>
           </div>
         )}
@@ -1644,12 +1974,14 @@ export default async function AttendeesPage(
           {attendees.map((a) => (
             <li key={a.id} className="flex items-center justify-between gap-4 py-3">
               <div className="min-w-0">
-                {/* full_name is nullable — nothing writes it yet — so the phone
-                    is the fallback a host can actually use to find someone. */}
-                <p className="truncate font-medium">{a.profiles?.full_name ?? 'Guest'}</p>
+                {/* What the attendee typed when booking. Nullable because
+                    Phase 3 and Phase 5 booking paths do not collect it, so a
+                    fallback is needed even though 2a always writes one.
+                    No phone number: a host gets the name a guest chose to give,
+                    and nothing they did not. */}
+                <p className="truncate font-medium">{a.attendee_name ?? 'Guest'}</p>
                 <p className="font-mono text-[12px] text-neutral-600">
-                  {a.profiles?.phone ?? ''} · {a.quantity}{' '}
-                  {a.quantity === 1 ? 'seat' : 'seats'} · {a.reference}
+                  {a.quantity} {a.quantity === 1 ? 'seat' : 'seats'} · {a.reference}
                 </p>
               </div>
               <CancelAttendeeButton bookingId={a.id} eventId={id} />
@@ -1733,7 +2065,9 @@ describe('booking concurrency', () => {
     const buyers = await Promise.all(Array.from({ length: 50 }, () => createTestUser(db)))
 
     const results = await Promise.all(
-      buyers.map((id) => bookFreeTickets(callerOf(id), event.ticketTypeId, 1)),
+      // Fifty distinct attendees, so the one-active-booking index is not what
+      // limits this — the row lock in reserve_tickets is.
+      buyers.map((id, i) => bookFreeTickets(callerOf(id), event.ticketTypeId, 1, `Buyer ${i}`)),
     )
 
     const won = results.filter((r) => r.ok)
@@ -1787,7 +2121,7 @@ describe('capacity below what is booked', () => {
     const seeded = await seedEvent(db, { quantity: 10, pricePaise: 0, status: 'published' })
     const buyer = await createTestUser(db)
 
-    const booked = await bookFreeTickets(callerOf(buyer), seeded.ticketTypeId, 4)
+    const booked = await bookFreeTickets(callerOf(buyer), seeded.ticketTypeId, 4, 'Priya')
     expect(booked.ok).toBe(true)
 
     const { signInAs } = await import('@/tests/helpers/session')
@@ -1851,13 +2185,76 @@ git commit
 
 ---
 
+### Task 9: A way to reach `/bookings`
+
+**Files:**
+- Modify: `app/page.tsx:57`
+- Modify: `app/e/[slug]/actions.ts`, `app/bookings/actions.ts`, `app/host/events/[id]/attendees/actions.ts` — add `revalidatePath('/')`
+
+**Interfaces:**
+- Consumes: everything above
+- Produces: nothing further depends on this task
+
+This app has no navigation. `app/layout.tsx:58` is `<body className="min-h-full">{children}</body>` — no header, no shell, and `app/_components/` holds one card component. Every link in the product is hard-coded into the page that needs it. Without this task `/bookings` is reachable only by typing the URL, which makes Task 6 dead code the moment the confirmation page is closed.
+
+- [ ] **Step 1: Add the link**
+
+`app/page.tsx:57` already carries a link in the feed header:
+
+```tsx
+<Link href="/host" className="shrink-0 text-sm underline">Host an event</Link>
+```
+
+Add a sibling immediately before or after it, matching that markup exactly:
+
+```tsx
+<Link href="/bookings" className="shrink-0 text-sm underline">Your bookings</Link>
+```
+
+Read the surrounding flex container first and keep its spacing; if the two links crowd the title on a narrow phone, wrap them in a `flex gap-4` rather than restyling either one.
+
+Shown to signed-out visitors as well, which is deliberate and matches "Host an event" — that link is unconditional too. `requireUser()` on `/bookings` sends a signed-out visitor to `/login?next=/bookings`, and `safeNextPath` (`lib/auth/next-path.ts`) already accepts that path, so the return trip works with no new code.
+
+- [ ] **Step 2: Revalidate the feed after a booking**
+
+The feed card prints a seat count derived from `reserved_count`, so a booking or a cancellation moves it. Add `revalidatePath('/')` alongside the existing calls in all three actions.
+
+Server rendering is not the reason — every page in this app is dynamic, because `lib/supabase/server.ts:13` awaits `cookies()` on every query path, so a fresh request always reads the truth. The reason is Next's client Router Cache: without the call, a back navigation to the feed shows the RSC payload from before the booking. `updateEvent` and `publishEvent` already set this precedent.
+
+- [ ] **Step 3: Verify by hand**
+
+```bash
+npm run dev
+```
+
+Signed out on `/`, click "Your bookings" → `/login?next=/bookings` → sign in → land on `/bookings`. Then book from the feed, navigate back with the browser button, and confirm the seat count on the card has moved.
+
+- [ ] **Step 4: Run the full suite, typecheck and lint**
+
+```bash
+npm test && npm run typecheck && npm run lint
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/page.tsx app/e/ app/bookings/ app/host/events/
+git commit
+```
+
+---
+
 ## Self-review notes
 
-**Spec coverage.** Trust boundary and its mitigations → Tasks 2 and 3 (branded `Caller`, `mayCancel`, the lint rule with a probe that proves it fires). `book_free_tickets` and its guards → Task 1. Error mapping → Task 3. The four screens → Tasks 5, 6, 7. Concurrency, authorisation-as-failed-attempts, cancellation returning inventory, the guards, `mayCancel` unit tests, and `EH001` becoming reachable → Tasks 1, 3, 4 and 8. The migration and `db:types` → Task 1. The 2b notes are deliberately unimplemented.
+**Spec coverage.** Trust boundary and its mitigations → Tasks 2 and 3 (branded `Caller`, `mayCancel`, the lint rule with a probe that proves it fires). `book_free_tickets` and its four guards → Task 1. Error mapping → Task 3. The four screens → Tasks 5, 6, 7, reachable via Task 9. Concurrency, authorisation-as-failed-attempts, cancellation returning inventory, the guards, `mayCancel` unit tests, and `EH001` becoming reachable → Tasks 1, 3, 4 and 8. The migrations and `db:types` → Task 1. The 2b notes are deliberately unimplemented.
+
+**Where this plan now diverges from the spec, and why.** The spec was written before the audit recorded above. Four things here are not in it: `bookings.attendee_name` and the guest list reading it instead of `profiles`; the one-active-booking index and `EH012`; the `starts_at` guard and `EH013`; and Task 9's navigation link. Each exists because the spec's version could not work — the first silently, which is the dangerous kind. `docs/specs/2026-08-09-phase-2a-bookings-design.md` should be amended to match before this plan is executed, or read alongside this section.
 
 **Known gap between spec and plan.** The spec names `lib/bookings/service.ts` as the only `admin.ts` importer and does not mention `lib/bookings/queries.ts`. The plan splits reads out into that second module, on the RLS-scoped client, so the quarantined file contains only writes. This narrows the service-role surface rather than widening it, and it is the split that makes the lint rule meaningful.
 
-**Naming consistency.** `Caller` and `currentCaller()` (Task 2) are used in Tasks 3, 5, 6, 7. `mayCancel(caller, booking)` with `CancellableBooking { attendee_id, event_host_profile_id }` (Task 2) is called only in Task 3. `bookFreeTickets(caller, ticketTypeId, quantity, note?)` and `cancelBooking(caller, bookingId, reason?)` (Task 3) are used in Tasks 5, 6, 7, 8. `MyBooking` and `EventAttendee` (Task 4) are used in Tasks 6 and 7. Every Server Action state type is named `BookState` or `CancelState` and declared beside its action.
+**Naming consistency.** `Caller` and `currentCaller()` (Task 2) are used in Tasks 3, 5, 6, 7. `mayCancel(caller, booking)` with `CancellableBooking { attendee_id, event_host_profile_id }` (Task 2) is called only in Task 3. `bookFreeTickets(caller, ticketTypeId, quantity, attendeeName, note?)` and `cancelBooking(caller, bookingId, reason?)` (Task 3) are used in Tasks 5, 6, 7, 8 — every call site passes a name, including the fifty in Task 8's concurrency test. `MyBooking` and `EventAttendee` (Task 4) are used in Tasks 6 and 7. Every Server Action state type is named `BookState` or `CancelState` and declared beside its action.
+
+**The four SQLSTATEs are declared once and mapped once.** `EH010`/`EH011`/`EH012`/`EH013` are raised in Task 1's function and mapped in Task 3's `mapBookingRpcError`, with a test per code. `EH012` has two producers — the pre-check and the unique index caught in the `exception` block — that deliberately raise the same code, because a race must not read differently from the ordinary case.
 
 **One correction made during review.** The plan first called a `formatIstDateTime(starts_at)` that does not exist. `lib/events/datetime.ts` exports `formatIst(date: Date)`, which takes a `Date` and not the ISO string `starts_at` is. Both call sites in Task 6 now read `formatIst(new Date(...))`. Verified against the module rather than assumed.
 
