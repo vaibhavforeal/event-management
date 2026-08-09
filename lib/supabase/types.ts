@@ -776,6 +776,54 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      create_event_with_ticket_type: {
+        Args: {
+          p_allows_cash: boolean
+          p_city: string
+          p_cover_image_url: string
+          p_description: string
+          p_ends_at: string
+          p_hide_venue_until_approved: boolean
+          p_host_id: string
+          p_price_paise: number
+          p_quantity: number
+          p_requires_approval: boolean
+          p_slug: string
+          p_starts_at: string
+          p_title: string
+          p_venue_address: string
+          p_venue_name: string
+        }
+        Returns: {
+          allows_cash: boolean
+          category: string | null
+          city: string
+          cover_image_url: string | null
+          created_at: string
+          description: string | null
+          ends_at: string | null
+          hide_venue_until_approved: boolean
+          host_id: string
+          id: string
+          published_at: string | null
+          requires_approval: boolean
+          slug: string
+          starts_at: string
+          status: Database["public"]["Enums"]["event_status"]
+          title: string
+          updated_at: string
+          venue_address: string | null
+          venue_lat: number | null
+          venue_lng: number | null
+          venue_name: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "events"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       current_host_id: { Args: never; Returns: string }
       generate_booking_reference: { Args: never; Returns: string }
       owns_event: { Args: { p_event_id: string }; Returns: boolean }
@@ -855,6 +903,53 @@ export type Database = {
         SetofOptions: {
           from: "*"
           to: "bookings"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      update_event_with_ticket_type: {
+        Args: {
+          p_allows_cash: boolean
+          p_city: string
+          p_cover_image_url: string
+          p_description: string
+          p_ends_at: string
+          p_event_id: string
+          p_hide_venue_until_approved: boolean
+          p_price_paise: number
+          p_quantity: number
+          p_requires_approval: boolean
+          p_starts_at: string
+          p_title: string
+          p_venue_address: string
+          p_venue_name: string
+        }
+        Returns: {
+          allows_cash: boolean
+          category: string | null
+          city: string
+          cover_image_url: string | null
+          created_at: string
+          description: string | null
+          ends_at: string | null
+          hide_venue_until_approved: boolean
+          host_id: string
+          id: string
+          published_at: string | null
+          requires_approval: boolean
+          slug: string
+          starts_at: string
+          status: Database["public"]["Enums"]["event_status"]
+          title: string
+          updated_at: string
+          venue_address: string | null
+          venue_lat: number | null
+          venue_lng: number | null
+          venue_name: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "events"
           isOneToOne: true
           isSetofReturn: false
         }

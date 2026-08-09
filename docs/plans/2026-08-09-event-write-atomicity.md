@@ -532,29 +532,53 @@ $$;
 -- Reachability
 -- ---------------------------------------------------------------------------
 -- EXECUTE on a new function is granted to PUBLIC by default, which would put
--- both of these within reach of anon. Revoke first, then grant to the one role
--- that has any business calling them.
+-- both of these within reach of anon. Revoke first, then grant to the roles
+-- that have any business calling them.
+--
+-- `authenticated` is the role the app actually calls with: the Server Action
+-- uses the RLS-scoped user client, on purpose (see app/host/events/actions.ts).
+--
+-- service_role is granted back for the same reason 20260808000002 grants
+-- everything back explicitly: revoking from PUBLIC removes it for everyone,
+-- service_role included -- it is not a member of `authenticated`, so it would
+-- otherwise get 42501 instead of reaching the function body. Granting it
+-- confers no authority it does not already have: it holds `grant all on all
+-- tables in schema public` and bypasses RLS, so it can already write both
+-- tables directly. What it gets here is the function's OWN host_id scoping,
+-- which refuses it — current_host_id() is null without an auth.uid() — and
+-- that refusal is the defence in depth the tests pin.
+
+-- `anon` is named alongside PUBLIC rather than left to be covered by it. A
+-- revoke from PUBLIC only removes the PUBLIC grant; a direct grant to anon
+-- survives it. Hosted Supabase projects commonly carry
+-- `alter default privileges in schema public grant all on functions to anon,
+-- authenticated`, which issues exactly such a direct grant at creation time --
+-- so revoking from PUBLIC alone is enough here and would not be there. Naming
+-- anon makes the outcome independent of which default privileges are in force,
+-- and matches 20260808000002_reservation_functions.sql.
 
 revoke execute on function create_event_with_ticket_type(
   uuid, text, text, text, text, text, text, text, timestamptz, timestamptz,
   boolean, boolean, boolean, bigint, integer
-) from public;
+) from public, anon;
 
 revoke execute on function update_event_with_ticket_type(
   uuid, text, text, text, text, text, text, timestamptz, timestamptz,
   boolean, boolean, boolean, bigint, integer
-) from public;
+) from public, anon;
 
 grant execute on function create_event_with_ticket_type(
   uuid, text, text, text, text, text, text, text, timestamptz, timestamptz,
   boolean, boolean, boolean, bigint, integer
-) to authenticated;
+) to authenticated, service_role;
 
 grant execute on function update_event_with_ticket_type(
   uuid, text, text, text, text, text, text, timestamptz, timestamptz,
   boolean, boolean, boolean, bigint, integer
-) to authenticated;
+) to authenticated, service_role;
 ```
+
+> **This block was wrong as first planned, and is corrected here to what shipped in `supabase/migrations/20260809000001_event_write_transactions.sql`.** It said `grant … to authenticated` and `revoke … from public`. Both are defects: `revoke … from public` strips `service_role` too — it is not a superuser and not a member of `authenticated`, so it would hit 42501 before reaching the function body and the atomicity tests that call as the service role could not run; and the revoke must name `anon` explicitly, because hosted Supabase projects commonly carry `alter default privileges in schema public grant all on functions to anon, authenticated`, and a direct grant like that survives a revoke from PUBLIC. Verified twice during implementation.
 
 > **Watch the argument lists in the `revoke`/`grant` block.** `create_…` has one more `text` than `update_…` (it takes `p_slug`; `update_…` does not, and neither takes `p_host_id` on the update side). Getting these wrong fails loudly with `function … does not exist`, which is the good case — but the counts must match the definitions above exactly.
 
@@ -1088,7 +1112,44 @@ git commit
 _Filled in by Task 1, Step 4. Quoted by Task 5's commit._
 
 ```
-(paste the probe output here)
+ RUN  v4.1.10 D:/Software Ideas/Event Hoster
+
+stdout | lib/events/probe.throwaway.test.ts > PROBE: the first write survives when the second is refused
+events write refused with: 23514 new row for relation "events" violates check constraint "events_end_after_start"
+
+stdout | lib/events/probe.throwaway.test.ts > PROBE: the first write survives when the second is refused
+AFTER  quantity: 33 price: 12300
+AFTER  title: Test Supper Club (unchanged: true )
+
+ ❯ lib/events/probe.throwaway.test.ts (1 test | 1 failed) 508ms
+   × PROBE: the first write survives when the second is refused 36ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  lib/events/probe.throwaway.test.ts > PROBE: the first write survives when the second is refused
+AssertionError: expected 33 to be 20 // Object.is equality
+
+- Expected
++ Received
+
+- 20
++ 33
+
+ ❯ lib/events/probe.throwaway.test.ts:52:27
+     50|
+     51|   // The gap, stated as an assertion. This SHOULD FAIL today.
+     52|   expect(after!.quantity).toBe(20)
+       |                           ^
+     53| })
+     54|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  13:45:12
+   Duration  824ms (transform 42ms, setup 0ms, import 134ms, tests 508ms, environment 0ms)
 ```
 
 ## Self-review notes

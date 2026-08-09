@@ -39,28 +39,6 @@ const { createEvent, publishEvent, unpublishEvent, updateEvent } = await import(
 const db = adminClient()
 
 const ROLLBACK_TITLE = 'Rollback Probe Supper Club'
-const STRANDED_TITLE = 'Stranded Probe Supper Club'
-
-/** A `from()` stand-in whose only operation, `insert`, fails. */
-function insertFails(message: string) {
-  return { insert: async () => ({ data: null, error: { message } }) }
-}
-
-/** A `from()` stand-in whose only operation, `update(...).eq(...)`, fails. */
-function updateFails(message: string) {
-  return { update: () => ({ eq: async () => ({ data: null, error: { message } }) }) }
-}
-
-/** Wraps a real query builder so that only `delete(...).eq(...)` fails. */
-function deleteFails(builder: object, message: string): object {
-  return new Proxy(builder, {
-    get(target, prop) {
-      if (prop === 'delete') return () => ({ eq: async () => ({ data: null, error: { message } }) })
-      const value = Reflect.get(target, prop)
-      return typeof value === 'function' ? value.bind(target) : value
-    },
-  })
-}
 
 function form(overrides: Record<string, string> = {}): FormData {
   const fd = new FormData()
@@ -94,8 +72,8 @@ type Actions = typeof import('@/app/host/events/actions')
 
 /**
  * Substitutes the client the actions run on, for the two things the RLS-scoped
- * client cannot express: a table write that fails, and a write RLS would have
- * refused anyway.
+ * client cannot express: a write that fails, and a write RLS would have refused
+ * anyway.
  *
  * The seam is the same one `tests/helpers/session.ts` mocks, re-registered with
  * `doMock` and a module reset so this call gets its own copy of the actions
@@ -134,6 +112,24 @@ function clientWithFrom(
   })
 }
 
+/**
+ * A real client with `rpc()` redirected. The mirror of clientWithFrom, for the
+ * seam the event writes moved to. Everything else -- `auth` above all -- stays
+ * real, so the action still resolves a real session and a real host id.
+ */
+function clientWithRpc(
+  base: SupabaseClient,
+  override: (fn: string) => { data: unknown; error: unknown },
+): SupabaseClient {
+  return new Proxy(base, {
+    get(target, prop) {
+      if (prop === 'rpc') return async (fn: string) => override(fn)
+      const value = Reflect.get(target, prop)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
 let aliceId: string
 let bobId: string
 let eventId: string
@@ -152,7 +148,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (eventId) await db.from('events').delete().eq('id', eventId)
-  // Events cascade from hosts, so a stranded rollback probe goes with them.
+  // Events cascade from hosts, so anything a test created under one goes too.
   await db.from('hosts').delete().eq('profile_id', aliceId)
   await db.from('hosts').delete().eq('profile_id', bobId)
   await db.auth.admin.deleteUser(aliceId).catch(() => {})
@@ -241,51 +237,24 @@ describe('createEvent', () => {
     expect(data![0]).toMatchObject({ name: 'General', price_paise: 50_000, quantity: 20 })
   })
 
-  it('deletes the event again when its ticket type cannot be created', async () => {
-    // No form input is acceptable to events and rejected by ticket_types, so the
-    // failure is injected at the client seam instead. Without this the rollback
-    // branch is unreachable from a test, and dropping it would leave an event
-    // with no inventory: unpublishable forever, with no UI to add a ticket type.
-    const failing = clientWithFrom(userClient(aliceId), (table) =>
-      table === 'ticket_types' ? insertFails('simulated ticket_types outage') : null,
-    )
+  it('surfaces a refused save without creating anything', async () => {
+    // The rollback this used to test no longer exists: one RPC is one
+    // transaction, so there is nothing to compensate for. What still has to
+    // hold is that the host is told, and that nothing survives. The seam moved
+    // from from() to rpc(), so the injection moved with it.
+    const failing = clientWithRpc(userClient(aliceId), () => ({
+      data: null,
+      error: { code: '23514', message: 'simulated ticket_types rejection', details: '', hint: '' },
+    }))
 
     const state = await actionsWith(failing, (actions) =>
       actions.createEvent({}, form({ title: ROLLBACK_TITLE })),
     )
 
-    // The exact string, because `toBeTruthy()` would also hold if the events
-    // insert were what failed — in which case there would be nothing to roll
-    // back and the assertion below would pass without the rollback existing.
-    expect(state.error).toBe('simulated ticket_types outage')
+    expect(state.error).toBe('simulated ticket_types rejection')
 
     const { data } = await db.from('events').select('id').eq('title', ROLLBACK_TITLE)
     expect(data ?? []).toHaveLength(0)
-  })
-
-  it('names the stranded event when the rollback itself fails', async () => {
-    // Two statements, no transaction: the rollback can fail on its own. Silence
-    // there would leave exactly the unpublishable draft the rollback exists to
-    // prevent, with the host told only that tickets failed.
-    const base = userClient(aliceId)
-    const failing = clientWithFrom(base, (table) => {
-      if (table === 'ticket_types') return insertFails('simulated ticket_types outage')
-      if (table === 'events') return deleteFails(base.from('events'), 'simulated delete outage')
-      return null
-    })
-
-    const state = await actionsWith(failing, (actions) =>
-      actions.createEvent({}, form({ title: STRANDED_TITLE })),
-    )
-
-    const { data } = await db.from('events').select('id').eq('title', STRANDED_TITLE)
-    expect(data).toHaveLength(1) // it really is stranded
-
-    expect(state.error).toContain('simulated ticket_types outage')
-    expect(state.error).toContain('simulated delete outage')
-    expect(state.error).toContain(data![0].id) // recoverable by hand
-
-    await db.from('events').delete().eq('id', data![0].id)
   })
 })
 
@@ -410,25 +379,35 @@ describe('updateEvent', () => {
   })
 
   it('refuses that same edit with RLS taken out of the picture', async () => {
-    // The test above cannot tell the action's host_id filter from the
-    // events_update_own policy: both refuse Bob, and the policy would refuse him
-    // even if the filter were deleted. So run it once more on a client that
-    // authenticates as Bob but reaches the tables as the service role, leaving
-    // the filter as the only thing between Bob and Alice's event.
+    // The test above cannot tell the function's own host_id scoping from the
+    // events_update_own policy: both refuse Bob. So run it once more on a
+    // client that reaches the RPC as the service role, for which RLS does not
+    // apply at all -- leaving `host_id = current_host_id()` inside the function
+    // as the only thing between a caller and Alice's event. current_host_id()
+    // reads auth.uid(), which the service role does not carry, so it is null
+    // and the scoping refuses.
     //
-    // Nothing in the app builds such a client — lib/supabase/server always
+    // Nothing in the app builds such a client -- lib/supabase/server always
     // returns an RLS-scoped one. This exists so the defence in depth is a
     // tested claim rather than a comment.
-    const rlsFree = clientWithFrom(userClient(bobId), (table) => db.from(table))
-
-    // Values that differ from the stored ones on every writable table, because
-    // the seats write now happens first: an unowned edit that got that far would
-    // reprice Alice's tickets before the events update refused it.
+    // Values that differ from the stored ones on every writable table, so an
+    // unowned edit that got past the scoping would leave a visible mark.
     const fd = form({ title: 'Defaced without RLS', seats: '3', priceRupees: '1' })
     fd.set('eventId', eventId)
 
-    const state = await actionsWith(rlsFree, (actions) => actions.updateEvent({}, fd))
-    expect(state.error).toBeTruthy()
+    // Built inline rather than through clientWithRpc: this needs the *real*
+    // service-role rpc(), not a canned response, so the two are not
+    // interchangeable.
+    const serviceRoleRpc = new Proxy(userClient(bobId), {
+      get(target, prop) {
+        if (prop === 'rpc') return db.rpc.bind(db)
+        const value = Reflect.get(target, prop)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }) as SupabaseClient
+
+    const state = await actionsWith(serviceRoleRpc, (actions) => actions.updateEvent({}, fd))
+    expect(state.error).toBe('That event is not yours to edit')
     expect(state.ok).toBeUndefined()
 
     const { data } = await db.from('events').select('title').eq('id', eventId).single()
@@ -455,9 +434,11 @@ describe('updateEvent', () => {
     expect(state.blockers![0]).toContain('5')
     expect(state.ok).toBeUndefined()
 
-    // The point of the pre-check: the event must not be half-saved. Before the
-    // events update was moved after the seats update, title and city here were
-    // already written by the time the host was told the save had failed.
+    // The event must not be half-saved, and what makes that true is the
+    // transaction, not the order of the statements. EH001 is raised inside the
+    // function, so the events update never runs -- and had it already run, the
+    // raise would take it down with everything else in the call. Title and city
+    // below are the stored ones because nothing in this save committed.
     const { data } = await db.from('events').select('title, city').eq('id', eventId).single()
     expect(data).toMatchObject({ title: 'Diwali Supper Club (fixed typo)', city: 'Indore' })
 
@@ -471,20 +452,30 @@ describe('updateEvent', () => {
     await db.from('ticket_types').update({ reserved_count: 0 }).eq('event_id', eventId)
   })
 
-  it('surfaces a rejected seats write and leaves the event alone', async () => {
-    // The pre-check above cannot catch a booking that lands between the read and
-    // the write, so ticket_types_no_oversell is still the backstop and the action
-    // must not swallow it. Injected, because that race cannot be staged here.
-    const base = userClient(aliceId)
-    const failing = clientWithFrom(base, (table) =>
-      table === 'ticket_types' ? updateFails('simulated no_oversell rejection') : null,
-    )
+  it('surfaces a refused save and leaves the event alone', async () => {
+    // What this proves is that a database error mapEventRpcError does not
+    // recognise reaches the host as its own message rather than being swallowed
+    // or dressed up as something friendlier. Injected, because every refusal
+    // the function raises deliberately carries EH001 or EH002; an unrecognised
+    // code cannot be staged from a form.
+    //
+    // It is no longer a claim about the oversell race. The function takes the
+    // ticket type `for update` before it reads reserved_count, so a booking can
+    // no longer land between that read and the write.
+    //
+    // The message is the database's own rather than the old
+    // "Could not update seats: ..." prefix. That prefix named which of two
+    // writes failed, and there are no longer two writes to distinguish.
+    const failing = clientWithRpc(userClient(aliceId), () => ({
+      data: null,
+      error: { code: '23514', message: 'simulated no_oversell rejection', details: '', hint: '' },
+    }))
 
     const fd = form({ title: 'Half-saved', city: 'Bhopal' })
     fd.set('eventId', eventId)
 
     const state = await actionsWith(failing, (actions) => actions.updateEvent({}, fd))
-    expect(state.error).toBe('Could not update seats: simulated no_oversell rejection')
+    expect(state.error).toBe('simulated no_oversell rejection')
 
     const { data } = await db.from('events').select('title, city').eq('id', eventId).single()
     expect(data).toMatchObject({ title: 'Diwali Supper Club (fixed typo)', city: 'Indore' })
@@ -561,10 +552,10 @@ describe('updateEvent', () => {
   })
 
   it('creates the ticket type when the event has none left', async () => {
-    // Reachable: createEvent's rollback is two statements and can be interrupted
-    // between them. Updating by event_id matched zero rows, which PostgREST
-    // reports as success — so the host was told "Saved." while the seats and
-    // price they had just typed went nowhere at all.
+    // No longer reachable through this app, but rows predating the transactional
+    // writes can be in this state. Updating by event_id matched zero rows, which
+    // PostgREST reports as success — so the host was told "Saved." while the
+    // seats and price they had just typed went nowhere at all.
     await db.from('ticket_types').delete().eq('event_id', eventId)
 
     signInAs(aliceId)
