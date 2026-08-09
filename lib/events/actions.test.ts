@@ -39,27 +39,10 @@ const { createEvent, publishEvent, unpublishEvent, updateEvent } = await import(
 const db = adminClient()
 
 const ROLLBACK_TITLE = 'Rollback Probe Supper Club'
-const STRANDED_TITLE = 'Stranded Probe Supper Club'
-
-/** A `from()` stand-in whose only operation, `insert`, fails. */
-function insertFails(message: string) {
-  return { insert: async () => ({ data: null, error: { message } }) }
-}
 
 /** A `from()` stand-in whose only operation, `update(...).eq(...)`, fails. */
 function updateFails(message: string) {
   return { update: () => ({ eq: async () => ({ data: null, error: { message } }) }) }
-}
-
-/** Wraps a real query builder so that only `delete(...).eq(...)` fails. */
-function deleteFails(builder: object, message: string): object {
-  return new Proxy(builder, {
-    get(target, prop) {
-      if (prop === 'delete') return () => ({ eq: async () => ({ data: null, error: { message } }) })
-      const value = Reflect.get(target, prop)
-      return typeof value === 'function' ? value.bind(target) : value
-    },
-  })
 }
 
 function form(overrides: Record<string, string> = {}): FormData {
@@ -128,6 +111,24 @@ function clientWithFrom(
   return new Proxy(base, {
     get(target, prop) {
       if (prop === 'from') return (table: string) => override(table) ?? target.from(table)
+      const value = Reflect.get(target, prop)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
+/**
+ * A real client with `rpc()` redirected. The mirror of clientWithFrom, for the
+ * seam the event writes moved to. Everything else -- `auth` above all -- stays
+ * real, so the action still resolves a real session and a real host id.
+ */
+function clientWithRpc(
+  base: SupabaseClient,
+  override: (fn: string) => { data: unknown; error: unknown },
+): SupabaseClient {
+  return new Proxy(base, {
+    get(target, prop) {
+      if (prop === 'rpc') return async (fn: string) => override(fn)
       const value = Reflect.get(target, prop)
       return typeof value === 'function' ? value.bind(target) : value
     },
@@ -241,51 +242,24 @@ describe('createEvent', () => {
     expect(data![0]).toMatchObject({ name: 'General', price_paise: 50_000, quantity: 20 })
   })
 
-  it('deletes the event again when its ticket type cannot be created', async () => {
-    // No form input is acceptable to events and rejected by ticket_types, so the
-    // failure is injected at the client seam instead. Without this the rollback
-    // branch is unreachable from a test, and dropping it would leave an event
-    // with no inventory: unpublishable forever, with no UI to add a ticket type.
-    const failing = clientWithFrom(userClient(aliceId), (table) =>
-      table === 'ticket_types' ? insertFails('simulated ticket_types outage') : null,
-    )
+  it('surfaces a refused save without creating anything', async () => {
+    // The rollback this used to test no longer exists: one RPC is one
+    // transaction, so there is nothing to compensate for. What still has to
+    // hold is that the host is told, and that nothing survives. The seam moved
+    // from from() to rpc(), so the injection moved with it.
+    const failing = clientWithRpc(userClient(aliceId), () => ({
+      data: null,
+      error: { code: '23514', message: 'simulated ticket_types rejection', details: '', hint: '' },
+    }))
 
     const state = await actionsWith(failing, (actions) =>
       actions.createEvent({}, form({ title: ROLLBACK_TITLE })),
     )
 
-    // The exact string, because `toBeTruthy()` would also hold if the events
-    // insert were what failed — in which case there would be nothing to roll
-    // back and the assertion below would pass without the rollback existing.
-    expect(state.error).toBe('simulated ticket_types outage')
+    expect(state.error).toBe('simulated ticket_types rejection')
 
     const { data } = await db.from('events').select('id').eq('title', ROLLBACK_TITLE)
     expect(data ?? []).toHaveLength(0)
-  })
-
-  it('names the stranded event when the rollback itself fails', async () => {
-    // Two statements, no transaction: the rollback can fail on its own. Silence
-    // there would leave exactly the unpublishable draft the rollback exists to
-    // prevent, with the host told only that tickets failed.
-    const base = userClient(aliceId)
-    const failing = clientWithFrom(base, (table) => {
-      if (table === 'ticket_types') return insertFails('simulated ticket_types outage')
-      if (table === 'events') return deleteFails(base.from('events'), 'simulated delete outage')
-      return null
-    })
-
-    const state = await actionsWith(failing, (actions) =>
-      actions.createEvent({}, form({ title: STRANDED_TITLE })),
-    )
-
-    const { data } = await db.from('events').select('id').eq('title', STRANDED_TITLE)
-    expect(data).toHaveLength(1) // it really is stranded
-
-    expect(state.error).toContain('simulated ticket_types outage')
-    expect(state.error).toContain('simulated delete outage')
-    expect(state.error).toContain(data![0].id) // recoverable by hand
-
-    await db.from('events').delete().eq('id', data![0].id)
   })
 })
 

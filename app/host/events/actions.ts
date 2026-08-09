@@ -13,8 +13,10 @@ import {
   type SubmittedEventValues,
 } from '@/lib/events/validation'
 import { findHost, getCurrentHost, getCurrentHostId } from '@/lib/events/queries'
+import { mapEventRpcError } from '@/lib/events/rpc-errors'
 import { loginPath } from '@/lib/auth/session'
 import { rupeesToPaise } from '@/lib/money'
+import type { Database } from '@/lib/supabase/types'
 
 export interface EventFormState {
   error?: string
@@ -88,6 +90,30 @@ async function resolveOrCreateHost(
   return data.id
 }
 
+/**
+ * Every property of T, plus null.
+ *
+ * Postgres does not record whether a function argument may be null, and
+ * `supabase gen types` has nothing else to read — so it emits every text and
+ * timestamptz argument of the event-write functions as a bare `string`. Five of
+ * the columns behind them are genuinely nullable (description, venue_name,
+ * venue_address, cover_image_url, ends_at), and the client is Database-typed,
+ * so passing the null the schema allows is a type error against the generated
+ * shape. lib/supabase/types.ts is generated and committed, so the widening
+ * belongs here rather than as a hand-edit that the next `gen types` erases.
+ *
+ * Mapped over the generated Args on purpose rather than hand-written, and every
+ * key stays required. That is the entire reason these functions take fifteen
+ * named parameters instead of one jsonb payload: a field added to the form and
+ * forgotten at the call site should fail to compile, not arrive as a silent
+ * null. Written as `satisfies Nullable<Args> as Args` at the call site, so the
+ * literal is still checked — for missing keys and for stray ones — and only the
+ * nullability is waived.
+ */
+type Nullable<T> = { [K in keyof T]: T[K] | null }
+
+type CreateEventArgs = Database['public']['Functions']['create_event_with_ticket_type']['Args']
+
 export async function createEvent(
   _previous: EventFormState,
   formData: FormData,
@@ -102,60 +128,29 @@ export async function createEvent(
 
   const hostId = await resolveOrCreateHost(supabase, auth.user, input.hostDisplayName)
 
-  const { data: event, error } = await supabase
-    .from('events')
-    .insert({
-      host_id: hostId,
-      slug: buildSlug(input.title), // written once, never updated
-      title: input.title,
-      description: input.description ?? null,
-      city: input.city,
-      venue_name: input.venueName ?? null,
-      venue_address: input.venueAddress ?? null,
-      cover_image_url: input.coverImageUrl ?? null,
-      starts_at: istLocalToUtc(input.startsAtLocal).toISOString(),
-      ends_at: input.endsAtLocal ? istLocalToUtc(input.endsAtLocal).toISOString() : null,
-      requires_approval: input.requiresApproval,
-      allows_cash: input.allowsCash,
-      hide_venue_until_approved: input.hideVenueUntilApproved,
-      status: 'draft',
-    })
-    .select('id')
-    .single()
+  const { data: event, error } = await supabase.rpc('create_event_with_ticket_type', {
+    p_host_id: hostId,
+    p_slug: buildSlug(input.title), // written once, never updated
+    p_title: input.title,
+    p_description: input.description ?? null,
+    p_city: input.city,
+    p_venue_name: input.venueName ?? null,
+    p_venue_address: input.venueAddress ?? null,
+    p_cover_image_url: input.coverImageUrl ?? null,
+    p_starts_at: istLocalToUtc(input.startsAtLocal).toISOString(),
+    p_ends_at: input.endsAtLocal ? istLocalToUtc(input.endsAtLocal).toISOString() : null,
+    p_requires_approval: input.requiresApproval,
+    p_allows_cash: input.allowsCash,
+    p_hide_venue_until_approved: input.hideVenueUntilApproved,
+    p_price_paise: rupeesToPaise(input.priceRupees),
+    p_quantity: input.seats,
+  } satisfies Nullable<CreateEventArgs> as CreateEventArgs)
 
-  if (error) return { error: error.message, values: submittedValues(formData) }
-
-  const { error: ticketError } = await supabase.from('ticket_types').insert({
-    event_id: event.id,
-    name: 'General',
-    price_paise: rupeesToPaise(input.priceRupees),
-    quantity: input.seats,
-  })
-
-  if (ticketError) {
-    // Roll back rather than strand an event with no inventory: publish would
-    // reject it forever and the UI offers no way to add a ticket type.
-    //
-    // Not atomic. These are two statements, so a crash — or a lost connection —
-    // between them strands the draft just the same. Real atomicity would need
-    // both writes inside one Postgres function, which this phase deliberately
-    // does not have.
-    const { error: rollbackError } = await supabase.from('events').delete().eq('id', event.id)
-
-    if (rollbackError) {
-      // The rollback is the thing that prevents the unpublishable-forever state,
-      // so its failure cannot be swallowed: name the row that was left behind so
-      // it is recoverable by hand rather than invisible.
-      return {
-        error:
-          `${ticketError.message}. The half-created event could not be removed either ` +
-          `(${rollbackError.message}) — quote event id ${event.id} when asking for help.`,
-        values: submittedValues(formData),
-      }
-    }
-
-    return { error: ticketError.message, values: submittedValues(formData) }
-  }
+  // One call, one transaction. The event and its ticket type land together or
+  // not at all, which is why there is no compensating delete here any more --
+  // and no branch for that delete having failed, which used to be the only
+  // thing standing between a host and an event that could never be published.
+  if (error) return { ...mapEventRpcError(error, input.seats), values: submittedValues(formData) }
 
   redirect(`/host/events/${event.id}/edit`)
 }
