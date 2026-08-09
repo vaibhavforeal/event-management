@@ -67,7 +67,9 @@ Four things were checked against the codebase after this plan was first written,
 
 **There is no navigation anywhere in the app.** `app/layout.tsx:58` is `<body className="min-h-full">{children}</body>` — no header, no nav, no shell. Without a link added deliberately, `/bookings` is reachable only by typing the URL. **Resolution:** Task 9.
 
-One thing the audit cleared rather than changed: every page in this app is dynamically rendered, because `lib/supabase/server.ts:13` awaits `cookies()` on every query path. There is no ISR window and no data cache in front of the seats-left count, so a reload always shows the truth. `revalidatePath` still matters for Next's client Router Cache on back/forward navigation, which is why the booking actions call it.
+One thing the audit cleared rather than changed: every page in this app is dynamically rendered, because `lib/supabase/server.ts:13` awaits `cookies()` on every query path. There is no ISR window and no data cache in front of the seats-left count, so a reload always shows the truth.
+
+The half of that finding this plan added — that `revalidatePath` still matters for Next's client Router Cache on back/forward navigation — is false as this app is configured, and was measured false while executing Task 9. `staleTimes.dynamic` has defaulted to 0, "not cached", since Next 15, and `next.config.ts` sets no `experimental.staleTimes`, so dynamic segments are not held client-side at all — and by the sentence above, every segment here is dynamic. With the calls disabled, booking and pressing Back still showed the moved count. The booking actions call `revalidatePath` regardless, because the RSC payload for a revalidated path genuinely is stale and because the calls are the only thing between a raised `staleTimes` — or a route that stops being dynamic — and a seat count that lies on Back. Task 9 Step 2 below carries the corrected reasoning, and `app/e/[slug]/actions.ts` carries it in the shipped code.
 
 ---
 
@@ -2346,9 +2348,15 @@ Shown to signed-out visitors as well, which is deliberate and matches "Host an e
 
 - [ ] **Step 2: Revalidate the feed after a booking**
 
-The feed card prints a seat count derived from `reserved_count`, so a booking or a cancellation moves it. Add `revalidatePath('/')` alongside the existing calls in all three actions.
+Add `revalidatePath('/')` alongside the existing calls in all three actions. `updateEvent` and `publishEvent` already set that precedent.
 
-Server rendering is not the reason — every page in this app is dynamic, because `lib/supabase/server.ts:13` awaits `cookies()` on every query path, so a fresh request always reads the truth. The reason is Next's client Router Cache: without the call, a back navigation to the feed shows the RSC payload from before the booking. `updateEvent` and `publishEvent` already set this precedent.
+Both reasons this step originally gave were checked against the code while executing it, and neither survived. Recorded rather than deleted, because they are the reasons anyone would give again.
+
+**The feed card does not print a seat count.** `app/_components/event-card.tsx` renders date, title, venue and price, and nothing else. `reserved_count` is selected into the feed payload by `FEED_COLUMNS` (`lib/events/queries.ts`) and never painted. So the call corrects a stale *payload* rather than a stale number, and what it actually buys is that a "seats left" line is safe to add to the card later without anyone having to remember to come back here.
+
+**Next's client Router Cache is not holding anything.** `staleTimes.dynamic` has defaulted to 0, "not cached", since Next 15, and `next.config.ts` sets no `experimental.staleTimes`, so dynamic segments are not cached client-side — and every segment in this app is dynamic, because `lib/supabase/server.ts:13` awaits `cookies()` on every query path. Measured, not reasoned about: with `revalidatePath` disabled, booking and pressing Back still showed the moved count. Server rendering was never the reason either, for the same dynamic-render reason, and reaching for `export const revalidate` would be the wrong fix twice over.
+
+The calls stay. They cost nothing, and they are the only thing between a raised `staleTimes` — or a route that stops being dynamic — and a seat count that lies on Back. The comment in `app/e/[slug]/actions.ts` says exactly this, so the next reader does not "fix" it.
 
 - [ ] **Step 3: Verify by hand**
 
@@ -2356,7 +2364,9 @@ Server rendering is not the reason — every page in this app is dynamic, becaus
 npm run dev
 ```
 
-Signed out on `/`, click "Your bookings" → `/login?next=/bookings` → sign in → land on `/bookings`. Then book from the feed, navigate back with the browser button, and confirm the seat count on the card has moved.
+Signed out on `/`, click "Your bookings" → `/login?next=/bookings` → sign in → land on `/bookings`. Then book from the feed and navigate back with the browser button.
+
+There is no seat count on the card to watch move — see Step 2 — so what a back navigation can confirm here is only that the feed still renders and the booked event is still on it. The number that does move is "N of 12 seats left" on `/e/[slug]`, and the honest way to test the `revalidatePath('/')` call is the measurement in Step 2: disable it, book, press Back, and observe that nothing changes either way as this app is configured.
 
 - [ ] **Step 4: Run the full suite, typecheck and lint**
 
