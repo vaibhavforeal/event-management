@@ -1,6 +1,21 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { clientEnv } from '@/lib/env'
+import { PATHNAME_HEADER } from '@/lib/auth/next-path'
+
+/**
+ * Forwards the request with the path the visitor asked for attached.
+ *
+ * Server Components are not given their own URL, so requireUser() has no way to
+ * build a `?next=` without this. The headers are cloned per call rather than
+ * once up front because `request.cookies.set()` writes through to the `cookie`
+ * header, and a clone taken before the refresh would carry the stale one.
+ */
+function forward(request: NextRequest): NextResponse {
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set(PATHNAME_HEADER, request.nextUrl.pathname + request.nextUrl.search)
+  return NextResponse.next({ request: { headers: requestHeaders } })
+}
 
 /**
  * Refreshes the Supabase auth session on every request.
@@ -12,7 +27,7 @@ import { clientEnv } from '@/lib/env'
  * intermittently see a signed-out user.
  */
 export async function proxy(request: NextRequest) {
-  let response = NextResponse.next({ request })
+  let response = forward(request)
 
   const supabase = createServerClient(
     clientEnv.NEXT_PUBLIC_SUPABASE_URL,
@@ -26,7 +41,7 @@ export async function proxy(request: NextRequest) {
           for (const { name, value } of cookiesToSet) {
             request.cookies.set(name, value)
           }
-          response = NextResponse.next({ request })
+          response = forward(request)
           for (const { name, value, options } of cookiesToSet) {
             response.cookies.set(name, value, options)
           }

@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
+import { safeNextPath } from '@/lib/auth/next-path'
 import { normalisePhone } from '@/lib/notifications/types'
 
 export interface LoginState {
@@ -73,5 +74,7 @@ export async function verifyOtp(
     return { step: 'otp', phone, error: 'That code was not right. Try again.' }
   }
 
-  redirect('/')
+  // Vetted again rather than trusted: this arrives as a form field, and a form
+  // field is a POST body anyone can write, whatever the page rendered into it.
+  redirect(safeNextPath(formData.get('next')?.toString()) ?? '/')
 }

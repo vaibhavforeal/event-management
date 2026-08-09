@@ -19,7 +19,7 @@ function SubmitButton({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function LoginForm() {
+export function LoginForm({ next }: { next: string }) {
   const [state, formAction] = useActionState(
     async (previous: LoginState, formData: FormData) =>
       previous.step === 'phone'
@@ -30,6 +30,13 @@ export function LoginForm() {
 
   return (
     <form action={formAction} className="flex flex-col gap-4">
+      {/*
+        Travels with both submissions — the phone step and the code step are the
+        same form — so verifyOtp still knows where to send the host two screens
+        later. The page has already vetted it, and the action vets it again.
+      */}
+      <input type="hidden" name="next" value={next} />
+
       {state.step === 'phone' ? (
         <label className="flex flex-col gap-2">
           <span className="text-sm font-medium">Phone number</span>
