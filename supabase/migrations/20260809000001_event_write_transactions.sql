@@ -133,8 +133,12 @@ begin
    limit 1
    for update;
 
-  -- `ticket.id is null` rather than `found`: every statement resets `found`, so
-  -- reading it after the branch below would be reading the wrong statement.
+  -- `ticket.id is not null` rather than `found`. FOUND would in fact be correct
+  -- at both use sites here -- IF and RAISE do not touch it, so it still belongs
+  -- to the select above. It is avoided because it reads correctly only for
+  -- someone who has tracked which statement last set it, and there are two
+  -- separate branches below asking the same question. The row variable says
+  -- what it means at the point of use.
   if ticket.id is not null and p_quantity < ticket.reserved_count then
     raise exception 'capacity % is below the % seats already reserved',
       p_quantity, ticket.reserved_count
@@ -194,15 +198,24 @@ $$;
 -- which refuses it — current_host_id() is null without an auth.uid() — and
 -- that refusal is the defence in depth the tests pin.
 
+-- `anon` is named alongside PUBLIC rather than left to be covered by it. A
+-- revoke from PUBLIC only removes the PUBLIC grant; a direct grant to anon
+-- survives it. Hosted Supabase projects commonly carry
+-- `alter default privileges in schema public grant all on functions to anon,
+-- authenticated`, which issues exactly such a direct grant at creation time --
+-- so revoking from PUBLIC alone is enough here and would not be there. Naming
+-- anon makes the outcome independent of which default privileges are in force,
+-- and matches 20260808000002_reservation_functions.sql.
+
 revoke execute on function create_event_with_ticket_type(
   uuid, text, text, text, text, text, text, text, timestamptz, timestamptz,
   boolean, boolean, boolean, bigint, integer
-) from public;
+) from public, anon;
 
 revoke execute on function update_event_with_ticket_type(
   uuid, text, text, text, text, text, text, timestamptz, timestamptz,
   boolean, boolean, boolean, bigint, integer
-) from public;
+) from public, anon;
 
 grant execute on function create_event_with_ticket_type(
   uuid, text, text, text, text, text, text, text, timestamptz, timestamptz,

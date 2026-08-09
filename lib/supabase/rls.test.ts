@@ -256,4 +256,45 @@ describe('privileged functions', () => {
     const { error } = await userClient(published.attendeeId).rpc(fn, args)
     expect(error, `${fn} should not be callable by authenticated users`).not.toBeNull()
   })
+
+  // The transactional event writers take the opposite posture: SECURITY INVOKER,
+  // granted to `authenticated` on purpose, because a host is entitled to the
+  // write and RLS still narrows it. What must not survive is anon reaching them.
+  // EXECUTE on a new function is granted to PUBLIC by default, so that grant is
+  // revoked in 20260809000001_event_write_transactions.sql — and this is what
+  // says so out loud, rather than leaving it to a one-off manual check.
+  //
+  // Every argument has to be supplied: PostgREST resolves the overload by
+  // argument name, and a short list would be refused as an unknown function
+  // before the privilege was ever consulted, which would pass for the wrong
+  // reason.
+  const eventWriteArgs = {
+    p_title: 'Anon Should Not Get This Far',
+    p_description: null,
+    p_city: 'Indore',
+    p_venue_name: null,
+    p_venue_address: null,
+    p_cover_image_url: null,
+    p_starts_at: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
+    p_ends_at: null,
+    p_requires_approval: false,
+    p_allows_cash: false,
+    p_hide_venue_until_approved: false,
+    p_price_paise: 50_000,
+    p_quantity: 5,
+  }
+
+  it.each([
+    ['create_event_with_ticket_type', () => ({ p_host_id: null, p_slug: 'anon-probe', ...eventWriteArgs })],
+    ['update_event_with_ticket_type', () => ({ p_event_id: published.eventId, ...eventWriteArgs })],
+  ])('refuses %s to anonymous visitors', async (fn, args) => {
+    const { error } = await anonClient().rpc(fn, args())
+
+    // Pinned on the message, not just the SQLSTATE: 42501 is also what an RLS
+    // refusal returns, so the code alone would still pass if EXECUTE had been
+    // left on and the row policy were the only thing doing the work.
+    expect(error?.message, `${fn} should be unreachable by anon`).toBe(
+      `permission denied for function ${fn}`,
+    )
+  })
 })

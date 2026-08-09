@@ -50,7 +50,13 @@ describe('update_event_with_ticket_type', () => {
       }),
     )
 
-    expect(error).not.toBeNull()
+    // Pinned on the constraint, not merely on "something failed": a function
+    // that raised EH002 unconditionally would satisfy a bare non-null check AND
+    // leave the seats at 20, so the postcondition below proves nothing on its
+    // own. This says the write got as far as the events UPDATE and was refused
+    // there — which is the only refusal that has anything to roll back.
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('events_end_after_start')
 
     const { data } = await db
       .from('ticket_types')
@@ -144,7 +150,11 @@ describe('create_event_with_ticket_type', () => {
       p_quantity: 0,
     })
 
-    expect(error).not.toBeNull()
+    // Same reasoning as the update rollback above: pinned on the ticket_types
+    // constraint, so this cannot pass by failing earlier than intended and
+    // never reaching the events insert at all.
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('ticket_types_quantity_check')
 
     const { data } = await db.from('events').select('id').eq('slug', slug)
     expect(data ?? []).toHaveLength(0)
