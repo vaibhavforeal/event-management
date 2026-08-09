@@ -28,8 +28,12 @@ export async function requireUser(): Promise<User> {
  * Without the `?next=`, a host who taps their own edit link while signed out
  * signs in and lands on the feed — the page they actually asked for is two
  * navigations behind them, and nothing on screen says so.
+ *
+ * Exported for the Server Actions, which reach the same dead end by a different
+ * route: a session that expired while the form sat open. An action posts to the
+ * URL of the page it was submitted from, so the header holds that page.
  */
-async function loginPath(): Promise<string> {
+export async function loginPath(): Promise<string> {
   const next = safeNextPath((await headers()).get(PATHNAME_HEADER))
   return next ? `/login?next=${encodeURIComponent(next)}` : '/login'
 }

@@ -13,6 +13,7 @@ import {
   type SubmittedEventValues,
 } from '@/lib/events/validation'
 import { findHost, getCurrentHost, getCurrentHostId } from '@/lib/events/queries'
+import { loginPath } from '@/lib/auth/session'
 import { rupeesToPaise } from '@/lib/money'
 
 export interface EventFormState {
@@ -93,7 +94,7 @@ export async function createEvent(
 ): Promise<EventFormState> {
   const supabase = await createClient()
   const { data: auth } = await supabase.auth.getUser()
-  if (!auth.user) redirect('/login')
+  if (!auth.user) redirect(await loginPath())
 
   const parsed = parseEventForm(formData)
   if (!parsed.success) return { fieldErrors: parsed.fieldErrors, values: submittedValues(formData) }
@@ -167,7 +168,7 @@ export async function updateEvent(
   // The whole row rather than just the id: `display_name` comes back with it,
   // so seeing whether the host renamed themselves costs no extra query.
   const host = await getCurrentHost()
-  if (!host) redirect('/login')
+  if (!host) redirect(await loginPath())
   const hostId = host.id
 
   const eventId = String(formData.get('eventId') ?? '')
@@ -302,7 +303,7 @@ export async function publishEvent(
 ): Promise<EventFormState> {
   const supabase = await createClient()
   const hostId = await getCurrentHostId()
-  if (!hostId) redirect('/login')
+  if (!hostId) redirect(await loginPath())
 
   const eventId = String(formData.get('eventId') ?? '')
   // Without this the empty string reaches Postgres and comes back as
@@ -361,7 +362,7 @@ export async function unpublishEvent(
 ): Promise<EventFormState> {
   const supabase = await createClient()
   const hostId = await getCurrentHostId()
-  if (!hostId) redirect('/login')
+  if (!hostId) redirect(await loginPath())
 
   const eventId = String(formData.get('eventId') ?? '')
   if (!eventId) return { error: 'Missing event id' }

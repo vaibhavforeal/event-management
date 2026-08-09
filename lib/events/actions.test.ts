@@ -22,6 +22,16 @@ vi.mock('next/navigation', () => ({
   },
 }))
 
+/**
+ * A Server Action posts to the URL of the page the form is on, so proxy.ts
+ * leaves that page's path here — which is exactly where a host whose session
+ * expired mid-submit wants to be returned to.
+ */
+let currentPath: string | null = null
+vi.mock('next/headers', () => ({
+  headers: async () => new Headers(currentPath ? { 'x-pathname': currentPath } : {}),
+}))
+
 const { createEvent, publishEvent, unpublishEvent, updateEvent } = await import(
   '@/app/host/events/actions'
 )
@@ -616,6 +626,48 @@ describe('the eventId guard', () => {
     expect((await updateEvent({}, empty)).error).toBe('Missing event id')
     expect((await publishEvent({}, empty)).error).toBe('Missing event id')
     expect((await unpublishEvent({}, empty)).error).toBe('Missing event id')
+  })
+})
+
+describe('the signed-out guard', () => {
+  /** Every action that turns a missing session into a trip to /login. */
+  const actions = () => [
+    { name: 'createEvent', run: () => createEvent({}, form()) },
+    { name: 'updateEvent', run: () => updateEvent({}, formWithId(eventId)) },
+    { name: 'publishEvent', run: () => publishEvent({}, formWithId(eventId)) },
+    { name: 'unpublishEvent', run: () => unpublishEvent({}, formWithId(eventId)) },
+  ]
+
+  it('returns the host to the page they were submitting from', async () => {
+    // A session can expire while an edit form sits open. Before this, the host
+    // signed back in and arrived at the feed, with the half-typed event they
+    // had just tried to save nowhere in sight and no hint of where it went.
+    signInAs(null)
+    currentPath = '/host/events/abc/edit'
+
+    for (const { name, run } of actions()) {
+      expect(`${name}: ${await captureRedirect(run)}`).toBe(
+        `${name}: /login?next=%2Fhost%2Fevents%2Fabc%2Fedit`,
+      )
+    }
+  })
+
+  it('falls back to a bare /login when there is no path to return to', async () => {
+    signInAs(null)
+    currentPath = null
+
+    for (const { name, run } of actions()) {
+      expect(`${name}: ${await captureRedirect(run)}`).toBe(`${name}: /login`)
+    }
+  })
+
+  it('refuses a return path pointing at another origin', async () => {
+    signInAs(null)
+    currentPath = '//evil.example/phish'
+
+    for (const { name, run } of actions()) {
+      expect(`${name}: ${await captureRedirect(run)}`).toBe(`${name}: /login`)
+    }
   })
 })
 
