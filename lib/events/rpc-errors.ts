@@ -23,8 +23,8 @@ const NOT_YOURS = 'EH002'
  *
  * The wording is copied verbatim from the TypeScript checks these functions
  * replaced, so moving the logic into Postgres changed no sentence any host has
- * ever seen — and so the assertions in lib/events/actions.test.ts still test the
- * copy rather than being quietly rewritten to match whatever came out.
+ * ever seen. This module's own tests pin these strings; as written that is the
+ * only coverage in place.
  *
  * Anything unrecognised falls through to the raw message. That is deliberate:
  * inventing a friendly sentence for an error nobody anticipated hides which one
