@@ -261,6 +261,44 @@ describe('cancelAttendeeBooking, signed in', () => {
     expect(revalidatePath.mock.calls.flat()).toEqual([ATTENDEES_PATH, '/'])
   })
 
+  it('does not let a slug that is not slug-shaped name the path', async () => {
+    // Same guard as the attendee's own cancel. Falsiness alone let `../../host`
+    // and `x%2fy` through — no write and nothing exposed either way, since
+    // revalidatePath only drops cache entries, but a hidden input was choosing
+    // the path. isEventSlug owns the real shape; the cases are in
+    // lib/events/slug.test.ts.
+    for (const slug of ['../../host/events', 'a/b', 'Diwali Supper', 'x%2fy']) {
+      vi.clearAllMocks()
+      cancelBooking.mockResolvedValue({ ok: true })
+
+      const state = await cancelAttendeeBooking({}, form({ slug }))
+
+      expect(state).toEqual({})
+      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+      expect(revalidatePath.mock.calls.flat()).toEqual([ATTENDEES_PATH, '/'])
+    }
+  })
+
+  it('does not let an event id that is not uuid-shaped name the path', async () => {
+    // The same defect one line above the slug: eventId is a hidden input and it
+    // is interpolated into `/host/events/${eventId}/attendees`. A uuid is the
+    // only thing this column ever holds, so the shape check is exact — and it
+    // does not narrow authorisation, which cancelBooking still owns alone. The
+    // test above ("never passes the form's eventId into the authorisation
+    // decision") pins that a *valid* uuid naming somebody else's event is still
+    // accepted here, so this guard cannot be mistaken for one.
+    for (const eventId of ['../../../login', 'not-a-uuid', 'e1']) {
+      vi.clearAllMocks()
+      cancelBooking.mockResolvedValue({ ok: true })
+
+      const state = await cancelAttendeeBooking({}, form({ eventId }))
+
+      expect(state).toEqual({})
+      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+      expect(revalidatePath.mock.calls.flat()).toEqual([EVENT_PATH, '/'])
+    }
+  })
+
   it("returns the service's own refusal rather than a message of its own", async () => {
     // "Not yours", "does not exist" and "the lookup failed" are deliberately one
     // sentence in lib/bookings/service.ts, so an outsider cannot tell them

@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { currentCaller } from '@/lib/bookings/caller'
 import { cancelBooking } from '@/lib/bookings/service'
+import { isEventSlug } from '@/lib/events/slug'
 import { loginPath } from '@/lib/auth/session'
 
 export interface CancelState {
@@ -34,8 +35,15 @@ export async function cancelMyBooking(
   if (!result.ok) return { error: result.error }
 
   revalidatePath('/bookings')
+
+  // Shape-checked, not merely non-empty. The slug is a hidden input the page
+  // wrote from a row it had just rendered, but a hidden input is whatever the
+  // request says it is, and this one is interpolated into a path — so
+  // `../../host/events` used to pass a falsiness check and name a path of the
+  // sender's choosing. Nothing is written or exposed by that; revalidatePath
+  // only drops cache entries. The point is that a field chose the path at all.
   const slug = String(formData.get('slug') ?? '')
-  if (slug) revalidatePath(`/e/${slug}`) // the seat is back
+  if (isEventSlug(slug)) revalidatePath(`/e/${slug}`) // the seat is back
 
   // The feed holds the same freed seat in its payload without painting it:
   // reserved_count is in FEED_COLUMNS (lib/events/queries.ts), while

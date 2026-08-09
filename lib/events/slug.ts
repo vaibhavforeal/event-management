@@ -55,3 +55,32 @@ function randomSuffix(): string {
 export function buildSlug(title: string): string {
   return `${slugifyTitle(title) || 'event'}-${randomSuffix()}`
 }
+
+// Exactly what buildSlug emits and nothing else: runs of [a-z0-9] joined by
+// single hyphens, no hyphen at either end. Written as an allowlist rather than
+// as a check for './' and '%' because the danger is the character nobody
+// thought of, and slugifyTitle has already decided which characters exist.
+const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+// The longest buildSlug can return: a title slice, the separator, the suffix.
+// Derived rather than written as 67 so it cannot drift if either constant moves.
+const MAX_SLUG_CHARS = MAX_TITLE_CHARS + 1 + SUFFIX_LENGTH
+
+/**
+ * Whether a string is shaped like a slug this app wrote.
+ *
+ * For values that arrive from outside and get interpolated into a path — the
+ * hidden `slug` input on both cancel forms, which reaches `/e/${slug}` in a
+ * revalidatePath call. A form field is whatever the request says it is, and
+ * `../../host/events` is a perfectly truthy string, so a falsiness check let one
+ * name any path in the app.
+ *
+ * Deliberately NOT an existence check and not an authorisation check. A slug
+ * naming somebody else's real event passes this and should: it costs one wasted
+ * cache drop, while what may actually be cancelled is settled by
+ * lib/bookings/service.ts against the caller. This answers only "may this string
+ * be pasted into a path", which is the one question the interpolation asks.
+ */
+export function isEventSlug(value: string): boolean {
+  return value.length <= MAX_SLUG_CHARS && SLUG_PATTERN.test(value)
+}

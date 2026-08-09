@@ -193,10 +193,31 @@ describe('cancelMyBooking, signed in', () => {
 
   it('does not revalidate an empty slug into the event route', async () => {
     // `/e/${''}` is `/e/`, which is not this route and not nothing either. The
-    // falsiness check is what keeps a blank hidden input from naming a path.
+    // shape check is what keeps a blank hidden input from naming a path.
     await cancelMyBooking({}, form({ slug: '' }))
 
     expect(revalidatePath.mock.calls.flat()).toEqual(['/bookings', '/'])
+  })
+
+  it('does not let a slug that is not slug-shaped name the path', async () => {
+    // A hidden input is whatever the request says it is, and this one is
+    // interpolated straight into a path. Falsiness alone let `../../host` and
+    // `x%2fy` through — still no write and still nothing exposed, since
+    // revalidatePath only drops cache entries, but the field decided which
+    // path, and it has no business deciding anything. isEventSlug owns the real
+    // shape; the cases live in lib/events/slug.test.ts.
+    for (const slug of ['../../host/events', 'a/b', 'Diwali Supper', 'x%2fy']) {
+      vi.clearAllMocks()
+      cancelBooking.mockResolvedValue({ ok: true })
+
+      const state = await cancelMyBooking({}, form({ slug }))
+
+      // Still cancelled, and the other two paths still revalidated: a junk slug
+      // costs a stale seats-left count on one page, not the operation.
+      expect(state).toEqual({})
+      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by attendee')
+      expect(revalidatePath.mock.calls.flat()).toEqual(['/bookings', '/'])
+    }
   })
 
   it("returns the service's own refusal rather than a message of its own", async () => {

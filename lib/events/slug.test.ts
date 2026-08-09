@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSlug, slugifyTitle } from '@/lib/events/slug'
+import { buildSlug, isEventSlug, slugifyTitle } from '@/lib/events/slug'
 
 // Mirrors SUFFIX_ALPHABET in slug.ts: digits 2-9 plus a-z without i, l, o, u.
 // Asserting [a-z0-9] instead would let a re-introduced look-alike through.
@@ -73,5 +73,65 @@ describe('buildSlug', () => {
     for (const title of ['Café!! Night', '   ', 'दिवाली', 'A'.repeat(200)]) {
       expect(buildSlug(title)).toMatch(/^[a-z0-9-]+$/)
     }
+  })
+})
+
+describe('isEventSlug', () => {
+  it('accepts every slug buildSlug can produce', () => {
+    // The property that matters most: the guard exists to be applied to real
+    // slugs, so a false negative here is a stale seats-left count on a page
+    // somebody is looking at. Titles chosen to reach each branch of
+    // slugifyTitle — accents, punctuation runs, the empty fallback, the
+    // 60-character truncation.
+    const titles = ['Diwali Supper Club', 'Café!! Night', 'दिवाली', 'A'.repeat(200), '  ...Pop-Up...  ']
+    const rejected = titles.map(buildSlug).filter((slug) => !isEventSlug(slug))
+    expect(rejected).toEqual([])
+  })
+
+  it('rejects the empty string', () => {
+    // `/e/${''}` is `/e/`, which is not this route and not nothing either.
+    expect(isEventSlug('')).toBe(false)
+  })
+
+  it('rejects anything carrying a path separator', () => {
+    // The reason the guard exists. A form field interpolated into
+    // `/e/${slug}` otherwise names any path in the app, and revalidatePath
+    // takes whatever it is handed.
+    expect(isEventSlug('../../host/events')).toBe(false)
+    expect(isEventSlug('a/b')).toBe(false)
+    expect(isEventSlug('/')).toBe(false)
+  })
+
+  it('rejects an escape hatch spelled with percent-encoding', () => {
+    // %2f is a slash to anything that decodes the path afterwards, and it is
+    // made only of characters a naive [a-z0-9-] check would wave through if the
+    // '%' were ever added to the class.
+    expect(isEventSlug('a%2fb')).toBe(false)
+    expect(isEventSlug('a%2Fb')).toBe(false)
+  })
+
+  it('rejects characters buildSlug cannot emit', () => {
+    // Uppercase, spaces, dots and query syntax all die in slugifyTitle, so a
+    // slug carrying one did not come from this app.
+    for (const value of ['Diwali-Supper', 'diwali supper', 'diwali.supper', 'diwali?x=1', 'diwali#top']) {
+      expect(isEventSlug(value)).toBe(false)
+    }
+  })
+
+  it('rejects hyphens in positions buildSlug never puts them', () => {
+    // slugifyTitle trims leading and trailing separators and collapses runs, so
+    // none of these is a slug this app wrote. Refusing them keeps the guard an
+    // allowlist of the real shape rather than a blocklist of known-bad strings.
+    for (const value of ['-diwali-ab23cd', 'diwali-ab23cd-', 'diwali--ab23cd', '-', '--']) {
+      expect(isEventSlug(value)).toBe(false)
+    }
+  })
+
+  it('rejects a slug longer than buildSlug can produce', () => {
+    // The bound is derived from the same two constants buildSlug uses, so it
+    // cannot drift away from the real maximum the way a hardcoded 67 would.
+    const longest = buildSlug('a'.repeat(200))
+    expect(isEventSlug(longest)).toBe(true)
+    expect(isEventSlug(`${longest}x`)).toBe(false)
   })
 })
