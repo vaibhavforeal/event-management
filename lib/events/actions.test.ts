@@ -501,6 +501,81 @@ describe('updateEvent', () => {
       .single()
     expect(data!.display_name).toBe('Priya from Indore')
   })
+
+  it('writes the seats and price to one ticket type, not every one the event has', async () => {
+    // Every other test in this file runs against an event with exactly one
+    // ticket type, where `.eq('event_id', ...)` and `.eq('id', ...)` cannot be
+    // told apart. The second row below is the entire point: the form carries one
+    // seats field and one price field, so writing them by event_id sets the same
+    // pair on every tier the event owns — silently, the moment Phase 2 adds one.
+    const { data: vip, error } = await db
+      .from('ticket_types')
+      .insert({
+        event_id: eventId,
+        name: 'VIP',
+        price_paise: 250_000,
+        quantity: 5,
+        sort_order: 1, // sorts after General, so General stays the row `[0]` picks
+      })
+      .select('id')
+      .single()
+    if (error) throw new Error(`seeding a second ticket type failed: ${error.message}`)
+
+    signInAs(aliceId)
+    const fd = form({
+      title: 'Diwali Supper Club (fixed typo)',
+      hostDisplayName: 'Priya from Indore',
+      seats: '25',
+      priceRupees: '600',
+    })
+    fd.set('eventId', eventId)
+
+    expect((await updateEvent({}, fd)).ok).toBe(true)
+
+    const { data: general } = await db
+      .from('ticket_types')
+      .select('price_paise, quantity')
+      .eq('event_id', eventId)
+      .eq('name', 'General')
+      .single()
+    expect(general).toMatchObject({ price_paise: 60_000, quantity: 25 })
+
+    const { data: untouched } = await db
+      .from('ticket_types')
+      .select('price_paise, quantity')
+      .eq('id', vip!.id)
+      .single()
+    expect(untouched).toMatchObject({ price_paise: 250_000, quantity: 5 })
+
+    await db.from('ticket_types').delete().eq('id', vip!.id)
+  })
+
+  it('creates the ticket type when the event has none left', async () => {
+    // Reachable: createEvent's rollback is two statements and can be interrupted
+    // between them. Updating by event_id matched zero rows, which PostgREST
+    // reports as success — so the host was told "Saved." while the seats and
+    // price they had just typed went nowhere at all.
+    await db.from('ticket_types').delete().eq('event_id', eventId)
+
+    signInAs(aliceId)
+    const fd = form({
+      title: 'Diwali Supper Club (fixed typo)',
+      hostDisplayName: 'Priya from Indore',
+      seats: '30',
+      priceRupees: '700',
+    })
+    fd.set('eventId', eventId)
+
+    expect((await updateEvent({}, fd)).ok).toBe(true)
+
+    const { data } = await db
+      .from('ticket_types')
+      .select('name, price_paise, quantity')
+      .eq('event_id', eventId)
+
+    expect(data).toHaveLength(1)
+    expect(data![0]).toMatchObject({ name: 'General', price_paise: 70_000, quantity: 30 })
+  })
 })
 
 describe('unpublishEvent', () => {

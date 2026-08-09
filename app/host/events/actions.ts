@@ -179,25 +179,35 @@ export async function updateEvent(
 
   // Ownership is settled before anything is written, so neither write below can
   // reach a row the caller does not own. It also supplies the slug for
-  // revalidation and the reserved count for the check that follows.
+  // revalidation and the ticket type the seats and price are written to.
+  //
+  // Ordered the same way every read of an embedded ticket type is ordered, so
+  // "the" ticket type here is the same row the edit form printed the seats and
+  // price from. See TICKET_TYPE_ORDER in lib/events/queries.ts.
   const { data: existing, error: readError } = await supabase
     .from('events')
-    .select('slug, ticket_types(reserved_count)')
+    .select('slug, ticket_types(id, reserved_count)')
     .eq('id', eventId)
     .eq('host_id', hostId)
+    .order('sort_order', { referencedTable: 'ticket_types', ascending: true })
+    .order('created_at', { referencedTable: 'ticket_types', ascending: true })
     .maybeSingle()
 
   if (readError) return { error: readError.message, values: submittedValues(formData) }
   if (!existing) return { error: 'That event is not yours to edit', values: submittedValues(formData) }
 
+  // The one this form is editing, not every one the event has. The previous
+  // version wrote `.eq('event_id', eventId)`, which sets the same price and the
+  // same quantity on every ticket type an event owns — one form field silently
+  // flattening a tier structure the moment Phase 2 introduces one.
+  const ticket = existing.ticket_types.at(0)
+
   // Cutting capacity below the seats already taken is the one edit Postgres
   // refuses outright (ticket_types_no_oversell). Catching it here, before any
   // write, turns a constraint name into a sentence and leaves the event exactly
-  // as it was.
-  const reserved = (existing.ticket_types ?? []).reduce(
-    (most, type) => Math.max(most, type.reserved_count),
-    0,
-  )
+  // as it was. Read from the row about to be written, so it answers the
+  // question the constraint will actually ask.
+  const reserved = ticket?.reserved_count ?? 0
   if (input.seats < reserved) {
     return {
       blockers: [
@@ -217,12 +227,17 @@ export async function updateEvent(
   // below fails, the seats have moved and nothing else has. Genuine atomicity
   // needs both statements in one transaction, i.e. a Postgres function, and this
   // phase deliberately has none. Tolerable today because reserved_count stays 0
-  // until bookings exist in Phase 3, so the constraint that makes this ordering
+  // until bookings exist in Phase 2, so the constraint that makes this ordering
   // matter cannot yet fire.
-  const { error: ticketError } = await supabase
-    .from('ticket_types')
-    .update({ price_paise: rupeesToPaise(input.priceRupees), quantity: input.seats })
-    .eq('event_id', eventId)
+  //
+  // An event with no ticket type at all is reachable — createEvent's rollback
+  // is two statements and can be interrupted between them. Inserting rather
+  // than writing nothing, because the alternative is accepting the host's seats
+  // and price, reporting "Saved." and discarding both.
+  const seatValues = { price_paise: rupeesToPaise(input.priceRupees), quantity: input.seats }
+  const { error: ticketError } = ticket
+    ? await supabase.from('ticket_types').update(seatValues).eq('id', ticket.id)
+    : await supabase.from('ticket_types').insert({ event_id: eventId, name: 'General', ...seatValues })
 
   if (ticketError) {
     // Still reachable despite the check above: a booking may land in between.
