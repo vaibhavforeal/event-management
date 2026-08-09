@@ -28,5 +28,13 @@ export async function cancelAttendeeBooking(
   if (!result.ok) return { error: result.error }
 
   if (eventId) revalidatePath(`/host/events/${eventId}/attendees`)
+
+  // The seat is back, and the public page is where a visitor reads how many are
+  // left — so a host removing a guest moves two numbers, not one. The same pair
+  // app/bookings/actions.ts revalidates for the attendee's own cancel, and the
+  // slug comes from the same place the ids do: a hidden input the page wrote
+  // from the row it had just rendered. Falsy means no second path, not `/e/`.
+  const slug = String(formData.get('slug') ?? '')
+  if (slug) revalidatePath(`/e/${slug}`)
   return {}
 }

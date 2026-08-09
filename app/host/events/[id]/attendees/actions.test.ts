@@ -62,6 +62,7 @@ const { cancelAttendeeBooking } = await import('@/app/host/events/[id]/attendees
 const CALLER_ID = '00000000-0000-4000-8000-000000000001'
 const BOOKING_ID = '00000000-0000-4000-8000-000000000042'
 const ATTENDEES_PATH = `/host/events/${EVENT_ID}/attendees`
+const EVENT_PATH = '/e/diwali-supper'
 
 /** The form the cancel button submits. Pass `undefined` to leave a field out. */
 function form(overrides: Record<string, string | undefined> = {}): FormData {
@@ -69,6 +70,7 @@ function form(overrides: Record<string, string | undefined> = {}): FormData {
   const base: Record<string, string | undefined> = {
     bookingId: BOOKING_ID,
     eventId: EVENT_ID,
+    slug: 'diwali-supper',
   }
   for (const [key, value] of Object.entries({ ...base, ...overrides })) {
     if (value !== undefined) fd.set(key, value)
@@ -111,7 +113,8 @@ describe('cancelAttendeeBooking, signed out', () => {
     // fix a field they cannot see.
     caller = null
 
-    expect(await captureRedirect(form({ bookingId: undefined, eventId: undefined }))).toBe(
+    const junk = form({ bookingId: undefined, eventId: undefined, slug: undefined })
+    expect(await captureRedirect(junk)).toBe(
       `/login?next=${encodeURIComponent(ATTENDEES_PATH)}`,
     )
     expect(cancelBooking).not.toHaveBeenCalled()
@@ -183,7 +186,18 @@ describe('cancelAttendeeBooking, signed in', () => {
     await cancelAttendeeBooking({}, form({ eventId: other }))
 
     expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(`/host/events/${other}/attendees`)
+    expect(revalidatePath).toHaveBeenCalledWith(`/host/events/${other}/attendees`)
+  })
+
+  it('does not let the form\'s slug decide anything either', async () => {
+    // Same property as above for the other field the form carries. A slug
+    // naming somebody else's event costs one wasted revalidation and nothing
+    // more — the booking cancelled is still the one `bookingId` named, checked
+    // against the caller by cancelBooking.
+    await cancelAttendeeBooking({}, form({ slug: 'somebody-elses-event' }))
+
+    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+    expect(revalidatePath).toHaveBeenCalledWith('/e/somebody-elses-event')
   })
 
   it("marks the cancellation as the host's, not the attendee's", async () => {
@@ -195,24 +209,28 @@ describe('cancelAttendeeBooking, signed in', () => {
     expect(cancelBooking).toHaveBeenCalledWith(expect.anything(), BOOKING_ID, 'cancelled by host')
   })
 
-  it('revalidates the guest list and returns a clear state', async () => {
-    // The row has just left the list and the seat total above it has moved. The
-    // empty object is what clears an error left over from a previous submit of
-    // the same form.
+  it('revalidates the guest list and the event page, and returns a clear state', async () => {
+    // Both paths, because both are now stale: the row has left the guest list
+    // and the seat total above it has moved, and the public page's seats-left
+    // count has gone back up. The attendee's own cancel revalidates the same
+    // pair for the same reason. The empty object is what clears an error left
+    // over from a previous submit of the same form.
     const state = await cancelAttendeeBooking({}, form())
 
     expect(state).toEqual({})
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(ATTENDEES_PATH)
+    expect(revalidatePath).toHaveBeenCalledWith(ATTENDEES_PATH)
+    expect(revalidatePath).toHaveBeenCalledWith(EVENT_PATH)
   })
 
-  it('still cancels when the event id is missing', async () => {
-    // The eventId is only there to name a path to revalidate. Losing it should
-    // cost a stale guest list, not the cancellation the host asked for.
+  it('still cancels, and still frees the seat on the public page, without the event id', async () => {
+    // The eventId is only there to name one of the two paths. Losing it should
+    // cost a stale guest list, not the cancellation the host asked for and not
+    // the other revalidation.
     const state = await cancelAttendeeBooking({}, form({ eventId: undefined }))
 
     expect(state).toEqual({})
     expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
-    expect(revalidatePath).not.toHaveBeenCalled()
+    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(EVENT_PATH)
   })
 
   it('does not revalidate an empty event id into some other route', async () => {
@@ -221,7 +239,24 @@ describe('cancelAttendeeBooking, signed in', () => {
     // blank hidden input from naming a path.
     await cancelAttendeeBooking({}, form({ eventId: '' }))
 
-    expect(revalidatePath).not.toHaveBeenCalled()
+    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(EVENT_PATH)
+  })
+
+  it('still revalidates the guest list when the slug is missing', async () => {
+    // Mirror of the case above. A booking whose event embed came back null has
+    // no slug; losing it should cost a stale seats-left count on the public
+    // page, not a stale guest list.
+    const state = await cancelAttendeeBooking({}, form({ slug: undefined }))
+
+    expect(state).toEqual({})
+    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(ATTENDEES_PATH)
+  })
+
+  it('does not revalidate an empty slug into the feed', async () => {
+    // `/e/${''}` is `/e/`, which is not this route and not nothing either.
+    await cancelAttendeeBooking({}, form({ slug: '' }))
+
+    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(ATTENDEES_PATH)
   })
 
   it("returns the service's own refusal rather than a message of its own", async () => {

@@ -7,6 +7,31 @@ import { CancelAttendeeButton } from './cancel-attendee-button'
 
 export const metadata = { title: 'Guest list' }
 
+/**
+ * The stored phone as something a handset will actually dial.
+ *
+ * `profiles.phone` is written by the signup trigger from `auth.users.phone`, and
+ * GoTrue stores E.164 with the leading `+` stripped — "919999900001", not
+ * "+919999900001". Under RFC 3966 a `tel:` URI without the `+` is a *local*
+ * number carrying no phone-context, so a handset dials it as typed: twelve
+ * digits beginning 91 connects to nothing in India and could never connect from
+ * outside it. The number was on screen and not dialable, which is the one thing
+ * this page exists for.
+ *
+ * Guarded rather than unconditional because the two sources of truth disagree
+ * about the stored shape: 20260808000001_core_schema.sql:49 documents the column
+ * as E.164 *with* the plus, while GoTrue writes it without and
+ * lib/auth/phone-otp.test.ts:69 pins that stripped form. Prefixing blindly would
+ * produce "++91…" the day the migration's comment becomes true.
+ *
+ * Local to this file because this is its only caller today. Phase 4 sends
+ * WhatsApp messages to this same column and will need exactly this rule — lift
+ * it into lib/ then, with a test, rather than writing a second copy.
+ */
+function dialable(phone: string): string {
+  return phone.startsWith('+') ? phone : `+${phone}`
+}
+
 export default async function AttendeesPage(
   props: PageProps<'/host/events/[id]/attendees'>,
 ) {
@@ -60,14 +85,21 @@ export default async function AttendeesPage(
                     empty link that looks tappable. */}
                 {a.profiles?.phone && (
                   <a
-                    href={`tel:${a.profiles.phone}`}
+                    href={`tel:${dialable(a.profiles.phone)}`}
                     className="font-mono text-[12px] underline"
                   >
-                    {a.profiles.phone}
+                    {/* The label is the normalised number and not the raw
+                        column, so what the host reads is what their handset
+                        dials — and so a number copied out by eye into WhatsApp
+                        is the one that works. The two are free to differ: the
+                        href has to satisfy RFC 3966, the label only has to be
+                        legible. Do not "simplify" either back to
+                        `a.profiles.phone`; see dialable() above. */}
+                    {dialable(a.profiles.phone)}
                   </a>
                 )}
               </div>
-              <CancelAttendeeButton bookingId={a.id} eventId={id} />
+              <CancelAttendeeButton bookingId={a.id} eventId={id} slug={event.slug} />
             </li>
           ))}
         </ul>
