@@ -40,11 +40,6 @@ const db = adminClient()
 
 const ROLLBACK_TITLE = 'Rollback Probe Supper Club'
 
-/** A `from()` stand-in whose only operation, `update(...).eq(...)`, fails. */
-function updateFails(message: string) {
-  return { update: () => ({ eq: async () => ({ data: null, error: { message } }) }) }
-}
-
 function form(overrides: Record<string, string> = {}): FormData {
   const fd = new FormData()
   const base: Record<string, string> = {
@@ -153,7 +148,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (eventId) await db.from('events').delete().eq('id', eventId)
-  // Events cascade from hosts, so a stranded rollback probe goes with them.
+  // Events cascade from hosts, so anything a test created under one goes too.
   await db.from('hosts').delete().eq('profile_id', aliceId)
   await db.from('hosts').delete().eq('profile_id', bobId)
   await db.auth.admin.deleteUser(aliceId).catch(() => {})
@@ -384,25 +379,35 @@ describe('updateEvent', () => {
   })
 
   it('refuses that same edit with RLS taken out of the picture', async () => {
-    // The test above cannot tell the action's host_id filter from the
-    // events_update_own policy: both refuse Bob, and the policy would refuse him
-    // even if the filter were deleted. So run it once more on a client that
-    // authenticates as Bob but reaches the tables as the service role, leaving
-    // the filter as the only thing between Bob and Alice's event.
+    // The test above cannot tell the function's own host_id scoping from the
+    // events_update_own policy: both refuse Bob. So run it once more on a
+    // client that reaches the RPC as the service role, for which RLS does not
+    // apply at all -- leaving `host_id = current_host_id()` inside the function
+    // as the only thing between a caller and Alice's event. current_host_id()
+    // reads auth.uid(), which the service role does not carry, so it is null
+    // and the scoping refuses.
     //
-    // Nothing in the app builds such a client — lib/supabase/server always
+    // Nothing in the app builds such a client -- lib/supabase/server always
     // returns an RLS-scoped one. This exists so the defence in depth is a
     // tested claim rather than a comment.
-    const rlsFree = clientWithFrom(userClient(bobId), (table) => db.from(table))
-
-    // Values that differ from the stored ones on every writable table, because
-    // the seats write now happens first: an unowned edit that got that far would
-    // reprice Alice's tickets before the events update refused it.
+    // Values that differ from the stored ones on every writable table, so an
+    // unowned edit that got past the scoping would leave a visible mark.
     const fd = form({ title: 'Defaced without RLS', seats: '3', priceRupees: '1' })
     fd.set('eventId', eventId)
 
-    const state = await actionsWith(rlsFree, (actions) => actions.updateEvent({}, fd))
-    expect(state.error).toBeTruthy()
+    // Built inline rather than through clientWithRpc: this needs the *real*
+    // service-role rpc(), not a canned response, so the two are not
+    // interchangeable.
+    const serviceRoleRpc = new Proxy(userClient(bobId), {
+      get(target, prop) {
+        if (prop === 'rpc') return db.rpc.bind(db)
+        const value = Reflect.get(target, prop)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }) as SupabaseClient
+
+    const state = await actionsWith(serviceRoleRpc, (actions) => actions.updateEvent({}, fd))
+    expect(state.error).toBe('That event is not yours to edit')
     expect(state.ok).toBeUndefined()
 
     const { data } = await db.from('events').select('title').eq('id', eventId).single()
@@ -445,20 +450,24 @@ describe('updateEvent', () => {
     await db.from('ticket_types').update({ reserved_count: 0 }).eq('event_id', eventId)
   })
 
-  it('surfaces a rejected seats write and leaves the event alone', async () => {
-    // The pre-check above cannot catch a booking that lands between the read and
-    // the write, so ticket_types_no_oversell is still the backstop and the action
+  it('surfaces a refused save and leaves the event alone', async () => {
+    // The pre-check cannot catch a booking that lands between the read and the
+    // write, so ticket_types_no_oversell is still the backstop and the action
     // must not swallow it. Injected, because that race cannot be staged here.
-    const base = userClient(aliceId)
-    const failing = clientWithFrom(base, (table) =>
-      table === 'ticket_types' ? updateFails('simulated no_oversell rejection') : null,
-    )
+    //
+    // The message is now the database's own rather than the old
+    // "Could not update seats: ..." prefix. That prefix named which of two
+    // writes failed, and there are no longer two writes to distinguish.
+    const failing = clientWithRpc(userClient(aliceId), () => ({
+      data: null,
+      error: { code: '23514', message: 'simulated no_oversell rejection', details: '', hint: '' },
+    }))
 
     const fd = form({ title: 'Half-saved', city: 'Bhopal' })
     fd.set('eventId', eventId)
 
     const state = await actionsWith(failing, (actions) => actions.updateEvent({}, fd))
-    expect(state.error).toBe('Could not update seats: simulated no_oversell rejection')
+    expect(state.error).toBe('simulated no_oversell rejection')
 
     const { data } = await db.from('events').select('title, city').eq('id', eventId).single()
     expect(data).toMatchObject({ title: 'Diwali Supper Club (fixed typo)', city: 'Indore' })
@@ -535,10 +544,10 @@ describe('updateEvent', () => {
   })
 
   it('creates the ticket type when the event has none left', async () => {
-    // Reachable: createEvent's rollback is two statements and can be interrupted
-    // between them. Updating by event_id matched zero rows, which PostgREST
-    // reports as success — so the host was told "Saved." while the seats and
-    // price they had just typed went nowhere at all.
+    // No longer reachable through this app, but rows predating the transactional
+    // writes can be in this state. Updating by event_id matched zero rows, which
+    // PostgREST reports as success — so the host was told "Saved." while the
+    // seats and price they had just typed went nowhere at all.
     await db.from('ticket_types').delete().eq('event_id', eventId)
 
     signInAs(aliceId)

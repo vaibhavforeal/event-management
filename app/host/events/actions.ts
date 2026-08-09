@@ -103,9 +103,9 @@ async function resolveOrCreateHost(
  * belongs here rather than as a hand-edit that the next `gen types` erases.
  *
  * Mapped over the generated Args on purpose rather than hand-written, and every
- * key stays required. That is the entire reason these functions take fifteen
- * named parameters instead of one jsonb payload: a field added to the form and
- * forgotten at the call site should fail to compile, not arrive as a silent
+ * key stays required. That is the entire reason these functions take a named
+ * parameter per column instead of one jsonb payload: a field added to the form
+ * and forgotten at the call site should fail to compile, not arrive as a silent
  * null. Written as `satisfies Nullable<Args> as Args` at the call site, so the
  * literal is still checked — for missing keys and for stray ones — and only the
  * nullability is waived.
@@ -113,6 +113,7 @@ async function resolveOrCreateHost(
 type Nullable<T> = { [K in keyof T]: T[K] | null }
 
 type CreateEventArgs = Database['public']['Functions']['create_event_with_ticket_type']['Args']
+type UpdateEventArgs = Database['public']['Functions']['update_event_with_ticket_type']['Args']
 
 export async function createEvent(
   _previous: EventFormState,
@@ -173,101 +174,33 @@ export async function updateEvent(
   if (!parsed.success) return { fieldErrors: parsed.fieldErrors, values: submittedValues(formData) }
   const input = parsed.data
 
-  // Ownership is settled before anything is written, so neither write below can
-  // reach a row the caller does not own. It also supplies the slug for
-  // revalidation and the ticket type the seats and price are written to.
+  // One call, one transaction. Ownership, the oversell check, the seats write
+  // and the event write all happen under it -- so the check that refuses a
+  // capacity cut is still true when the write lands, rather than merely true
+  // when it was read. See supabase/migrations/20260809000001.
   //
-  // Ordered the same way every read of an embedded ticket type is ordered, so
-  // "the" ticket type here is the same row the edit form printed the seats and
-  // price from. See TICKET_TYPE_ORDER in lib/events/queries.ts.
-  const { data: existing, error: readError } = await supabase
-    .from('events')
-    .select('slug, ticket_types(id, reserved_count)')
-    .eq('id', eventId)
-    .eq('host_id', hostId)
-    .order('sort_order', { referencedTable: 'ticket_types', ascending: true })
-    .order('created_at', { referencedTable: 'ticket_types', ascending: true })
-    .maybeSingle()
+  // Note the absence of a slug argument. The link may already be in a WhatsApp
+  // group, so the function never writes one.
+  const { data: event, error } = await supabase.rpc('update_event_with_ticket_type', {
+    p_event_id: eventId,
+    p_title: input.title,
+    p_description: input.description ?? null,
+    p_city: input.city,
+    p_venue_name: input.venueName ?? null,
+    p_venue_address: input.venueAddress ?? null,
+    p_cover_image_url: input.coverImageUrl ?? null,
+    p_starts_at: istLocalToUtc(input.startsAtLocal).toISOString(),
+    p_ends_at: input.endsAtLocal ? istLocalToUtc(input.endsAtLocal).toISOString() : null,
+    p_requires_approval: input.requiresApproval,
+    p_allows_cash: input.allowsCash,
+    p_hide_venue_until_approved: input.hideVenueUntilApproved,
+    p_price_paise: rupeesToPaise(input.priceRupees),
+    p_quantity: input.seats,
+  } satisfies Nullable<UpdateEventArgs> as UpdateEventArgs)
 
-  if (readError) return { error: readError.message, values: submittedValues(formData) }
-  if (!existing) return { error: 'That event is not yours to edit', values: submittedValues(formData) }
-
-  // The one this form is editing, not every one the event has. The previous
-  // version wrote `.eq('event_id', eventId)`, which sets the same price and the
-  // same quantity on every ticket type an event owns — one form field silently
-  // flattening a tier structure the moment Phase 2 introduces one.
-  const ticket = existing.ticket_types.at(0)
-
-  // Cutting capacity below the seats already taken is the one edit Postgres
-  // refuses outright (ticket_types_no_oversell). Catching it here, before any
-  // write, turns a constraint name into a sentence and leaves the event exactly
-  // as it was. Read from the row about to be written, so it answers the
-  // question the constraint will actually ask.
-  const reserved = ticket?.reserved_count ?? 0
-  if (input.seats < reserved) {
-    return {
-      blockers: [
-        `${reserved} of those seats are already taken, so capacity cannot go down to ${input.seats}`,
-      ],
-      // Especially here: the host may have just typed the venue that clears a
-      // publish blocker, and this refusal must not take it away with it.
-      values: submittedValues(formData),
-    }
-  }
-
-  // Seats first, deliberately: this is the write that carries the constraint, so
-  // doing it first means a rejection leaves the event untouched rather than
-  // half-saved — a host who is told "failed" must not find the title changed.
-  //
-  // The mirror image is still possible. If this succeeds and the events update
-  // below fails, the seats have moved and nothing else has. Genuine atomicity
-  // needs both statements in one transaction, i.e. a Postgres function, and this
-  // phase deliberately has none. Tolerable today because reserved_count stays 0
-  // until bookings exist in Phase 2, so the constraint that makes this ordering
-  // matter cannot yet fire.
-  //
-  // An event with no ticket type at all is reachable — createEvent's rollback
-  // is two statements and can be interrupted between them. Inserting rather
-  // than writing nothing, because the alternative is accepting the host's seats
-  // and price, reporting "Saved." and discarding both.
-  const seatValues = { price_paise: rupeesToPaise(input.priceRupees), quantity: input.seats }
-  const { error: ticketError } = ticket
-    ? await supabase.from('ticket_types').update(seatValues).eq('id', ticket.id)
-    : await supabase.from('ticket_types').insert({ event_id: eventId, name: 'General', ...seatValues })
-
-  if (ticketError) {
-    // Still reachable despite the check above: a booking may land in between.
-    return {
-      error: `Could not update seats: ${ticketError.message}`,
-      values: submittedValues(formData),
-    }
-  }
-
-  // Note the absence of `slug`. The link may already be in a WhatsApp group.
-  const { data, error } = await supabase
-    .from('events')
-    .update({
-      title: input.title,
-      description: input.description ?? null,
-      city: input.city,
-      venue_name: input.venueName ?? null,
-      venue_address: input.venueAddress ?? null,
-      cover_image_url: input.coverImageUrl ?? null,
-      starts_at: istLocalToUtc(input.startsAtLocal).toISOString(),
-      ends_at: input.endsAtLocal ? istLocalToUtc(input.endsAtLocal).toISOString() : null,
-      requires_approval: input.requiresApproval,
-      allows_cash: input.allowsCash,
-      hide_venue_until_approved: input.hideVenueUntilApproved,
-    })
-    .eq('id', eventId)
-    // Redundant against the read above, and kept anyway: this is the statement
-    // that actually rewrites the row, and it should carry its own scope.
-    .eq('host_id', hostId)
-    .select('id')
-    .maybeSingle()
-
-  if (error) return { error: error.message, values: submittedValues(formData) }
-  if (!data) return { error: 'That event is not yours to edit', values: submittedValues(formData) }
+  // Especially on the oversell path: the host may have just typed the venue
+  // that clears a publish blocker, and this refusal must not take it away.
+  if (error) return { ...mapEventRpcError(error, input.seats), values: submittedValues(formData) }
 
   // Last, and on its own row rather than the event's: renaming yourself changes
   // every event page you have, so it must not ride along with an edit that was
@@ -287,7 +220,7 @@ export async function updateEvent(
     }
   }
 
-  revalidatePath(`/e/${existing.slug}`)
+  revalidatePath(`/e/${event.slug}`)
   revalidatePath('/host')
   return { ok: true }
 }
