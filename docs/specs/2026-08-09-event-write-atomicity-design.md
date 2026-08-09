@@ -144,6 +144,17 @@ existing assertions keep passing and no host sees a change. Oversell stays in
 `blockers`, not `error`: it is a fixable condition, not a fault, and the form
 renders the two differently.
 
+That claim holds for `EH001` and `EH002` and for nothing else, because two of
+today's strings are not mapped anywhere — they cease to exist. `updateEvent`'s
+`'Could not update seats: '` prefix goes, and so does `createEvent`'s `'The
+half-created event could not be removed either (…) — quote event id … when
+asking for help.'` Each named which of two writes had failed, and after this
+change there are no longer two writes to name: the first is a refusal of the one
+call, which surfaces the database's own message through the fallback row above,
+and the second reports a compensating `delete` that no longer exists. Neither
+loss is a regression in what a host is told; both were only ever there to
+describe a half-written database.
+
 `values: submittedValues(formData)` is still attached on every rejection path.
 The reason is unchanged and still load-bearing: a host may have just typed the
 venue that clears a publish blocker, and a refusal must not take it away.

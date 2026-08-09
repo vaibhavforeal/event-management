@@ -72,8 +72,8 @@ type Actions = typeof import('@/app/host/events/actions')
 
 /**
  * Substitutes the client the actions run on, for the two things the RLS-scoped
- * client cannot express: a table write that fails, and a write RLS would have
- * refused anyway.
+ * client cannot express: a write that fails, and a write RLS would have refused
+ * anyway.
  *
  * The seam is the same one `tests/helpers/session.ts` mocks, re-registered with
  * `doMock` and a module reset so this call gets its own copy of the actions
@@ -434,9 +434,11 @@ describe('updateEvent', () => {
     expect(state.blockers![0]).toContain('5')
     expect(state.ok).toBeUndefined()
 
-    // The point of the pre-check: the event must not be half-saved. Before the
-    // events update was moved after the seats update, title and city here were
-    // already written by the time the host was told the save had failed.
+    // The event must not be half-saved, and what makes that true is the
+    // transaction, not the order of the statements. EH001 is raised inside the
+    // function, so the events update never runs -- and had it already run, the
+    // raise would take it down with everything else in the call. Title and city
+    // below are the stored ones because nothing in this save committed.
     const { data } = await db.from('events').select('title, city').eq('id', eventId).single()
     expect(data).toMatchObject({ title: 'Diwali Supper Club (fixed typo)', city: 'Indore' })
 
@@ -451,11 +453,17 @@ describe('updateEvent', () => {
   })
 
   it('surfaces a refused save and leaves the event alone', async () => {
-    // The pre-check cannot catch a booking that lands between the read and the
-    // write, so ticket_types_no_oversell is still the backstop and the action
-    // must not swallow it. Injected, because that race cannot be staged here.
+    // What this proves is that a database error mapEventRpcError does not
+    // recognise reaches the host as its own message rather than being swallowed
+    // or dressed up as something friendlier. Injected, because every refusal
+    // the function raises deliberately carries EH001 or EH002; an unrecognised
+    // code cannot be staged from a form.
     //
-    // The message is now the database's own rather than the old
+    // It is no longer a claim about the oversell race. The function takes the
+    // ticket type `for update` before it reads reserved_count, so a booking can
+    // no longer land between that read and the write.
+    //
+    // The message is the database's own rather than the old
     // "Could not update seats: ..." prefix. That prefix named which of two
     // writes failed, and there are no longer two writes to distinguish.
     const failing = clientWithRpc(userClient(aliceId), () => ({

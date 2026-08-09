@@ -55,10 +55,13 @@ describe('mapEventRpcError', () => {
     expect(state.blockers![0]).toBe('Some of those seats are already taken, so capacity cannot go down to 8')
   })
 
-  it('handles EH001 arriving with details: null (the real wire shape)', () => {
-    // PostgrestError.details is typed as string, but at runtime EH002 arrives with
-    // details: null. The optional chaining in mapEventRpcError holds it null-safe;
-    // this test pins that behavior against future refactors that might delete the `?.`
+  it('handles details: null on the EH001 path (the real wire shape)', () => {
+    // PostgrestError.details is typed as string, but null is what actually
+    // arrives when the raise carries no DETAIL — measured on EH002, which
+    // raises without one. EH001 is the code under test here because it is the
+    // only branch that reads details, so it is the only one a null can reach.
+    // The optional chaining in mapEventRpcError holds it null-safe; this test
+    // pins that against a refactor that deletes the `?.`.
     const state = mapEventRpcError(pgError({ code: 'EH001', details: null as unknown as string }), 8)
     expect(state.blockers![0]).toBe('Some of those seats are already taken, so capacity cannot go down to 8')
   })
