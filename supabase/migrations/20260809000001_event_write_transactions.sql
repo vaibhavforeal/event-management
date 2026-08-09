@@ -28,6 +28,16 @@
 -- ---------------------------------------------------------------------------
 -- The slug is generated in TypeScript (lib/events/slug.ts, unit-tested) and
 -- passed in. Status is always 'draft': publishing is a separate, validated step.
+--
+-- p_host_id arrives from the client and is deliberately not re-checked in the
+-- body, unlike the host_id scoping the update function below carries. There is
+-- no row yet to check it against; what binds it to the caller is
+-- events_insert_own -- `with check (host_id = current_host_id())` in
+-- 20260808000003_rls_policies.sql -- and that policy applies only because this
+-- function is SECURITY INVOKER, so the insert runs as the calling role with the
+-- caller's auth.uid(). Which is exactly why this function must not become
+-- SECURITY DEFINER: the policy would stop applying and nothing would stand
+-- between a crafted RPC call and an event created under someone else's host_id.
 
 create or replace function create_event_with_ticket_type(
   p_host_id                   uuid,
@@ -103,12 +113,17 @@ declare
   ev     events%rowtype;
   ticket ticket_types%rowtype;
 begin
-  -- Ownership settled before anything is written. Scoped on host_id as well as
-  -- RLS: events_update_own would refuse a stranger anyway, and this is the
-  -- statement that rewrites the row, so it carries its own scope -- the same
-  -- defence in depth the `.eq('host_id', hostId)` in the TypeScript carried.
-  -- It is also what refuses a service-role caller, for whom RLS does not apply
-  -- and current_host_id() is null.
+  -- Ownership is settled once, here, before anything is written. Scoped on
+  -- host_id as well as RLS: events_update_own would refuse a stranger anyway,
+  -- so this is the same defence in depth the `.eq('host_id', hostId)` in the
+  -- TypeScript carried. It is also what refuses a service-role caller, for whom
+  -- RLS does not apply and current_host_id() is null.
+  --
+  -- One check covers both writes because the lock is taken in the same
+  -- statement that checks. From the moment this row is read it is held `for
+  -- update`, so it cannot change owner between here and the `update events`
+  -- at the end of the function -- which is why that statement is scoped on id
+  -- alone and does not repeat the host_id.
   select * into ev
     from events
    where id = p_event_id

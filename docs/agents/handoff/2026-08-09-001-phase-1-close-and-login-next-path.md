@@ -223,6 +223,10 @@ which Phase 1 does not have.
    started, not discussed; flagged because the risk is invisible from the repo.
 5. **Phase 2 — bookings.** Not started. This is what makes `reserved_count`
    non-zero, which in turn makes the `ticket_types_no_oversell` constraint and
-   the atomicity gap in `updateEvent` (two statements, no transaction, noted in
-   its own comment) able to fire for the first time. Read that comment before
-   starting.
+   the `EH001` refusal able to fire for the first time. The atomicity gap this
+   item originally named is closed: `updateEvent` writes through
+   `update_event_with_ticket_type`, one transaction, and that function takes the
+   ticket type `for update` before reading `reserved_count`, so a booking cannot
+   land between the check and the write. Read
+   `supabase/migrations/20260809000001_event_write_transactions.sql` and
+   `docs/specs/2026-08-09-event-write-atomicity-design.md` before starting.
