@@ -209,28 +209,29 @@ describe('cancelAttendeeBooking, signed in', () => {
     expect(cancelBooking).toHaveBeenCalledWith(expect.anything(), BOOKING_ID, 'cancelled by host')
   })
 
-  it('revalidates the guest list and the event page, and returns a clear state', async () => {
-    // Both paths, because both are now stale: the row has left the guest list
-    // and the seat total above it has moved, and the public page's seats-left
-    // count has gone back up. The attendee's own cancel revalidates the same
-    // pair for the same reason. The empty object is what clears an error left
-    // over from a previous submit of the same form.
+  it('revalidates the guest list, the event page and the feed, and returns a clear state', async () => {
+    // All three, because all three payloads are now stale: the row has left the
+    // guest list and the seat total above it has moved, the public page's
+    // seats-left count has gone back up, and the feed carries the same
+    // reserved_count even though its card does not paint one. The attendee's
+    // own cancel revalidates the same three for the same reason. The empty
+    // object is what clears an error left over from a previous submit of the
+    // same form.
     const state = await cancelAttendeeBooking({}, form())
 
     expect(state).toEqual({})
-    expect(revalidatePath).toHaveBeenCalledWith(ATTENDEES_PATH)
-    expect(revalidatePath).toHaveBeenCalledWith(EVENT_PATH)
+    expect(revalidatePath.mock.calls.flat()).toEqual([ATTENDEES_PATH, EVENT_PATH, '/'])
   })
 
   it('still cancels, and still frees the seat on the public page, without the event id', async () => {
-    // The eventId is only there to name one of the two paths. Losing it should
-    // cost a stale guest list, not the cancellation the host asked for and not
-    // the other revalidation.
+    // The eventId is only there to name one of the three paths. Losing it
+    // should cost a stale guest list, not the cancellation the host asked for
+    // and not the other two revalidations.
     const state = await cancelAttendeeBooking({}, form({ eventId: undefined }))
 
     expect(state).toEqual({})
     expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(EVENT_PATH)
+    expect(revalidatePath.mock.calls.flat()).toEqual([EVENT_PATH, '/'])
   })
 
   it('does not revalidate an empty event id into some other route', async () => {
@@ -239,24 +240,25 @@ describe('cancelAttendeeBooking, signed in', () => {
     // blank hidden input from naming a path.
     await cancelAttendeeBooking({}, form({ eventId: '' }))
 
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(EVENT_PATH)
+    expect(revalidatePath.mock.calls.flat()).toEqual([EVENT_PATH, '/'])
   })
 
-  it('still revalidates the guest list when the slug is missing', async () => {
+  it('still revalidates the guest list and the feed when the slug is missing', async () => {
     // Mirror of the case above. A booking whose event embed came back null has
     // no slug; losing it should cost a stale seats-left count on the public
-    // page, not a stale guest list.
+    // page, not a stale guest list — and not a stale feed either, whose path is
+    // a constant and needs no field.
     const state = await cancelAttendeeBooking({}, form({ slug: undefined }))
 
     expect(state).toEqual({})
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(ATTENDEES_PATH)
+    expect(revalidatePath.mock.calls.flat()).toEqual([ATTENDEES_PATH, '/'])
   })
 
-  it('does not revalidate an empty slug into the feed', async () => {
+  it('does not revalidate an empty slug into the event route', async () => {
     // `/e/${''}` is `/e/`, which is not this route and not nothing either.
     await cancelAttendeeBooking({}, form({ slug: '' }))
 
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith(ATTENDEES_PATH)
+    expect(revalidatePath.mock.calls.flat()).toEqual([ATTENDEES_PATH, '/'])
   })
 
   it("returns the service's own refusal rather than a message of its own", async () => {

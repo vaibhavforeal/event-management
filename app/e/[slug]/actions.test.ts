@@ -225,19 +225,35 @@ describe('bookEvent, signed in', () => {
     )
   })
 
-  it('revalidates the event page and redirects to the booking', async () => {
+  it('revalidates the event page and the feed, then redirects to the booking', async () => {
     // revalidatePath before redirect, because redirect() throws: the seats-left
     // count on the page behind the visitor has just moved, and a call placed
     // after the redirect would never run.
+    //
+    // Both paths, because both payloads carry the reserved_count this booking
+    // moved — the event page paints it, the feed only fetches it. Asserted as
+    // an exact list so that dropping either one fails here rather than silently
+    // on some future day when the client cache is configured to hold pages;
+    // the action explains why both are called.
     expect(await captureRedirect(form())).toBe('/bookings/S2CVHBDE')
-    expect(revalidatePath).toHaveBeenCalledWith('/e/diwali-supper')
+    expect(revalidatePath.mock.calls.flat()).toEqual(['/e/diwali-supper', '/'])
   })
 
-  it('still redirects when the slug is missing, without revalidating', async () => {
-    // The slug is only there to name a path to revalidate. Losing it should cost
-    // a stale seat count, not the booking the visitor just made.
+  it('still redirects and still revalidates the feed when the slug is missing', async () => {
+    // The slug is only there to name the event page's path. Losing it should
+    // cost a stale seat count there, not the booking the visitor just made and
+    // not the feed — whose path is a constant and needs no field.
     expect(await captureRedirect(form({ slug: undefined }))).toBe('/bookings/S2CVHBDE')
-    expect(revalidatePath).not.toHaveBeenCalled()
+    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith('/')
+  })
+
+  it('does not revalidate an empty slug into the feed', async () => {
+    // `/e/${''}` is `/e/`, which is not this route and not nothing either. The
+    // falsiness check is what keeps a blank hidden input from naming a path —
+    // and `/` here is the feed's own constant, not that mistake.
+    await captureRedirect(form({ slug: '' }))
+
+    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith('/')
   })
 
   it('returns the service\'s own refusal rather than a message of its own', async () => {

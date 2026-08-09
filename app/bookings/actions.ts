@@ -36,5 +36,15 @@ export async function cancelMyBooking(
   revalidatePath('/bookings')
   const slug = String(formData.get('slug') ?? '')
   if (slug) revalidatePath(`/e/${slug}`) // the seat is back
+
+  // The feed holds the same freed seat in its payload without painting it:
+  // reserved_count is in FEED_COLUMNS (lib/events/queries.ts), while
+  // app/_components/event-card.tsx renders only date, title, venue and price.
+  // So this corrects no visible number today.
+  //
+  // Why it is here anyway, why it is not about server rendering, and why the
+  // answer to a stale count is never `export const revalidate`, is written out
+  // once — over the same pair of calls in app/e/[slug]/actions.ts.
+  revalidatePath('/')
   return {}
 }

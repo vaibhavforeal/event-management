@@ -36,5 +36,16 @@ export async function cancelAttendeeBooking(
   // from the row it had just rendered. Falsy means no second path, not `/e/`.
   const slug = String(formData.get('slug') ?? '')
   if (slug) revalidatePath(`/e/${slug}`)
+
+  // The feed carries the same reserved_count in its payload — it is in
+  // FEED_COLUMNS (lib/events/queries.ts) — without painting it:
+  // app/_components/event-card.tsx renders date, title, venue and price and no
+  // seat count. So nothing visible is corrected here today. Unlike the two
+  // paths above, this one is a constant, so no missing field can skip it.
+  //
+  // Why it is here anyway, why it is not about server rendering, and why the
+  // answer to a stale count is never `export const revalidate`, is written out
+  // once — over the same pair of calls in app/e/[slug]/actions.ts.
+  revalidatePath('/')
   return {}
 }

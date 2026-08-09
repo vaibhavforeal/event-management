@@ -168,33 +168,35 @@ describe('cancelMyBooking, signed in', () => {
     )
   })
 
-  it('revalidates the list and the event page, and returns a clear state', async () => {
-    // Both paths, because both are now stale: the row's status has changed and
-    // the event page's seats-left count has gone back up. The empty object is
-    // what clears an error left over from a previous submit of the same form.
+  it('revalidates the list, the event page and the feed, and returns a clear state', async () => {
+    // All three, because all three payloads are now stale: the row's status has
+    // changed, the event page's seats-left count has gone back up, and the feed
+    // carries the same reserved_count even though its card does not paint one.
+    // The empty object is what clears an error left over from a previous submit
+    // of the same form.
     const state = await cancelMyBooking({}, form())
 
     expect(state).toEqual({})
-    expect(revalidatePath).toHaveBeenCalledWith('/bookings')
-    expect(revalidatePath).toHaveBeenCalledWith('/e/diwali-supper')
+    expect(revalidatePath.mock.calls.flat()).toEqual(['/bookings', '/e/diwali-supper', '/'])
   })
 
-  it('still revalidates the list when the slug is missing', async () => {
-    // The slug is only there to name a second path to revalidate — a booking
-    // whose event embed came back null has none. Losing it should cost a stale
-    // seat count on the event page, not a stale bookings list.
+  it('still revalidates the list and the feed when the slug is missing', async () => {
+    // The slug is only there to name the event page's path — a booking whose
+    // event embed came back null has none. Losing it should cost a stale seat
+    // count there, not a stale bookings list and not a stale feed, whose path
+    // is a constant and needs no field.
     const state = await cancelMyBooking({}, form({ slug: undefined }))
 
     expect(state).toEqual({})
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith('/bookings')
+    expect(revalidatePath.mock.calls.flat()).toEqual(['/bookings', '/'])
   })
 
-  it('does not revalidate an empty slug into the feed', async () => {
+  it('does not revalidate an empty slug into the event route', async () => {
     // `/e/${''}` is `/e/`, which is not this route and not nothing either. The
     // falsiness check is what keeps a blank hidden input from naming a path.
     await cancelMyBooking({}, form({ slug: '' }))
 
-    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith('/bookings')
+    expect(revalidatePath.mock.calls.flat()).toEqual(['/bookings', '/'])
   })
 
   it("returns the service's own refusal rather than a message of its own", async () => {
