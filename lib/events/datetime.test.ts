@@ -83,6 +83,14 @@ describe('hasStarted', () => {
     expect(hasStarted('', now)).toBe(true)
   })
 
+  it('treats an unreadable clock as started too', () => {
+    // The other side of the same comparison. `anything <= NaN` is also false, so
+    // an Invalid Date handed in as `now` would open the control rather than
+    // close it — the opposite of what the branch above is for.
+    expect(hasStarted('2026-08-15T14:00:00.001Z', new Date('nonsense'))).toBe(true)
+    expect(hasStarted('2026-08-15T13:00:00.000Z', new Date(NaN))).toBe(true)
+  })
+
   it('reads the real clock when none is given', () => {
     expect(hasStarted(new Date(Date.now() - 60_000).toISOString())).toBe(true)
     expect(hasStarted(new Date(Date.now() + 60_000).toISOString())).toBe(false)

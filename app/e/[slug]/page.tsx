@@ -169,18 +169,30 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   const startsAt = new Date(event.starts_at)
   const seatsLabel = soldOut ? 'Sold out' : `${remaining} of ${ticket?.quantity ?? 0} seats left`
 
-  // Phase 2a books free, no-approval events only. Anything else keeps the inert
-  // control Phase 1 shipped: a host who set a price or ticked approval has built
-  // something this phase cannot honour, and saying so is better than confirming
-  // strangers at their door or letting people in free.
+  // Phase 2a books free, no-approval events only. Everything else keeps the
+  // inert control Phase 1 shipped, whose label is "Booking opens soon" — which
+  // is deliberately vaguer than the reason. A priced event, an approval-gated
+  // one and an event with no ticket type at all are three different problems,
+  // and none of them is the visitor's to solve; "not yet" is the honest summary
+  // of a phase that can neither take money nor run an approval queue. Only the
+  // two states the visitor can act on get their own sentence, below.
   //
-  // `finished` mirrors the EH013 guard in book_free_tickets. The feed already
-  // hides past events, but this page is reached by a link in a WhatsApp group
-  // that outlives the event, so it is the surface where a finished event is
+  // `started` mirrors the EH013 guard in book_free_tickets, inclusive of the
+  // start instant. It is deliberately not a "finished" state: ends_at is
+  // nullable and most events will not set one, so there is nothing to compute
+  // that from, and the rule being mirrored is starts_at <= now() regardless.
+  // The feed already hides past events, but this page is reached by a WhatsApp
+  // link that outlives the event, so it is the surface where a started event is
   // actually met.
-  const finished = hasStarted(event.starts_at)
+  //
+  // EH012 — the same attendee booking twice — is deliberately NOT guarded here.
+  // The page cannot know without querying this visitor's bookings, which is a
+  // round trip on every render of the app's most-shared public page, to
+  // pre-empt a case the database already refuses with a sentence the panel
+  // prints. Offering the control and losing that race is the cheaper mistake.
+  const started = hasStarted(event.starts_at)
   const bookable =
-    !!ticket && !soldOut && !finished && ticket.price_paise === 0 && !event.requires_approval
+    !!ticket && !soldOut && !started && ticket.price_paise === 0 && !event.requires_approval
   const maxSeats = ticket ? Math.max(1, Math.min(remaining, ticket.max_per_order ?? 10)) : 1
 
   return (
@@ -365,7 +377,12 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               className="shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
               style={{ borderColor: MIST, backgroundColor: '#F2EFE9', color: SLATE }}
             >
-              {finished ? 'This event has finished' : soldOut ? 'Sold out' : 'Booking opens soon'}
+              {/* "already started", not "finished": a link forwarded to a
+                  WhatsApp group is opened twenty minutes into a three-hour
+                  supper club as a matter of course, and telling that visitor it
+                  is over is a lie. This wording is true at minute one and at
+                  hour three alike, and is the same thing EH013 says. */}
+              {started ? 'This event has already started' : soldOut ? 'Sold out' : 'Booking opens soon'}
             </button>
           </div>
         )}

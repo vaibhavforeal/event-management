@@ -78,14 +78,17 @@ export function formatIstDateOnly(date: Date): string {
  * clock there is exactly right, but the rule cannot see the difference and this
  * is a better answer to it than a suppression comment.
  *
- * Fails closed. `new Date('nonsense').getTime()` is NaN and every comparison
- * against NaN is false, so a naive `<=` would call an unreadable start time
- * "not started" and offer a Book button for it. `starts_at` is a NOT NULL
- * timestamptz today, so this is unreachable — but the parameter is a plain
- * string, and the safe direction is a missing button rather than a booking
- * against an event whose date nobody can read.
+ * Fails closed on BOTH sides. `new Date('nonsense').getTime()` is NaN and every
+ * comparison against NaN is false, so a naive `<=` would call an unreadable
+ * time "not started" and offer a Book button for it. That applies to an
+ * `Invalid Date` passed as `now` just as much as to `startsAt` — one is
+ * reachable only from a caller's mistake rather than from data, but "closed" is
+ * not a claim worth making about half a comparison. `starts_at` is a NOT NULL
+ * timestamptz today, so neither case arises in this app; the safe direction is
+ * a missing button rather than a booking against a time nobody can read.
  */
 export function hasStarted(startsAt: string, now: Date = new Date()): boolean {
   const time = new Date(startsAt).getTime()
-  return Number.isNaN(time) || time <= now.getTime()
+  const nowTime = now.getTime()
+  return Number.isNaN(time) || Number.isNaN(nowTime) || time <= nowTime
 }
