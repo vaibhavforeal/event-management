@@ -66,6 +66,7 @@ describe('POST /api/webhooks/razorpay', () => {
   it('answers 400 to an unparseable body', async () => {
     const response = await post({ body: 'not json' })
     expect(response.status).toBe(400)
+    expect(processWebhookEvent).not.toHaveBeenCalled()
   })
 
   it('answers 200 to a duplicate without reprocessing side effects', async () => {
