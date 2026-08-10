@@ -442,3 +442,119 @@ async function applyRefundEvent(db: AdminDb, r: RefundEntityShape, status: 'proc
   }
 }
 
+/**
+ * The second feeder. Fetches the order's payments from Razorpay and pushes
+ * them through the same applyPayment the webhook route uses; the unique
+ * constraints make double-application a no-op. Never throws — its callers are
+ * a page render and the sweep, and healing must not take either down.
+ *
+ * A useful side effect: local dev and the physical-phone test can complete a
+ * paid booking WITHOUT a webhook tunnel — this does the same work the webhook
+ * would have.
+ */
+export async function reconcileBooking(bookingId: string): Promise<void> {
+  try {
+    const db = createAdminClient()
+    const { data: payment, error } = await db
+      .from('payments')
+      .select('provider_order_id')
+      .eq('booking_id', bookingId)
+      .maybeSingle()
+    if (error || !payment) return
+
+    const provider = razorpayProvider()
+    const attempts = await provider.listOrderPayments(payment.provider_order_id)
+
+    // One row per order, last write wins — and a capture outranks any failure,
+    // so apply at most one terminal fact, preferring the capture.
+    const terminal = attempts.find((a) => a.status === 'captured') ?? attempts.find((a) => a.status === 'failed')
+    if (!terminal) return
+
+    await applyPayment(db, terminal, terminal as unknown as Json)
+  } catch (cause) {
+    console.error('[payments] reconcile failed; the webhook or the sweep will try again', cause)
+  }
+}
+
+/**
+ * The first status poll after the sheet reports success carries
+ * {payment_id, signature}. Verifying that checkout signature — against OUR
+ * stored order id, never the client's — earns an immediate reconcile, so
+ * confirmation does not wait on webhook latency; the write is still made from
+ * Razorpay's API answer, never from the client's claim.
+ */
+export async function reconcileAfterCheckout(
+  bookingId: string,
+  attempt: { paymentId: string; signature: string },
+): Promise<void> {
+  try {
+    const db = createAdminClient()
+    const { data: payment } = await db
+      .from('payments')
+      .select('provider_order_id')
+      .eq('booking_id', bookingId)
+      .maybeSingle()
+    if (!payment) return
+
+    const provider = razorpayProvider()
+    const genuine = provider.verifyCheckoutSignature({
+      orderId: payment.provider_order_id,
+      paymentId: attempt.paymentId,
+      signature: attempt.signature,
+    })
+    if (!genuine) {
+      console.warn('[payments] checkout signature did not verify; waiting for the webhook')
+      return
+    }
+    await reconcileBooking(bookingId)
+  } catch (cause) {
+    console.error('[payments] post-checkout reconcile failed; the webhook will land', cause)
+  }
+}
+
+/**
+ * The where-nobody-is-looking sweep (npm run reconcile). Three arms:
+ * lapsed holds that have an order (a dropped webhook may hide a capture),
+ * then a global release of pure abandonments, then refunds owed but not yet
+ * sent. No pg_cron and no deploy-target cron yet — that joins the
+ * environment-setup note the day a second environment exists.
+ */
+export async function runReconciliationSweep(): Promise<{
+  reconciled: number
+  released: number
+  refundsRetried: number
+}> {
+  const db = createAdminClient()
+
+  const { data: stale, error: staleError } = await db
+    .from('bookings')
+    .select('id, payments(id)')
+    .eq('status', 'awaiting_payment')
+    .lt('hold_expires_at', new Date().toISOString())
+  if (staleError) throw new Error(`the sweep could not list lapsed holds: ${staleError.message}`)
+
+  let reconciled = 0
+  for (const booking of stale ?? []) {
+    if (booking.payments.length === 0) continue // no order was ever created; release below
+    await reconcileBooking(booking.id)
+    reconciled += 1
+  }
+
+  const { data: released, error: releaseError } = await db.rpc('release_expired_holds')
+  if (releaseError) throw new Error(`the sweep could not release holds: ${releaseError.message}`)
+
+  const { data: stuck, error: stuckError } = await db
+    .from('refunds')
+    .select('id, payments(provider_payment_id)')
+    .eq('status', 'pending')
+    .is('provider_refund_id', null)
+  if (stuckError) throw new Error(`the sweep could not list stuck refunds: ${stuckError.message}`)
+
+  let refundsRetried = 0
+  for (const refund of stuck ?? []) {
+    if (await settleRefund(db, refund.id, refund.payments.provider_payment_id)) refundsRetried += 1
+  }
+
+  return { reconciled, released: released ?? 0, refundsRetried }
+}
+
