@@ -282,7 +282,13 @@ async function applyPayment(db: AdminDb, p: ProviderPayment, raw: Json): Promise
   )
 }
 
-/** At most one refund per payment; the unique provider_refund_id backstops this check. */
+/**
+ * At most one refund per payment. The refunds_one_per_payment unique index is
+ * the guarantee — two feeders carrying the same capture under fresh event ids
+ * both reach this function, and the upsert lets exactly one of them win. The
+ * pre-read is just the fast path: it saves an upsert round-trip on the common
+ * replay of an already-refunded capture.
+ */
 async function ensureRefund(
   db: AdminDb,
   payment: { id: string; provider_payment_id: string | null; amount_paise: number },
@@ -298,10 +304,14 @@ async function ensureRefund(
 
   const { data: row, error: insertError } = await db
     .from('refunds')
-    .insert({ payment_id: payment.id, amount_paise: payment.amount_paise, status: 'pending', reason })
+    .upsert(
+      { payment_id: payment.id, amount_paise: payment.amount_paise, status: 'pending', reason },
+      { onConflict: 'payment_id', ignoreDuplicates: true },
+    )
     .select('id')
-    .single()
+    .maybeSingle()
   if (insertError) throw new Error(`could not create the refund row: ${insertError.message}`)
+  if (!row) return // another feeder won the race; its settleRefund handles the provider call
 
   await settleRefund(db, row.id, payment.provider_payment_id)
 }

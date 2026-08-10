@@ -119,6 +119,27 @@ describe('payment.captured', () => {
     expect(count).toBe(0)
   })
 
+  it('the same capture racing itself under two fresh event ids: one refund, one provider call', async () => {
+    const { booking, orderId } = await freshPaidBooking(1)
+    await db.from('bookings').update({ hold_expires_at: new Date(Date.now() - 60_000).toISOString() }).eq('id', booking.id)
+
+    const provider = fakeProvider()
+    razorpayProvider.mockReturnValue(provider)
+    // Two independent deliveries of the same capture — fresh event ids, so
+    // both pass the receipt dedup and both reach ensureRefund. The
+    // refunds_one_per_payment index is what keeps the money from moving twice.
+    const outcomes = await Promise.all([
+      apply(capturedEvent({ orderId, amountPaise: booking.total_paise })),
+      apply(capturedEvent({ orderId, amountPaise: booking.total_paise })),
+    ])
+
+    expect(outcomes).toEqual(['processed', 'processed'])
+    const paymentId = await paymentIdFor(booking.id)
+    const { data: refunds } = await db.from('refunds').select('id').eq('payment_id', paymentId!)
+    expect(refunds).toHaveLength(1)
+    expect(provider.createRefund).toHaveBeenCalledTimes(1)
+  })
+
   it('capture after a cancel: auto-refund, booking stays cancelled', async () => {
     const { booking, orderId } = await freshPaidBooking(1)
     await db.rpc('cancel_booking', { p_booking_id: booking.id, p_reason: 'changed my mind' })
