@@ -20,8 +20,9 @@ const eslintConfig = defineConfig([
   ]),
   // The service role bypasses RLS entirely. Phase 2 needs it, because bookings
   // and tickets are deliberately not writable by `authenticated` — but it needs
-  // it in exactly one place, so that "did we check authorisation here?" has one
-  // file as its answer rather than a grep.
+  // it in exactly two files, the bookings service and the check-in service, so
+  // that "did we check authorisation here?" has a named list as its answer
+  // rather than a grep.
   //
   // Spelled as `patterns` and not `paths` because `paths` compares the
   // specifier string exactly, and this repo writes relative imports as well as
@@ -37,13 +38,13 @@ const eslintConfig = defineConfig([
   // one of the uses admin.ts documents itself for.
   {
     files: ["app/**/*.{ts,tsx}", "lib/**/*.{ts,tsx}", "proxy.ts"],
-    ignores: ["lib/bookings/service.ts", "lib/supabase/admin.ts"],
+    ignores: ["lib/bookings/service.ts", "lib/checkin/service.ts", "lib/supabase/admin.ts"],
     rules: {
       "no-restricted-imports": ["error", {
         patterns: [{
           group: ["**/supabase/admin", "./admin"],
           message:
-            "Only lib/bookings/service.ts may use the service role. Use @/lib/supabase/server, or add the write to that module.",
+            "Only lib/bookings/service.ts and lib/checkin/service.ts may use the service role. Use @/lib/supabase/server, or add the write to one of those modules.",
         }],
       }],
     },

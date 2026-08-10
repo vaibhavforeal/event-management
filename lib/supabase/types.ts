@@ -788,6 +788,32 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      check_in_next_ticket: {
+        Args: {
+          p_booking_id: string
+          p_checked_in_by: string
+          p_event_id: string
+        }
+        Returns: {
+          attendee_name: string
+          checked_in_at: string
+          outcome: string
+          reference: string
+          tickets_in: number
+          tickets_total: number
+        }[]
+      }
+      check_in_ticket: {
+        Args: { p_checked_in_by: string; p_code: string; p_event_id: string }
+        Returns: {
+          attendee_name: string
+          checked_in_at: string
+          outcome: string
+          reference: string
+          tickets_in: number
+          tickets_total: number
+        }[]
+      }
       confirm_booking: {
         Args: { p_booking_id: string }
         Returns: {

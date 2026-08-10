@@ -25,7 +25,7 @@ import type { Database } from '@/lib/supabase/types'
  */
 
 const BOOKING_COLUMNS =
-  'id, reference, quantity, status, created_at, events(slug, title, starts_at, city, venue_name)'
+  'id, reference, quantity, status, created_at, events(id, slug, title, starts_at, city, venue_name)'
 
 /**
  * The RLS-scoped client, but only if somebody is actually signed in.
@@ -79,6 +79,7 @@ export interface MyBooking {
   status: string
   created_at: string
   events: {
+    id: string
     slug: string
     title: string
     starts_at: string
@@ -150,6 +151,7 @@ export interface EventAttendee {
   status: string
   created_at: string
   profiles: { phone: string } | null
+  tickets: { id: string; checked_in_at: string | null }[]
 }
 
 /**
@@ -180,6 +182,11 @@ export interface EventAttendee {
  * `!inner` on both hops because an outer embed filters nothing — it would
  * null the embedded object and keep the booking row, which is the silent-empty
  * shape all over again rather than a fix.
+ *
+ * The tickets embed is the opposite case, and deliberately plain: nothing
+ * filters on it, and "keeps the row" is exactly right — a zero-ticket booking
+ * must still appear on the guest list, with an empty array where its check-in
+ * states would be. Only the hosts hop filters.
  */
 export async function listEventAttendees(eventId: string): Promise<EventAttendee[]> {
   const session = await signedInClient()
@@ -188,7 +195,7 @@ export async function listEventAttendees(eventId: string): Promise<EventAttendee
   const { data, error } = await session.supabase
     .from('bookings')
     .select(
-      'id, reference, attendee_name, quantity, status, created_at, profiles(phone), events!inner(hosts!inner(profile_id))',
+      'id, reference, attendee_name, quantity, status, created_at, profiles(phone), tickets(id, checked_in_at), events!inner(hosts!inner(profile_id))',
     )
     .eq('event_id', eventId)
     .eq('events.hosts.profile_id', session.userId)
