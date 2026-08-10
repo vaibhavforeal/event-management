@@ -13,10 +13,14 @@ export function CancelAttendeeButton({
   bookingId,
   eventId,
   slug,
+  consequence,
 }: {
   bookingId: string
   eventId: string
   slug: string
+  /** The money consequence of removing this guest, stated before the tap.
+      Computed by the server page; null when no money moved. */
+  consequence?: string | null
 }) {
   const [state, action, pending] = useActionState<CancelState, FormData>(
     cancelAttendeeBooking,
@@ -40,6 +44,13 @@ export function CancelAttendeeButton({
           would otherwise announce nothing at all. Same reasoning, and the same
           markup, as app/bookings/cancel-button.tsx. */}
       <div aria-live="polite">
+        {/* max-w so the sentence wraps under the button. This column is
+            shrink-0, so at its natural width the sentence would push the
+            column out and crush the guest's name to a letter on a phone —
+            the screen this page is written for. */}
+        {consequence && (
+          <p className="text-muted mt-1 max-w-[16ch] text-[13px]">{consequence}</p>
+        )}
         {state.error && <p className="mt-1 text-[13px] text-red-700">{state.error}</p>}
       </div>
     </form>

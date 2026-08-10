@@ -22,6 +22,7 @@ export interface EventFormValues {
   endsAtLocal?: string
   seats?: number
   priceRupees?: number
+  refundCutoffHours?: number
   /** The host's own name, from `hosts.display_name`. */
   hostDisplayName?: string | null
   requiresApproval?: boolean
@@ -47,6 +48,7 @@ interface Draft {
   endsAtLocal: string
   seats: string
   priceRupees: string
+  refundCutoffHours: string
   hostDisplayName: string
 }
 
@@ -72,6 +74,7 @@ function draftFromValues(values: EventFormValues): Draft {
     endsAtLocal: values.endsAtLocal ?? '',
     seats: String(values.seats ?? 20),
     priceRupees: String(values.priceRupees ?? 0),
+    refundCutoffHours: String(values.refundCutoffHours ?? 24),
     hostDisplayName: values.hostDisplayName ?? '',
   }
 }
@@ -88,6 +91,7 @@ function draftFromEcho(echo: SubmittedEventValues): Draft {
     endsAtLocal: echo.endsAtLocal,
     seats: echo.seats,
     priceRupees: echo.priceRupees,
+    refundCutoffHours: echo.refundCutoffHours,
     hostDisplayName: echo.hostDisplayName,
   }
 }
@@ -374,6 +378,29 @@ export function EventForm({
           />
           {state.fieldErrors?.priceRupees && <p className="text-sm text-red-600">{state.fieldErrors.priceRupees}</p>}
         </div>
+      </div>
+
+      <div>
+        <label htmlFor="refundCutoffHours" className="block text-sm font-medium">
+          Refund cutoff (hours before start)
+        </label>
+        <input
+          id="refundCutoffHours"
+          name="refundCutoffHours"
+          type="number"
+          min={0}
+          max={720}
+          value={draft.refundCutoffHours}
+          onChange={(event) => set('refundCutoffHours', event.target.value)}
+          required
+          className={field}
+        />
+        <p className="text-muted mt-1 text-xs">
+          Guests who cancel earlier than this get a full refund. 0 means refundable until start.
+        </p>
+        {state.fieldErrors?.refundCutoffHours && (
+          <p className="text-sm text-red-600">{state.fieldErrors.refundCutoffHours}</p>
+        )}
       </div>
 
       <CoverUpload initialUrl={values.coverImageUrl} />

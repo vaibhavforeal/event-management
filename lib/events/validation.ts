@@ -92,6 +92,11 @@ export const eventDraftSchema = z
       .number('Price must be a number')
       .min(0, 'Price cannot be negative')
       .max(1_000_000, 'That price looks like a mistake'),
+    refundCutoffHours: z.coerce
+      .number('Refund cutoff must be a whole number of hours')
+      .int('Refund cutoff must be a whole number of hours')
+      .min(0, 'The refund cutoff cannot be negative')
+      .max(720, 'Keep the refund cutoff within 30 days (720 hours)'),
     /**
      * The name guests see under "Host" on the public page.
      *
@@ -153,6 +158,7 @@ export const EVENT_FORM_FIELDS = {
   endsAtLocal: 'text',
   seats: 'text',
   priceRupees: 'text',
+  refundCutoffHours: 'text',
   hostDisplayName: 'text',
   requiresApproval: 'checkbox',
   allowsCash: 'checkbox',
@@ -211,7 +217,7 @@ function text(value: FormDataEntryValue | null): string | undefined {
  * absent from this map is genuinely optional and stays `undefined`. A price
  * left blank means free, which is why it is '0' rather than ''.
  *
- * Not a second copy of the field list — it holds five of the thirteen, and
+ * Not a second copy of the field list — it holds six of the fifteen, and
  * getting it wrong changes a message rather than dropping a field, which the
  * message assertions in validation.test.ts already catch.
  */
@@ -221,6 +227,7 @@ const OMITTED_TEXT_DEFAULTS: Partial<Record<keyof EventDraftInput, string>> = {
   startsAtLocal: '',
   seats: '',
   priceRupees: '0',
+  refundCutoffHours: '24',
 }
 
 export function parseEventForm(formData: FormData): ParseResult {

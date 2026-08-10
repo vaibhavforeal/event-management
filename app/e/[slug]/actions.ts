@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { currentCaller } from '@/lib/bookings/caller'
 import { bookFreeTickets } from '@/lib/bookings/service'
+import { startPaidCheckout as startPaidCheckoutService } from '@/lib/payments/service'
 import { loginPath } from '@/lib/auth/session'
 
 export interface BookState {
@@ -64,6 +65,46 @@ export async function bookEvent(_previous: BookState, formData: FormData): Promi
   // They are kept because they cost nothing and are the only thing between a
   // raised staleTimes — or a route that stops being dynamic — and a seat count
   // that lies on Back. publishEvent and unpublishEvent revalidate '/' already.
+  const slug = String(formData.get('slug') ?? '')
+  if (slug) revalidatePath(`/e/${slug}`)
+  revalidatePath('/')
+  redirect(`/bookings/${result.reference}`)
+}
+
+/**
+ * The paid twin of bookEvent: same guards, same redirect, money instead of a
+ * confirm. The three field reads below are bookEvent's, kept character for
+ * character — the two actions must refuse the same mistake with the same
+ * sentence, and the reasons each read looks the way it does are documented
+ * once, above. What differs is the service: startPaidCheckout stops at the
+ * 10-minute hold and a Razorpay order, so the redirect lands on a booking
+ * that is awaiting_payment rather than confirmed.
+ */
+export async function startPaidCheckout(
+  _previous: BookState,
+  formData: FormData,
+): Promise<BookState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const ticketTypeId = String(formData.get('ticketTypeId') ?? '')
+  if (!ticketTypeId) return { error: 'Something went wrong. Reload the page and try again.' }
+
+  const quantity = Number(formData.get('quantity'))
+  if (!Number.isInteger(quantity) || quantity < 1) {
+    return { error: 'Choose how many seats you need.' }
+  }
+
+  const attendeeName = String(formData.get('attendeeName') ?? '').trim().slice(0, 80)
+  if (!attendeeName) return { error: 'Tell the host who to expect.' }
+
+  const result = await startPaidCheckoutService(caller, ticketTypeId, quantity, attendeeName)
+  if (!result.ok) return { error: result.error }
+
+  // The same pair as bookEvent, in the same order and for the same reasons
+  // (see the essay above): the hold this checkout just placed moved
+  // reserved_count, and both payloads carry it. Before the redirect, because
+  // redirect() throws.
   const slug = String(formData.get('slug') ?? '')
   if (slug) revalidatePath(`/e/${slug}`)
   revalidatePath('/')

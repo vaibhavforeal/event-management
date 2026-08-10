@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { requireUser } from '@/lib/auth/session'
 import { getOwnedEvent } from '@/lib/events/queries'
 import { listEventAttendees } from '@/lib/bookings/queries'
+import { cancelConsequence } from '@/lib/payments/refund-policy'
 import { CancelAttendeeButton } from './cancel-attendee-button'
 import { CheckInButton } from './check-in-button'
 
@@ -77,6 +78,22 @@ export default async function AttendeesPage(
         <ul className="divide-line mt-8 divide-y">
           {attendees.map((a) => {
             const ticketsIn = a.tickets.filter((t) => t.checked_in_at).length
+            // What removing this guest does to their money, stated beside the
+            // control. cancelConsequence and not a hand-written sentence, so the
+            // copy lives in the one tested place; for a host it never consults
+            // the clock — removal refunds in full — and it returns null for free
+            // bookings, so those rows keep their plain Cancel. The status guard
+            // is belt over the query's own confirmed-only filter: if that filter
+            // ever loosens, a pending row must not promise a refund.
+            const consequence =
+              a.status === 'confirmed'
+                ? cancelConsequence({
+                    initiator: 'host',
+                    totalPaise: a.total_paise,
+                    startsAt: event.starts_at,
+                    cutoffHours: event.refund_cutoff_hours,
+                  })
+                : null
             return (
               <li key={a.id} className="flex items-center justify-between gap-4 py-3">
                 <div className="min-w-0">
@@ -119,7 +136,12 @@ export default async function AttendeesPage(
                     eventId={id}
                     remaining={a.tickets.length - ticketsIn}
                   />
-                  <CancelAttendeeButton bookingId={a.id} eventId={id} slug={event.slug} />
+                  <CancelAttendeeButton
+                    bookingId={a.id}
+                    eventId={id}
+                    slug={event.slug}
+                    consequence={consequence}
+                  />
                 </div>
               </li>
             )

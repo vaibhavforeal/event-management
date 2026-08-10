@@ -1,7 +1,7 @@
 'use client'
 
 import { useActionState } from 'react'
-import { bookEvent, type BookState } from './actions'
+import { bookEvent, startPaidCheckout, type BookState } from './actions'
 
 // Colours come from the globals.css tokens. This file used to carry its own
 // MIST/SLATE literals that had drifted a few values away from the page it sits
@@ -15,6 +15,13 @@ interface Props {
   maxSeats: number
   priceLabel: string
   seatsLabel: string
+  /**
+   * Swaps the free path for the paid one: startPaidCheckout instead of
+   * bookEvent, and a button that says what tapping it costs. The form is
+   * otherwise identical — the two actions read the same four fields and
+   * refuse the same mistakes with the same sentences.
+   */
+  paid?: boolean
 }
 
 /**
@@ -23,8 +30,18 @@ interface Props {
  * Component, so the event itself is still server-rendered for the WhatsApp
  * crawler.
  */
-export function BookPanel({ ticketTypeId, slug, maxSeats, priceLabel, seatsLabel }: Props) {
-  const [state, action, pending] = useActionState<BookState, FormData>(bookEvent, {})
+export function BookPanel({
+  ticketTypeId,
+  slug,
+  maxSeats,
+  priceLabel,
+  seatsLabel,
+  paid = false,
+}: Props) {
+  const [state, action, pending] = useActionState<BookState, FormData>(
+    paid ? startPaidCheckout : bookEvent,
+    {},
+  )
 
   return (
     <form action={action} className="mx-auto flex max-w-2xl items-center justify-between gap-3">
@@ -75,7 +92,7 @@ export function BookPanel({ ticketTypeId, slug, maxSeats, priceLabel, seatsLabel
           disabled={pending}
           className="bg-ink text-paper rounded-lg px-5 py-3 text-[15px] font-medium disabled:opacity-60"
         >
-          {pending ? 'Booking…' : 'Book'}
+          {pending ? (paid ? 'Starting payment…' : 'Booking…') : paid ? `Pay ${priceLabel}` : 'Book'}
         </button>
       </div>
     </form>

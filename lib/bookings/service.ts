@@ -3,6 +3,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { mayCancel } from '@/lib/bookings/authorize'
 import { mapBookingRpcError } from '@/lib/bookings/rpc-errors'
 import type { Caller } from '@/lib/bookings/caller'
+import type { CancelInitiator } from '@/lib/payments/refund-policy'
+import { refundIfOwed } from '@/lib/payments/service'
 
 /**
  * Every booking write in the product, and the only file allowed to hold the
@@ -68,7 +70,7 @@ export async function bookFreeTickets(
 export async function cancelBooking(
   caller: Caller,
   bookingId: string,
-  reason?: string,
+  initiator: CancelInitiator,
 ): Promise<CancelResult> {
   const db = createAdminClient()
 
@@ -119,9 +121,14 @@ export async function cancelBooking(
     return { ok: false, error: NOT_YOURS }
   }
 
+  // The stored prose is derived here rather than passed in: the initiator is a
+  // two-value type, so no caller can write anything else into
+  // bookings.cancellation_reason — dashboards and EH021 already speak these two
+  // sentences.
+  const reason = initiator === 'attendee' ? 'cancelled by attendee' : 'cancelled by host'
+
   const { error } = await db.rpc('cancel_booking', {
     p_booking_id: bookingId,
-    // As above: absent means the column's default, which is null.
     p_reason: reason,
   })
 
@@ -129,5 +136,10 @@ export async function cancelBooking(
   // telling a stranger anything. cancel_booking is idempotent, so a second
   // cancellation is a success rather than an error to translate.
   if (error) return { ok: false, error: error.message }
+
+  // Seat first, then money. refundIfOwed never throws; a refund that could
+  // not be sent is the sweep's job, not a failed cancel.
+  await refundIfOwed(bookingId, initiator)
+
   return { ok: true }
 }

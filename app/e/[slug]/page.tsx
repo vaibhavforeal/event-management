@@ -4,6 +4,7 @@ import type { Metadata } from 'next'
 import { getPublishedEventBySlug } from '@/lib/events/queries'
 import { formatIst, formatIstDateOnly, hasStarted } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
+import { refundPolicySentence } from '@/lib/payments/refund-policy'
 import { clientEnv } from '@/lib/env'
 import { BookPanel } from './book-panel'
 
@@ -158,13 +159,13 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   const startsAt = new Date(event.starts_at)
   const seatsLabel = soldOut ? 'Sold out' : `${remaining} of ${ticket?.quantity ?? 0} seats left`
 
-  // Phase 2a books free, no-approval events only. Everything else keeps the
-  // inert control Phase 1 shipped, whose label is "Booking opens soon" — which
-  // is deliberately vaguer than the reason. A priced event, an approval-gated
-  // one and an event with no ticket type at all are three different problems,
-  // and none of them is the visitor's to solve; "not yet" is the honest summary
-  // of a phase that can neither take money nor run an approval queue. Only the
-  // two states the visitor can act on get their own sentence, below.
+  // Phase 3 books free and paid, no-approval events. What remains inert is the
+  // control Phase 1 shipped, whose label is "Booking opens soon" — which is
+  // deliberately vaguer than the reason. An approval-gated event and an event
+  // with no ticket type at all are different problems, and neither is the
+  // visitor's to solve; "not yet" is the honest summary of a phase that cannot
+  // run an approval queue. Only the states the visitor can act on get their
+  // own sentence, below.
   //
   // `started` mirrors the EH013 guard in book_free_tickets, inclusive of the
   // start instant. It is deliberately not a "finished" state: ends_at is
@@ -180,8 +181,13 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   // pre-empt a case the database already refuses with a sentence the panel
   // prints. Offering the control and losing that race is the cheaper mistake.
   const started = hasStarted(event.starts_at)
-  const bookable =
-    !!ticket && !soldOut && !started && ticket.price_paise === 0 && !event.requires_approval
+  // One gate, two doors: everything a booking needs regardless of money, then
+  // the price decides which action the panel submits to. The two are mutually
+  // exclusive by construction — price_paise is CHECKed non-negative — so the
+  // bar renders exactly one of free panel, paid panel, or the inert fallback.
+  const common = !!ticket && !soldOut && !started && !event.requires_approval
+  const bookableFree = common && ticket.price_paise === 0
+  const bookablePaid = common && ticket.price_paise > 0
   const maxSeats = ticket ? Math.max(1, Math.min(remaining, ticket.max_per_order ?? 10)) : 1
 
   return (
@@ -247,13 +253,18 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           {/* Shown because it answers "can I make it?", which is the question
               between reading the page and booking. requires_approval and
               allows_cash are on the row too and stay unrendered: the first is
-              read by `bookable` above rather than printed, and the second only
-              matters once there is a price to pay, which this phase has not
-              reached. */}
+              read by the gate above rather than printed, and the second waits
+              for the cash flow a later task builds. */}
           {event.ends_at && (
             <p className="text-muted font-mono text-[13px]">
               Ends {formatIst(new Date(event.ends_at))}
             </p>
+          )}
+          {/* The money rule, stated where the visitor is already reading the
+              clock it hangs off. Priced events only: "free cancellation" under
+              a free event reads as a price, not a policy. */}
+          {!!ticket && ticket.price_paise > 0 && (
+            <p className="text-muted text-sm">{refundPolicySentence(event.refund_cutoff_hours)}</p>
           )}
         </section>
 
@@ -339,13 +350,22 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           bg-paper/95 rather than opaque paper so the backdrop-blur has something
           to do — content scrolling under the bar reads as under it. */}
       <div className="border-line bg-paper/95 fixed inset-x-0 bottom-0 border-t px-5 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur">
-        {bookable && ticket ? (
+        {bookableFree && ticket ? (
           <BookPanel
             ticketTypeId={ticket.id}
             slug={slug}
             maxSeats={maxSeats}
             priceLabel="Free"
             seatsLabel={seatsLabel}
+          />
+        ) : bookablePaid && ticket ? (
+          <BookPanel
+            ticketTypeId={ticket.id}
+            slug={slug}
+            maxSeats={maxSeats}
+            priceLabel={formatPaise(ticket.price_paise)}
+            seatsLabel={seatsLabel}
+            paid
           />
         ) : (
           <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">

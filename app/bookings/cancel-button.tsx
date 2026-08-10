@@ -8,7 +8,17 @@ import { cancelMyBooking, type CancelState } from './actions'
  * one row. A single form around the list would make every row spin when any one
  * of them was submitted.
  */
-export function CancelButton({ bookingId, slug }: { bookingId: string; slug: string }) {
+export function CancelButton({
+  bookingId,
+  slug,
+  consequence,
+}: {
+  bookingId: string
+  slug: string
+  /** The money consequence of this cancel, stated before the tap. Computed by
+      the server (it owns the clock and the policy); null when no money moved. */
+  consequence?: string | null
+}) {
   const [state, action, pending] = useActionState<CancelState, FormData>(cancelMyBooking, {})
 
   return (
@@ -28,6 +38,7 @@ export function CancelButton({ bookingId, slug }: { bookingId: string; slug: str
           visitor just pressed and replaces nothing on screen, so a screen reader
           would otherwise announce nothing at all. */}
       <div aria-live="polite">
+        {consequence && <p className="text-muted mt-1 text-[13px]">{consequence}</p>}
         {state.error && <p className="mt-1 text-[13px] text-red-700">{state.error}</p>}
       </div>
     </form>
