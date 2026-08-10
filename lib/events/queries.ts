@@ -279,6 +279,8 @@ export interface PublicEvent extends FeedEvent {
   ends_at: string | null
   requires_approval: boolean
   allows_cash: boolean
+  /** Hours before starts_at until which a cancel refunds in full. 0 = until start. */
+  refund_cutoff_hours: number
   hosts: { display_name: string; bio: string | null; avatar_url: string | null } | null
 }
 
@@ -290,7 +292,7 @@ export async function getPublishedEventBySlug(slug: string): Promise<PublicEvent
     .from('events')
     .select(
       `${FEED_COLUMNS}, description, venue_address, hide_venue_until_approved, ends_at,
-       requires_approval, allows_cash, hosts(display_name, bio, avatar_url)`,
+       requires_approval, allows_cash, refund_cutoff_hours, hosts(display_name, bio, avatar_url)`,
     )
     .eq('slug', slug)
     .eq('status', 'published')
