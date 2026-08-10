@@ -32,6 +32,9 @@ export async function listBookingTickets(bookingId: string): Promise<BookingTick
     .select('id, code, checked_in_at')
     .eq('booking_id', bookingId)
     .order('created_at', { ascending: true })
+    // Tickets issued in one booking share a created_at; the id tiebreak keeps
+    // "Ticket 1 of 3" pointing at the same ticket on every render.
+    .order('id', { ascending: true })
 
   if (error) throw new Error(`Could not load the tickets: ${error.message}`)
   return (data ?? []) as BookingTicket[]

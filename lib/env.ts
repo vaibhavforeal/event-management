@@ -19,7 +19,7 @@ const serverSchema = z.object({
   // Shared secret Supabase Auth signs the send_sms hook with. Format:
   // "v1,whsec_<base64>". Must match [auth.hook.send_sms].secrets.
   SEND_SMS_HOOK_SECRET: z.string().min(1),
-  TICKET_SIGNING_SECRET: z.string().min(32).optional(),
+  TICKET_SIGNING_SECRET: z.string().min(32),
   RAZORPAY_KEY_ID: z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
   RAZORPAY_WEBHOOK_SECRET: z.string().optional(),
