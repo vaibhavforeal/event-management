@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { currentCaller } from '@/lib/bookings/caller'
 import { cancelBooking } from '@/lib/bookings/service'
+import { checkInNextTicket } from '@/lib/checkin/service'
 import { isEventSlug } from '@/lib/events/slug'
 import { loginPath } from '@/lib/auth/session'
 
@@ -63,5 +64,38 @@ export async function cancelAttendeeBooking(
   // answer to a stale count is never `export const revalidate`, is written out
   // once — over the same pair of calls in app/e/[slug]/actions.ts.
   revalidatePath('/')
+  return {}
+}
+
+export interface CheckInState {
+  error?: string
+}
+
+/**
+ * Admits the next person on a booking — the tap fallback for a guest with no
+ * QR, no camera, or no Chrome. The service re-checks that the caller hosts
+ * this event; eventId arriving from a hidden input is safe for the same
+ * reason the cancel action's is — lying about it changes which door you are
+ * refused at, not what you may do — but unlike the cancel action it IS passed
+ * to the service, as the scope to authorise against, so a junk shape stops
+ * here rather than travelling.
+ */
+export async function checkInAttendee(
+  _previous: CheckInState,
+  formData: FormData,
+): Promise<CheckInState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const bookingId = String(formData.get('bookingId') ?? '')
+  const eventId = String(formData.get('eventId') ?? '')
+  if (!bookingId || !UUID_PATTERN.test(eventId)) {
+    return { error: 'Something went wrong. Reload the page and try again.' }
+  }
+
+  const result = await checkInNextTicket(caller, eventId, bookingId)
+  if (!result.ok) return { error: result.error }
+
+  revalidatePath(`/host/events/${eventId}/attendees`)
   return {}
 }
