@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { requireUser } from '@/lib/auth/session'
 import { listMyBookings } from '@/lib/bookings/queries'
 import { formatIst } from '@/lib/events/datetime'
+import { cancelConsequence } from '@/lib/payments/refund-policy'
 import { CancelButton } from './cancel-button'
 
 export const metadata = { title: 'Your bookings' }
@@ -48,7 +49,23 @@ export default async function BookingsPage() {
                   harmless and still wrong: it would read as though the row might
                   come back. */}
               {booking.status === 'confirmed' && (
-                <CancelButton bookingId={booking.id} slug={booking.events?.slug ?? ''} />
+                <CancelButton
+                  bookingId={booking.id}
+                  slug={booking.events?.slug ?? ''}
+                  /* What the tap will do to the money, computed here because the
+                     server owns the clock. cancelConsequence returns null for
+                     free bookings, so free rows keep their plain button. */
+                  consequence={
+                    booking.events
+                      ? cancelConsequence({
+                          initiator: 'attendee',
+                          totalPaise: booking.total_paise,
+                          startsAt: booking.events.starts_at,
+                          cutoffHours: booking.events.refund_cutoff_hours,
+                        })
+                      : null
+                  }
+                />
               )}
             </li>
           ))}

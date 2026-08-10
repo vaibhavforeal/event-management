@@ -161,6 +161,9 @@ export interface EventAttendee {
   quantity: number
   status: string
   created_at: string
+  /** 0 for free bookings. What removing this guest refunds — the guest list
+      states it beside the Cancel control before the host taps. */
+  total_paise: number
   profiles: { phone: string } | null
   tickets: { id: string; checked_in_at: string | null }[]
 }
@@ -206,7 +209,7 @@ export async function listEventAttendees(eventId: string): Promise<EventAttendee
   const { data, error } = await session.supabase
     .from('bookings')
     .select(
-      'id, reference, attendee_name, quantity, status, created_at, profiles(phone), tickets(id, checked_in_at), events!inner(hosts!inner(profile_id))',
+      'id, reference, attendee_name, quantity, status, created_at, total_paise, profiles(phone), tickets(id, checked_in_at), events!inner(hosts!inner(profile_id))',
     )
     .eq('event_id', eventId)
     .eq('events.hosts.profile_id', session.userId)
