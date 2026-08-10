@@ -208,6 +208,29 @@ describe('refund events', () => {
     expect(payment!.status).toBe('refunded')
   })
 
+  it('a refund arriving under an unknown id claims the stuck pending row', async () => {
+    const { booking, orderId } = await freshPaidBooking(1)
+    await db.from('bookings').update({ hold_expires_at: new Date(Date.now() - 60_000).toISOString() }).eq('id', booking.id)
+    // The provider is down when the auto-refund fires: the row stays pending
+    // with no provider_refund_id — the stuck shape the sweep exists for.
+    razorpayProvider.mockReturnValue(
+      fakeProvider({ createRefund: vi.fn(async () => { throw new Error('razorpay down') }) }),
+    )
+    await apply(capturedEvent({ orderId, amountPaise: booking.total_paise }))
+    const paymentId = await paymentIdFor(booking.id)
+    const { data: stuck } = await db.from('refunds').select('id, provider_refund_id, status').eq('payment_id', paymentId!).single()
+    expect(stuck).toMatchObject({ provider_refund_id: null, status: 'pending' })
+
+    // Someone refunds from the Razorpay dashboard: the webhook names a refund
+    // id we never stored, against a payment that already owns a pending row.
+    await apply(refundEvent('processed', { refundId: 'rfnd_claimed_1', paymentId: 'pay_test_1', amountPaise: booking.total_paise }))
+
+    const { data: refunds } = await db.from('refunds').select('id, provider_refund_id, status').eq('payment_id', paymentId!)
+    expect(refunds).toEqual([{ id: stuck!.id, provider_refund_id: 'rfnd_claimed_1', status: 'processed' }])
+    const { data: payment } = await db.from('payments').select('status').eq('id', paymentId!).single()
+    expect(payment!.status).toBe('refunded')
+  })
+
   it('refund.failed marks the row failed so a human looks', async () => {
     const { booking, orderId } = await freshPaidBooking(1)
     await db.from('bookings').update({ hold_expires_at: new Date(Date.now() - 60_000).toISOString() }).eq('id', booking.id)
@@ -244,6 +267,39 @@ describe('bookkeeping', () => {
       .single()
     expect(receipt!.processed_at).toBeNull()
     expect(receipt!.error).toMatch(/no payments row/)
+  })
+
+  it('a redelivery of the SAME event id reprocesses a half-done event', async () => {
+    const { booking, orderId } = await freshPaidBooking(2)
+    // The order exists at Razorpay but our payments row does not (the insert
+    // landing late): the first delivery fails and stamps the receipt.
+    await db.from('payments').delete().eq('booking_id', booking.id)
+    const fixture = capturedEvent({ orderId, amountPaise: booking.total_paise })
+
+    await expect(apply(fixture)).rejects.toThrow(/no payments row/)
+
+    // The row appears; Razorpay redelivers under the SAME event id. The
+    // receipt exists but never earned a processed_at — so this is not a
+    // duplicate, it is the retry the 500 asked for.
+    await db.from('payments').insert({
+      booking_id: booking.id,
+      provider: 'razorpay',
+      provider_order_id: orderId,
+      amount_paise: booking.total_paise,
+      status: 'created',
+    })
+    const outcome = await apply(fixture)
+
+    expect(outcome).toBe('processed')
+    const { data: after } = await db.from('bookings').select('status').eq('id', booking.id).single()
+    expect(after!.status).toBe('confirmed')
+    const { data: receipt } = await db
+      .from('provider_webhook_events')
+      .select('processed_at, error')
+      .eq('provider_event_id', fixture.eventId)
+      .single()
+    expect(receipt!.processed_at).not.toBeNull()
+    expect(receipt!.error).toBeNull()
   })
 })
 

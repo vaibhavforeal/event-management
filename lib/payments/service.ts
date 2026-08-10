@@ -87,9 +87,11 @@ type AdminDb = ReturnType<typeof createAdminClient>
 /**
  * One processor, two feeders (this entry for the webhook route,
  * reconcileBooking for page loads and the sweep). The receipt goes down FIRST,
- * before any business logic — (provider, provider_event_id) is the dedup — and
- * every write below it is idempotent, so the same truth arriving twice, from
- * either feeder, lands once.
+ * before any business logic — and the dedup on (provider, provider_event_id)
+ * is a dedup of COMPLETED processing, not of receipt existence: an event whose
+ * receipt exists but never earned a processed_at is a half-processed event,
+ * and its redelivery runs the dispatch again. Every write below the receipt is
+ * idempotent, so the same truth arriving twice, from either feeder, lands once.
  *
  * Throws on processing failure ON PURPOSE, after stamping the receipt's error:
  * the route answers 500, Razorpay redelivers, and a redelivery is exactly what
@@ -117,7 +119,24 @@ export async function processWebhookEvent(input: {
     .maybeSingle()
 
   if (receiptError) throw new Error(`could not record the webhook receipt: ${receiptError.message}`)
-  if (!receipt) return 'duplicate'
+
+  let receiptId: string
+  if (receipt) {
+    receiptId = receipt.id
+  } else {
+    // The receipt exists from an earlier delivery. Finished then? Duplicate.
+    // Never finished — the error stamp answered 500 and this is the promised
+    // redelivery? Run the dispatch again on the same receipt.
+    const { data: existing, error: existingError } = await db
+      .from('provider_webhook_events')
+      .select('id, processed_at')
+      .eq('provider', 'razorpay')
+      .eq('provider_event_id', input.providerEventId)
+      .single()
+    if (existingError) throw new Error(`could not read the webhook receipt: ${existingError.message}`)
+    if (existing.processed_at) return 'duplicate'
+    receiptId = existing.id
+  }
 
   try {
     switch (input.eventType) {
@@ -140,11 +159,16 @@ export async function processWebhookEvent(input: {
     }
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause)
-    await db.from('provider_webhook_events').update({ error: message }).eq('id', receipt.id)
+    await db.from('provider_webhook_events').update({ error: message }).eq('id', receiptId)
     throw cause
   }
 
-  await db.from('provider_webhook_events').update({ processed_at: new Date().toISOString() }).eq('id', receipt.id)
+  // error: null because a redelivery may be completing an attempt that
+  // stamped one — the receipt should read as settled, not as both.
+  await db
+    .from('provider_webhook_events')
+    .update({ processed_at: new Date().toISOString(), error: null })
+    .eq('id', receiptId)
   return 'processed'
 }
 
@@ -404,9 +428,13 @@ export async function refundIfOwed(bookingId: string, initiator: CancelInitiator
 
 /**
  * refund.processed / refund.failed move the row; the booking's ending was
- * decided at cancel time and does not change here. A refund with no row was
- * made outside the app (the Razorpay dashboard); it is recorded against the
- * payment so the books stay honest.
+ * decided at cancel time and does not change here. A refund id we have never
+ * stored does NOT always mean a new row: the payment may already carry one —
+ * our own pending intent whose provider call never landed (or landed without
+ * its row update), now settled from the Razorpay dashboard or by a lost
+ * settle. That row is CLAIMED — provider_refund_id and status written onto it
+ * — so the books converge and refunds_one_per_payment holds. Only a payment
+ * with no refund row at all gets an insert.
  */
 async function applyRefundEvent(db: AdminDb, r: RefundEntityShape, status: 'processed' | 'failed'): Promise<void> {
   const { data: row, error } = await db.from('refunds').select('id').eq('provider_refund_id', r.refundId).maybeSingle()
@@ -423,14 +451,30 @@ async function applyRefundEvent(db: AdminDb, r: RefundEntityShape, status: 'proc
       .maybeSingle()
     if (paymentError) throw new Error(`could not read payments: ${paymentError.message}`)
     if (!payment) throw new Error(`refund ${r.refundId} names a payment this app never saw`)
-    const { error: insertError } = await db.from('refunds').insert({
-      payment_id: payment.id,
-      provider_refund_id: r.refundId,
-      amount_paise: r.amountPaise,
-      status,
-      reason: 'created outside the app',
-    })
-    if (insertError) throw new Error(`could not record the outside refund: ${insertError.message}`)
+
+    const { data: pending, error: pendingError } = await db
+      .from('refunds')
+      .select('id')
+      .eq('payment_id', payment.id)
+      .maybeSingle()
+    if (pendingError) throw new Error(`could not read refunds: ${pendingError.message}`)
+
+    if (pending) {
+      const { error: claimError } = await db
+        .from('refunds')
+        .update({ provider_refund_id: r.refundId, status })
+        .eq('id', pending.id)
+      if (claimError) throw new Error(`could not claim the pending refund: ${claimError.message}`)
+    } else {
+      const { error: insertError } = await db.from('refunds').insert({
+        payment_id: payment.id,
+        provider_refund_id: r.refundId,
+        amount_paise: r.amountPaise,
+        status,
+        reason: 'created outside the app',
+      })
+      if (insertError) throw new Error(`could not record the outside refund: ${insertError.message}`)
+    }
   }
 
   if (status === 'processed') {
