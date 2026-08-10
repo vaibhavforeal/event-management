@@ -33,7 +33,7 @@ export async function cancelAttendeeBooking(
   // The same mayCancel() the attendee's own cancel goes through. A host is
   // entitled here only because they host *this* event, and `eventId` arrives
   // from a form — so it is used for revalidation and never for the decision.
-  const result = await cancelBooking(caller, bookingId, 'cancelled by host')
+  const result = await cancelBooking(caller, bookingId, 'host')
   if (!result.ok) return { error: result.error }
 
   // Shape-checked rather than merely non-empty, for the same reason the slug

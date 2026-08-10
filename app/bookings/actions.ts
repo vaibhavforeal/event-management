@@ -31,7 +31,7 @@ export async function cancelMyBooking(
   // cancelBooking re-checks who the caller is against the booking. Being signed
   // in is not the same as being entitled to this row, and RLS is not in this
   // path to make the difference for us.
-  const result = await cancelBooking(caller, bookingId, 'cancelled by attendee')
+  const result = await cancelBooking(caller, bookingId, 'attendee')
   if (!result.ok) return { error: result.error }
 
   revalidatePath('/bookings')

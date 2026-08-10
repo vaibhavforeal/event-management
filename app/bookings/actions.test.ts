@@ -146,7 +146,7 @@ describe('cancelMyBooking input guards', () => {
     const state = await cancelMyBooking({}, form({ bookingId: 'not-a-uuid' }))
 
     expect(state).toEqual({ error: 'That booking is not yours to cancel.' })
-    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, 'not-a-uuid', 'cancelled by attendee')
+    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, 'not-a-uuid', 'attendee')
   })
 })
 
@@ -164,7 +164,7 @@ describe('cancelMyBooking, signed in', () => {
     expect(cancelBooking).toHaveBeenCalledWith(
       { id: CALLER_ID },
       BOOKING_ID,
-      'cancelled by attendee',
+      'attendee',
     )
   })
 
@@ -215,7 +215,7 @@ describe('cancelMyBooking, signed in', () => {
       // Still cancelled, and the other two paths still revalidated: a junk slug
       // costs a stale seats-left count on one page, not the operation.
       expect(state).toEqual({})
-      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by attendee')
+      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'attendee')
       expect(revalidatePath.mock.calls.flat()).toEqual(['/bookings', '/'])
     }
   })

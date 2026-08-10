@@ -129,7 +129,7 @@ describe('cancelBooking', () => {
       .eq('id', event.ticketTypeId)
       .single()
 
-    const result = await cancelBooking(callerOf(attendeeId), bookingId)
+    const result = await cancelBooking(callerOf(attendeeId), bookingId, 'attendee')
     expect(result.ok).toBe(true)
 
     const { data: after } = await db
@@ -144,7 +144,7 @@ describe('cancelBooking', () => {
     // The rule is one *active* booking, not one ever. If this fails, the index
     // predicate is wider than the active statuses.
     const { bookingId, attendeeId } = await freshBooking()
-    await cancelBooking(callerOf(attendeeId), bookingId)
+    await cancelBooking(callerOf(attendeeId), bookingId, 'attendee')
 
     const again = await bookFreeTickets(callerOf(attendeeId), event.ticketTypeId, 2, 'Guest')
     expect(again.ok).toBe(true)
@@ -153,7 +153,7 @@ describe('cancelBooking', () => {
   it('lets the host of the event cancel it', async () => {
     const { bookingId } = await freshBooking()
 
-    const result = await cancelBooking(callerOf(event.hostProfileId), bookingId)
+    const result = await cancelBooking(callerOf(event.hostProfileId), bookingId, 'host')
 
     expect(result.ok).toBe(true)
     const { data } = await db.from('bookings').select('status').eq('id', bookingId).single()
@@ -166,19 +166,22 @@ describe('cancelBooking', () => {
     // else's seat.
     const { bookingId, attendeeId } = await freshBooking()
 
-    const result = await cancelBooking(callerOf(strangerId), bookingId)
+    // A stranger claiming the attendee surface — the initiator names which
+    // button was pressed, not an entitlement, so it must not widen anything.
+    const result = await cancelBooking(callerOf(strangerId), bookingId, 'attendee')
 
     expect(result.ok).toBe(false)
     const { data } = await db.from('bookings').select('status').eq('id', bookingId).single()
     expect(data!.status).toBe('confirmed')
 
-    await cancelBooking(callerOf(attendeeId), bookingId)
+    await cancelBooking(callerOf(attendeeId), bookingId, 'attendee')
   })
 
   it('refuses a booking that does not exist without leaking that fact', async () => {
     const result = await cancelBooking(
       callerOf(event.attendeeId),
       '00000000-0000-0000-0000-000000000000',
+      'attendee',
     )
 
     expect(result.ok).toBe(false)
@@ -196,10 +199,11 @@ describe('cancelBooking', () => {
     // apart in the file to drift.
     const { bookingId, attendeeId } = await freshBooking()
 
-    const real = await cancelBooking(callerOf(strangerId), bookingId)
+    const real = await cancelBooking(callerOf(strangerId), bookingId, 'attendee')
     const imaginary = await cancelBooking(
       callerOf(strangerId),
       '00000000-0000-0000-0000-000000000000',
+      'attendee',
     )
 
     expect(real.ok).toBe(false)
@@ -207,6 +211,6 @@ describe('cancelBooking', () => {
     if (real.ok || imaginary.ok) return
     expect(real.error).toBe(imaginary.error)
 
-    await cancelBooking(callerOf(attendeeId), bookingId)
+    await cancelBooking(callerOf(attendeeId), bookingId, 'attendee')
   })
 })

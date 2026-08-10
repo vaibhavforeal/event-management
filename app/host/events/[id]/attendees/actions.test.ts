@@ -157,7 +157,7 @@ describe('cancelAttendeeBooking input guards', () => {
     const state = await cancelAttendeeBooking({}, form({ bookingId: 'not-a-uuid' }))
 
     expect(state).toEqual({ error: 'That booking is not yours to cancel.' })
-    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, 'not-a-uuid', 'cancelled by host')
+    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, 'not-a-uuid', 'host')
   })
 })
 
@@ -172,7 +172,7 @@ describe('cancelAttendeeBooking, signed in', () => {
 
     await cancelAttendeeBooking({}, fd)
 
-    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'host')
   })
 
   it('never passes the form\'s eventId into the authorisation decision', async () => {
@@ -185,7 +185,7 @@ describe('cancelAttendeeBooking, signed in', () => {
 
     await cancelAttendeeBooking({}, form({ eventId: other }))
 
-    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'host')
     expect(revalidatePath).toHaveBeenCalledWith(`/host/events/${other}/attendees`)
   })
 
@@ -196,17 +196,19 @@ describe('cancelAttendeeBooking, signed in', () => {
     // against the caller by cancelBooking.
     await cancelAttendeeBooking({}, form({ slug: 'somebody-elses-event' }))
 
-    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'host')
     expect(revalidatePath).toHaveBeenCalledWith('/e/somebody-elses-event')
   })
 
   it("marks the cancellation as the host's, not the attendee's", async () => {
-    // The reason is written to bookings.cancellation_reason, and it is the only
-    // thing separating "I changed my mind" from "the host removed me" after the
-    // fact. The attendee's own action passes 'cancelled by attendee'.
+    // The initiator decides two things in the service: the prose written to
+    // bookings.cancellation_reason ('cancelled by host' — the only thing
+    // separating "I changed my mind" from "the host removed me" after the
+    // fact), and the refund rule (a host removal refunds in full, cutoff or
+    // no). The attendee's own action passes 'attendee'.
     await cancelAttendeeBooking({}, form())
 
-    expect(cancelBooking).toHaveBeenCalledWith(expect.anything(), BOOKING_ID, 'cancelled by host')
+    expect(cancelBooking).toHaveBeenCalledWith(expect.anything(), BOOKING_ID, 'host')
   })
 
   it('revalidates the guest list, the event page and the feed, and returns a clear state', async () => {
@@ -230,7 +232,7 @@ describe('cancelAttendeeBooking, signed in', () => {
     const state = await cancelAttendeeBooking({}, form({ eventId: undefined }))
 
     expect(state).toEqual({})
-    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+    expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'host')
     expect(revalidatePath.mock.calls.flat()).toEqual([EVENT_PATH, '/'])
   })
 
@@ -274,7 +276,7 @@ describe('cancelAttendeeBooking, signed in', () => {
       const state = await cancelAttendeeBooking({}, form({ slug }))
 
       expect(state).toEqual({})
-      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'host')
       expect(revalidatePath.mock.calls.flat()).toEqual([ATTENDEES_PATH, '/'])
     }
   })
@@ -294,7 +296,7 @@ describe('cancelAttendeeBooking, signed in', () => {
       const state = await cancelAttendeeBooking({}, form({ eventId }))
 
       expect(state).toEqual({})
-      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'cancelled by host')
+      expect(cancelBooking).toHaveBeenCalledWith({ id: CALLER_ID }, BOOKING_ID, 'host')
       expect(revalidatePath.mock.calls.flat()).toEqual([EVENT_PATH, '/'])
     }
   })

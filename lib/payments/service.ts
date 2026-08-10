@@ -3,6 +3,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import type { Caller } from '@/lib/bookings/caller'
 import type { PaymentProvider, ProviderPayment, ProviderPaymentStatus } from '@/lib/payments/provider'
 import { razorpayProvider } from '@/lib/payments/razorpay'
+import type { CancelInitiator } from '@/lib/payments/refund-policy'
+import { refundDecision } from '@/lib/payments/refund-policy'
 import { mapPaymentRpcError } from '@/lib/payments/rpc-errors'
 import type { Json } from '@/lib/supabase/types'
 
@@ -336,6 +338,67 @@ async function settleRefund(db: AdminDb, refundId: string, providerPaymentId: st
   } catch (cause) {
     console.error(`[payments] refund ${refundId} not sent yet; the sweep retries`, cause)
     return false
+  }
+}
+
+/**
+ * Money, after the seat. Called by lib/bookings/service.cancelBooking once
+ * cancel_booking has freed the inventory — both cancel surfaces keep that one
+ * front door. Looks for a captured payment (none: free bookings and abandoned
+ * checkouts cost nothing extra), applies the pure cutoff rule, creates at most
+ * one refund, and flips the booking to 'refunded' — at refund creation, not at
+ * Razorpay settlement, because the attendee's seat decision is final at cancel
+ * time.
+ *
+ * Never throws: the cancel already succeeded, and a refund that could not be
+ * sent is a pending row the sweep retries, not a reason to tell the attendee
+ * their cancel failed.
+ */
+export async function refundIfOwed(bookingId: string, initiator: CancelInitiator): Promise<void> {
+  try {
+    const db = createAdminClient()
+
+    const { data: booking, error } = await db
+      .from('bookings')
+      .select('id, status, events(starts_at, refund_cutoff_hours)')
+      .eq('id', bookingId)
+      .maybeSingle()
+    if (error || !booking) {
+      console.error('[payments] could not read the booking for a refund decision', error)
+      return
+    }
+
+    const { data: payment, error: paymentError } = await db
+      .from('payments')
+      .select('id, provider_payment_id, amount_paise')
+      .eq('booking_id', bookingId)
+      .eq('status', 'captured')
+      .maybeSingle()
+    if (paymentError) {
+      console.error('[payments] could not read payments for a refund decision', paymentError)
+      return
+    }
+    if (!payment) return
+
+    const decision = refundDecision({
+      initiator,
+      startsAt: booking.events.starts_at,
+      cutoffHours: booking.events.refund_cutoff_hours,
+    })
+    if (decision === 'none') return
+
+    await ensureRefund(db, payment, `cancelled by ${initiator}`)
+
+    // 'refunded' means "refund created", not "settled" — settlement lag lives
+    // in refunds.status. Scoped to 'cancelled' so a replayed call is a no-op.
+    const { error: flipError } = await db
+      .from('bookings')
+      .update({ status: 'refunded' })
+      .eq('id', bookingId)
+      .eq('status', 'cancelled')
+    if (flipError) console.error('[payments] refund created but the booking still says cancelled', flipError)
+  } catch (cause) {
+    console.error('[payments] refundIfOwed failed; the money state is inspectable in payments/refunds', cause)
   }
 }
 
