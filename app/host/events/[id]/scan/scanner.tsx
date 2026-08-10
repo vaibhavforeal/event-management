@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { eventKeyFromHex, verifyQrPayload } from '@/lib/tickets/signing'
 import { formatIst } from '@/lib/events/datetime'
+import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
 import { checkInByCode } from './actions'
 import {
   IDLE,
@@ -89,7 +90,7 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
           // session. Land the flight with the action's own generic sentence
           // rather than leaving the door wedged on "Checking…" — while a
           // flight is pending the reducer starts nothing new.
-          verdict = { kind: 'refused', message: 'Something went wrong. Rescan the ticket.' }
+          verdict = { kind: 'refused', message: RESCAN_SENTENCE }
         }
         dispatch({ type: 'verdict', payload, verdict })
       })()

@@ -104,6 +104,19 @@ describe('checkInAttendee', () => {
     expect(checkInNextTicket).not.toHaveBeenCalled()
   })
 
+  it('refuses a booking id that is not uuid-shaped before the service sees it', async () => {
+    // The cancel action next door deliberately validates its bookingId no
+    // further than emptiness, because cancelBooking folds every failure into
+    // one refusal sentence. checkInNextTicket does not: a junk shape reaches
+    // the RPC as a failed uuid cast, and mapCheckinRpcError's fallback would
+    // hand the host raw Postgres ("invalid input syntax for type uuid: …").
+    checkInNextTicket.mockResolvedValue({ ok: true, outcome: 'checked_in', attendeeName: 'Asha',
+      checkedInAt: 'now', reference: 'ABCD1234', ticketsTotal: 2, ticketsIn: 1 })
+    const state = await checkInAttendee({}, form({ bookingId: 'not-a-uuid' }))
+    expect(state).toEqual({ error: 'Something went wrong. Reload the page and try again.' })
+    expect(checkInNextTicket).not.toHaveBeenCalled()
+  })
+
   it('refuses an event id that is not uuid-shaped, because the service scopes by it', async () => {
     // Unlike the cancel action, eventId here is not merely a revalidation path —
     // it is the scope the service authorises against. Still safe if lied about

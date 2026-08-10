@@ -74,7 +74,8 @@ offline verification — this scanner is the muscle that phase reuses.
 ## The write path
 
 One migration, `20260811000001_ticket_checkin.sql`, two functions. Both
-`SECURITY DEFINER`, `set search_path = public, extensions`, `EXECUTE` revoked
+`SECURITY DEFINER`, `set search_path = public` (nothing here calls into
+`extensions`), `EXECUTE` revoked
 from `public`, `anon` and `authenticated` and granted back to `service_role`
 explicitly (the `revoke from public` lesson from 2026-08-09). Same posture as
 every inventory write in this repo.

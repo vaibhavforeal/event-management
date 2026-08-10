@@ -89,7 +89,12 @@ export async function checkInAttendee(
 
   const bookingId = String(formData.get('bookingId') ?? '')
   const eventId = String(formData.get('eventId') ?? '')
-  if (!bookingId || !UUID_PATTERN.test(eventId)) {
+  // bookingId is shape-checked here where the cancel above stops at emptiness,
+  // because the services differ: cancelBooking folds every failure into one
+  // refusal sentence, but a junk shape given to checkInNextTicket dies as a
+  // failed uuid cast in the RPC, and mapCheckinRpcError's fallback would hand
+  // the host raw Postgres.
+  if (!UUID_PATTERN.test(bookingId) || !UUID_PATTERN.test(eventId)) {
     return { error: 'Something went wrong. Reload the page and try again.' }
   }
 

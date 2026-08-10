@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation'
 import { currentCaller } from '@/lib/bookings/caller'
 import { checkInTicket, type CheckInResult } from '@/lib/checkin/service'
+import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
 import { loginPath } from '@/lib/auth/session'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -22,8 +23,12 @@ export async function checkInByCode(eventId: string, code: string): Promise<Chec
   if (!UUID_PATTERN.test(eventId) || !CODE_PATTERN.test(code)) {
     // Junk shapes stop here. One sentence, because the scanner's next move is
     // the same regardless: scan again.
-    return { ok: false, error: 'Something went wrong. Rescan the ticket.' }
+    return { ok: false, error: RESCAN_SENTENCE }
   }
 
+  // No revalidatePath, deliberately — unlike checkInAttendee, which mutates
+  // the very rows its page is showing. The scanner paints its verdict from
+  // this return value, and the guest list re-renders when the host next opens
+  // it; there is no cached payload here that just went stale.
   return checkInTicket(caller, eventId, code)
 }

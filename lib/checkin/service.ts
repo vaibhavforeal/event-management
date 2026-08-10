@@ -22,6 +22,13 @@ export type CheckInResult =
       checkedInAt: string
       reference: string
       ticketsTotal: number
+      /**
+       * Display only, and may under-count by one: when two next-ticket taps
+       * race, each admits its own ticket (SKIP LOCKED) but counts under READ
+       * COMMITTED, so the loser's count can miss the winner's still-uncommitted
+       * write. The next render reads the settled rows. Do not gate anything on
+       * this number.
+       */
       ticketsIn: number
     }
   | { ok: false; error: string }

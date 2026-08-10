@@ -1,6 +1,7 @@
 'use client'
 
 import { useActionState } from 'react'
+import { ALL_SEATS_IN_SENTENCE } from '@/lib/checkin/sentences'
 import { checkInAttendee, type CheckInState } from './actions'
 
 /**
@@ -24,9 +25,9 @@ export function CheckInButton({
   const [state, action, pending] = useActionState<CheckInState, FormData>(checkInAttendee, {})
 
   // Disabled rather than hidden when everyone is in, so the row still reads as
-  // "this control exists and there is nothing left for it to do". The title
-  // repeats the EH022 sentence the service would return, so hover and a
-  // handcrafted POST meet the same vocabulary.
+  // "this control exists and there is nothing left for it to do". The title is
+  // the EH022 sentence the service would return, so hover and a handcrafted
+  // POST meet the same vocabulary.
   const allIn = remaining === 0
 
   return (
@@ -37,7 +38,7 @@ export function CheckInButton({
       <button
         type="submit"
         disabled={pending || allIn}
-        title={allIn ? 'All seats on this booking are already checked in.' : undefined}
+        title={allIn ? ALL_SEATS_IN_SENTENCE : undefined}
         className="text-[13px] underline disabled:opacity-60"
       >
         {pending ? 'Checking in…' : 'Check in +1'}

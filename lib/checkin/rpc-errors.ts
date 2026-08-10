@@ -1,4 +1,5 @@
 import type { PostgrestError } from '@supabase/supabase-js'
+import { ALL_SEATS_IN_SENTENCE } from '@/lib/checkin/sentences'
 
 /** No ticket with this code — or booking with this id — on this event. */
 const NOT_HERE = 'EH020'
@@ -20,6 +21,6 @@ export function mapCheckinRpcError(error: PostgrestError): string {
     return 'No such ticket for this event. It may be for a different event, or its booking was cancelled.'
   }
   if (error.code === NOT_CONFIRMED) return 'This booking is not confirmed.'
-  if (error.code === ALL_IN) return 'All seats on this booking are already checked in.'
+  if (error.code === ALL_IN) return ALL_SEATS_IN_SENTENCE
   return error.message
 }
