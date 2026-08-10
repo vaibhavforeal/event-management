@@ -5,8 +5,9 @@ import { mapCheckinRpcError } from '@/lib/checkin/rpc-errors'
 import type { Caller } from '@/lib/bookings/caller'
 
 /**
- * Every check-in write in the product. The second — and last — file permitted
- * to import lib/supabase/admin.ts; eslint.config.mjs names both.
+ * Every check-in write in the product. One of exactly three files permitted to
+ * import lib/supabase/admin.ts — with lib/bookings/service.ts and
+ * lib/payments/service.ts; the ESLint fence names all three.
  *
  * Same contract as lib/bookings/service.ts: RLS does not see these writes, so
  * the authorisation below is the whole of the rule, and identity is a Caller
