@@ -66,7 +66,15 @@ export function CheckoutPanel({
   attendeeName: string | null
 }) {
   const router = useRouter()
-  const [scriptReady, setScriptReady] = useState(false)
+  // Seeded from window rather than a bare `false`: on a client-side remount
+  // (my-bookings → booking A → back → booking B) checkout.js is already on the
+  // page and next/script fires no load event for it, so a false start here
+  // would leave the button disabled until a hard reload. At hydration the
+  // script has not run yet — afterInteractive injects after hydration — so
+  // this initializer answers false there and matches the server HTML.
+  const [scriptReady, setScriptReady] = useState(
+    () => typeof window !== 'undefined' && !!window.Razorpay,
+  )
   const [remaining, setRemaining] = useState(() => secondsLeft(holdExpiresAt))
   const [paid, setPaid] = useState<{ paymentId: string; signature: string } | null>(null)
   const sheetRef = useRef<RazorpaySheet | null>(null)
@@ -130,7 +138,10 @@ export function CheckoutPanel({
 
   return (
     <section className="border-line mt-8 rounded-lg border p-4">
-      <Script src="https://checkout.razorpay.com/v1/checkout.js" onLoad={() => setScriptReady(true)} />
+      {/* onReady, not onLoad: onLoad fires once per script load, so a remount
+          with checkout.js already cached would never enable the button.
+          onReady fires on every mount, including that one. */}
+      <Script src="https://checkout.razorpay.com/v1/checkout.js" onReady={() => setScriptReady(true)} />
       <div aria-live="polite">
         {paid ? (
           <p className="text-sm">Payment received — issuing your tickets…</p>
