@@ -145,6 +145,7 @@ export async function createEvent(
     p_hide_venue_until_approved: input.hideVenueUntilApproved,
     p_price_paise: rupeesToPaise(input.priceRupees),
     p_quantity: input.seats,
+    p_refund_cutoff_hours: input.refundCutoffHours,
   } satisfies Nullable<CreateEventArgs> as CreateEventArgs)
 
   // One call, one transaction. The event and its ticket type land together or
@@ -196,6 +197,7 @@ export async function updateEvent(
     p_hide_venue_until_approved: input.hideVenueUntilApproved,
     p_price_paise: rupeesToPaise(input.priceRupees),
     p_quantity: input.seats,
+    p_refund_cutoff_hours: input.refundCutoffHours,
   } satisfies Nullable<UpdateEventArgs> as UpdateEventArgs)
 
   // Especially on the oversell path: the host may have just typed the venue

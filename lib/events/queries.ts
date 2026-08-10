@@ -341,6 +341,7 @@ export interface OwnedEvent extends HostEvent {
   ends_at: string | null
   requires_approval: boolean
   allows_cash: boolean
+  refund_cutoff_hours: number
   hide_venue_until_approved: boolean
   // The edit page keys the publish panel on this so a successful save remounts
   // it with clean state. The events_set_updated_at trigger moves it on every
@@ -362,7 +363,7 @@ export async function getOwnedEvent(id: string): Promise<OwnedEvent | null> {
     .select(
       `id, slug, title, status, city, starts_at, cover_image_url, published_at, updated_at,
        description, venue_name, venue_address, ends_at, requires_approval, allows_cash,
-       hide_venue_until_approved, hosts(display_name),
+       refund_cutoff_hours, hide_venue_until_approved, hosts(display_name),
        ticket_types(price_paise, quantity, reserved_count)`,
     )
     .eq('id', id)

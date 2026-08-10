@@ -205,6 +205,44 @@ describe('parseEventForm', () => {
   })
 })
 
+describe('refundCutoffHours', () => {
+  it('parses a plain number of hours', () => {
+    const result = parseEventForm(form({ refundCutoffHours: '48' }))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.refundCutoffHours).toBe(48)
+  })
+
+  it('defaults to 24 when the field is blank or absent', () => {
+    const result = parseEventForm(form({}))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.refundCutoffHours).toBe(24)
+  })
+
+  it('accepts 0 — refundable until start', () => {
+    const result = parseEventForm(form({ refundCutoffHours: '0' }))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.refundCutoffHours).toBe(0)
+  })
+
+  it('refuses negatives with a sentence', () => {
+    const result = parseEventForm(form({ refundCutoffHours: '-2' }))
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.fieldErrors.refundCutoffHours).toBe('The refund cutoff cannot be negative')
+  })
+
+  it('refuses fractions with a sentence', () => {
+    const result = parseEventForm(form({ refundCutoffHours: '1.5' }))
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.fieldErrors.refundCutoffHours).toBe('Refund cutoff must be a whole number of hours')
+  })
+
+  it('refuses more than 30 days with a sentence', () => {
+    const result = parseEventForm(form({ refundCutoffHours: '721' }))
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.fieldErrors.refundCutoffHours).toBe('Keep the refund cutoff within 30 days (720 hours)')
+  })
+})
+
 describe('validateForPublish', () => {
   const now = new Date('2026-08-08T00:00:00.000Z')
   const complete = {

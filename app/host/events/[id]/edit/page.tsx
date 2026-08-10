@@ -79,6 +79,7 @@ export default async function EditEventPage(props: PageProps<'/host/events/[id]/
           endsAtLocal: event.ends_at ? utcToIstLocal(new Date(event.ends_at)) : undefined,
           seats: ticket?.quantity,
           priceRupees: ticket ? ticket.price_paise / 100 : 0,
+          refundCutoffHours: event.refund_cutoff_hours,
           hostDisplayName: event.hosts?.display_name,
           requiresApproval: event.requires_approval,
           allowsCash: event.allows_cash,
