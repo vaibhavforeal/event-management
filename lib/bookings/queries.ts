@@ -25,7 +25,7 @@ import type { Database } from '@/lib/supabase/types'
  */
 
 const BOOKING_COLUMNS =
-  'id, reference, quantity, status, created_at, events(id, slug, title, starts_at, city, venue_name)'
+  'id, reference, quantity, status, created_at, total_paise, hold_expires_at, attendee_name, events(id, slug, title, starts_at, city, venue_name, refund_cutoff_hours), payments(provider_order_id, status)'
 
 /**
  * The RLS-scoped client, but only if somebody is actually signed in.
@@ -78,6 +78,9 @@ export interface MyBooking {
   quantity: number
   status: string
   created_at: string
+  total_paise: number
+  hold_expires_at: string | null
+  attendee_name: string | null
   events: {
     id: string
     slug: string
@@ -85,7 +88,15 @@ export interface MyBooking {
     starts_at: string
     city: string
     venue_name: string | null
+    refund_cutoff_hours: number
   } | null
+  /**
+   * Empty for free bookings, and empty for a host viewing someone else's
+   * booking: payments_select_own scopes the embed to the attendee, and RLS
+   * filters rather than refuses, so the host simply sees no rows. No branch
+   * needed — everything that reads this treats [] as "no payment to show".
+   */
+  payments: { provider_order_id: string; status: string }[]
 }
 
 /**
