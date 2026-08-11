@@ -1,7 +1,7 @@
 # Phase 5b — The waitlist: demand past capacity, kept
 
 **Date:** 2026-08-11
-**Status:** approved in brainstorming, awaiting implementation plan
+**Status:** approved in brainstorming; planned in [`docs/plans/2026-08-11-phase-5b-waitlist.md`](../plans/2026-08-11-phase-5b-waitlist.md)
 **Builds on:** [`2026-08-08-event-platform-v1-design.md`](2026-08-08-event-platform-v1-design.md) (build order row 5),
 [`2026-08-11-phase-5a-approvals-cash-design.md`](2026-08-11-phase-5a-approvals-cash-design.md),
 [`2026-08-10-phase-3-payments-design.md`](2026-08-10-phase-3-payments-design.md)
