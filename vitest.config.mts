@@ -14,6 +14,14 @@ export default defineConfig({
     // Integration tests hit a shared local Postgres; running files in parallel
     // makes them fight over the same rows.
     fileParallelism: false,
+    // Integration tests mint auth users and make many round trips to a local
+    // Postgres; the 5s default is tight for the heaviest seeds once the whole
+    // suite has been hammering the same database. hookTimeout matters as much
+    // as testTimeout: an aborted beforeAll leaves a half-built seed that
+    // afterAll cannot tear down, which is how orphan rows get into a shared
+    // dev database.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     coverage: {
       provider: 'v8',
       include: ['lib/**/*.ts'],
