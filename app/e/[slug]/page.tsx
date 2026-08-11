@@ -199,10 +199,17 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   // The line holds the door. While anyone is waiting, this page stays in
   // join-waitlist mode even when a seat is free — because a seat that is free
   // right now is a seat somebody in the line is owed, and letting a walk-up
-  // take it is the one thing that would make the queue not worth joining. SQL
-  // enforces the same priority underneath (reserve_tickets promotes before it
-  // sells); this is what stops a visitor being offered a button that is going
-  // to refuse them.
+  // take it is the one thing that would make the queue not worth joining.
+  //
+  // SQL enforces the same priority underneath — reserve_tickets promotes
+  // before it sells — but not identically, and the seam is worth naming:
+  // promote_from_waitlist is strict FIFO and exits when the head wants more
+  // seats than are free, so a one-seat walk-up arriving behind a three-seat
+  // head with one seat loose IS sold by reserve_tickets. The SQL calls that
+  // idle seat the accepted cost of a queue nobody can cut; this page simply
+  // does not offer the button, which is the stricter half of the disagreement
+  // and the safe one. What it buys is that no visitor is ever handed a control
+  // the database is about to refuse.
   const joinable = !!ticket && !started && event.has_waitlist && (soldOut || lineLength > 0)
   // Capped at max_per_order rather than seats remaining, like the request
   // panel: there are no seats remaining, which is why this panel exists.

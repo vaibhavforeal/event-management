@@ -77,8 +77,25 @@ describe('joinTheWaitlist', () => {
     // Joining moves no inventory, so unlike bookEvent there is no feed number
     // to correct — but this page prints "N people waiting" and gates its whole
     // bottom bar on that number, so it must not be served stale.
+    //
+    // Asserted as the exact call list, the way bookEvent's and bookCashEvent's
+    // tests assert theirs. Not revalidating '/' is the one behavioural
+    // difference between this action and those two, and a membership check
+    // would go green on a copy-paste of their revalidation pair.
     await expect(joinTheWaitlist({}, form())).rejects.toBeInstanceOf(RedirectSignal)
-    expect(revalidatePath).toHaveBeenCalledWith('/e/test-event')
+    expect(revalidatePath.mock.calls.flat()).toEqual(['/e/test-event'])
+  })
+
+  it('redirects without revalidating anything when the slug is missing', async () => {
+    // The slug only names the event page's path, and there is no second
+    // constant path to fall back on here — bookEvent's missing-slug case still
+    // revalidates the feed; this one has nothing left to repaint. Losing the
+    // field should cost a stale line length, not the entry just made.
+    const fd = form()
+    fd.delete('slug')
+
+    await expect(joinTheWaitlist({}, fd)).rejects.toMatchObject({ to: '/bookings/VYRB4SHQ' })
+    expect(revalidatePath).not.toHaveBeenCalled()
   })
 
   it('refuses a quantity that is not a whole number of seats', async () => {
@@ -94,6 +111,7 @@ describe('joinTheWaitlist', () => {
     expect(await joinTheWaitlist({}, form({ attendeeName: '   ' }))).toEqual({
       error: 'Tell the host who to expect.',
     })
+    expect(joinWaitlist).not.toHaveBeenCalled()
   })
 
   it('caps the name at 80 characters, as the input does and a POST does not', async () => {
@@ -103,7 +121,22 @@ describe('joinTheWaitlist', () => {
     expect(joinWaitlist).toHaveBeenCalledWith({ id: CALLER_ID }, 'tt-1', 2, 'a'.repeat(80), 'online')
   })
 
+  it('carries a cash choice through to the service', async () => {
+    // The half that proves the field is read at all. Without it, an action that
+    // hardcoded 'online' and ignored the form would pass every other case here
+    // while the panel's cash radio quietly stopped working — and cash is a live
+    // path: the panel offers the choice whenever offerCash is true, and
+    // join_waitlist takes p_payment_mode.
+    await expect(joinTheWaitlist({}, form({ paymentMode: 'cash' }))).rejects.toBeInstanceOf(
+      RedirectSignal,
+    )
+    expect(joinWaitlist).toHaveBeenCalledWith({ id: CALLER_ID }, 'tt-1', 2, 'Asha', 'cash')
+  })
+
   it('knows only two payment modes, whatever the form says', async () => {
+    // The other half: everything that is not the literal 'cash' lands on
+    // 'online'. The pair is what proves the parse is two-valued rather than
+    // pass-through.
     await expect(joinTheWaitlist({}, form({ paymentMode: 'barter' }))).rejects.toBeInstanceOf(
       RedirectSignal,
     )
