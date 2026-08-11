@@ -13,7 +13,7 @@ import {
 
 const DEADLINE = '12 Aug 2026, 7:00 pm'
 
-describe('the attendee position in the line', () => {
+describe(`the attendee's place in the line`, () => {
   it('says the position and the seats, singular and plural', () => {
     expect(waitlistPositionLine(3, 2)).toBe(`You're #3 in line for 2 seats.`)
     expect(waitlistPositionLine(1, 1)).toBe(`You're #1 in line for 1 seat.`)
@@ -24,7 +24,7 @@ describe('the attendee position in the line', () => {
   })
 })
 
-describe('the join panel price line', () => {
+describe(`the join panel's price line`, () => {
   it('promises payment only on an offer', () => {
     expect(waitlistPriceLine('₹500')).toBe('₹500 — you pay only if a seat opens for you')
   })
@@ -34,7 +34,7 @@ describe('the join panel price line', () => {
   })
 })
 
-describe('the line length, for a stranger deciding whether to join', () => {
+describe(`the line's length, for a stranger deciding whether to join`, () => {
   it('counts people, not seats', () => {
     expect(lineLengthLine(0)).toBe('Nobody waiting yet')
     expect(lineLengthLine(1)).toBe('1 person waiting')
