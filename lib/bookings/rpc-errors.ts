@@ -24,11 +24,12 @@ const CASH_STARTED = 'EH059'
 /**
  * Turns a refusal from book_free_tickets into a sentence an attendee can read.
  *
- * Only the two guards this phase added are remapped. Everything reserve_tickets
- * raises — "only 3 seats remain", "sales have closed", "cannot book more than 10
- * per order" — is already written for a person and carries a number the
- * attendee needs, so it passes through rather than being flattened into
- * something generic.
+ * Maps fourteen error codes across three phases of booking development:
+ * EH010–EH013 (free booking), and EH050–EH059 (Phase 5a request/approve/cash).
+ * Everything reserve_tickets raises — "only 3 seats remain", "sales have closed",
+ * "cannot book more than 10 per order" — is already written for a person and
+ * carries a number the attendee needs, so it passes through rather than being
+ * flattened into something generic.
  */
 export function mapBookingRpcError(error: PostgrestError): string {
   if (error.code === NOT_FREE) return 'This event is not free yet, so booking has not opened.'
