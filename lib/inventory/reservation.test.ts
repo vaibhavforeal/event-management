@@ -364,6 +364,7 @@ describe('approval flow', () => {
             p_ticket_type_id: curated.ticketTypeId,
             p_attendee_id: buyer,
             p_quantity: 1,
+            p_attendee_name: 'Asha',
           }),
         ),
       )
@@ -408,6 +409,7 @@ describe('approval flow', () => {
         p_ticket_type_id: free.ticketTypeId,
         p_attendee_id: free.attendeeId,
         p_quantity: 1,
+        p_attendee_name: 'Asha',
       })
       const { data: approved } = await db.rpc('approve_booking', {
         p_booking_id: request.id,
