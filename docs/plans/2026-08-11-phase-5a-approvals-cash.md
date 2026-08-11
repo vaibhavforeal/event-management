@@ -836,7 +836,7 @@ describe('book_cash_tickets', () => {
 npx vitest run lib/bookings/approvals.test.ts lib/bookings/cash.test.ts
 ```
 
-Expected: all pass against the applied migration. If a guard misfires, fix the SQL, re-apply with `npx supabase migration up` after a `drop`/`create` amendment inside the SAME migration file (it has not shipped anywhere).
+Expected: all pass against the applied migration. If a guard misfires, fix the SQL in the migration file — it has not shipped anywhere — but note `npx supabase migration up` will NOT re-apply an already-applied migration. Re-apply the amended function directly: pipe just its `create or replace function … $$;` block to `docker exec -i supabase_db_Event_Hoster psql -U postgres -d postgres` (function bodies re-run cleanly; the `drop function` line and the index are already applied and must not be re-run). Do NOT `supabase db reset` — the dev DB holds kept evidence rows. The migration file's final state must still apply cleanly to a fresh database.
 
 - [ ] **Step 7: Full suite green, then commit**
 
@@ -1147,11 +1147,10 @@ describe('the cash service', () => {
     const { data: booking } = await db.from('bookings').select('id').eq('event_id', seed.eventId).single()
     const removed = await cancelBooking(asCaller(seed.hostProfileId), booking!.id, 'host')
     expect(removed).toEqual({ ok: true })
-    const { count } = await db.from('refunds').select('*', { count: 'exact', head: true })
-    // no refund row was created FOR THIS BOOKING: scope by reading payments first
+    // No refund row was created for this booking: a cash booking has no
+    // payments row, so there is nothing a refund could hang off.
     const { data: payments } = await db.from('payments').select('id').eq('booking_id', booking!.id)
     expect(payments).toHaveLength(0)
-    expect(count).toBeGreaterThanOrEqual(0) // sanity only; the real assertion is the empty payments list
     const { data: after } = await db.from('bookings').select('status').eq('id', booking!.id).single()
     expect(after!.status).toBe('cancelled') // cancelled, never 'refunded' — no money moved
     await cleanupEvent(db, seed)
@@ -1489,7 +1488,19 @@ describe('beginApprovedCheckout', () => {
     vi.mocked(razorpayProvider).mockReturnValue(provider)
   })
   afterAll(async () => {
-    await db.from('payments').delete().neq('id', crypto.randomUUID())  // this file's rows; see the cleanup note in cancel-refunds.test.ts
+    // SCOPE every delete to this file's own rows. The dev DB doubles as the
+    // test DB and holds kept evidence payments — a blanket delete on
+    // payments or provider_webhook_events destroys them. Read the cleanup
+    // note in lib/payments/cancel-refunds.test.ts and mirror its scoping:
+    // refunds → payments (by this event's booking ids) → bookings → event.
+    const { data: bookings } = await db.from('bookings').select('id').eq('event_id', seed.eventId)
+    const ids = (bookings ?? []).map((b) => b.id)
+    if (ids.length > 0) {
+      const { data: payments } = await db.from('payments').select('id').in('booking_id', ids)
+      const paymentIds = (payments ?? []).map((p) => p.id)
+      if (paymentIds.length > 0) await db.from('refunds').delete().in('payment_id', paymentIds)
+      await db.from('payments').delete().in('booking_id', ids)
+    }
     await db.from('bookings').delete().eq('event_id', seed.eventId)
     await cleanupEvent(db, seed)
   })
@@ -1551,8 +1562,13 @@ describe('beginApprovedCheckout', () => {
     expect(after!.status).toBe('confirmed')
     const { count } = await db.from('tickets').select('*', { count: 'exact', head: true }).eq('booking_id', booking.id)
     expect(count).toBe(1)
-    // teardown order: receipts and refunds before payments before cleanupEvent
-    await db.from('provider_webhook_events').delete().neq('id', crypto.randomUUID())
+    // Teardown scoped to THIS test's rows only (the dev DB holds kept
+    // evidence): hold the fixture in a variable so its provider_event_id
+    // scopes the receipt delete, e.g.
+    //   const event = capturedEvent({ orderId: …, amountPaise: … })
+    //   await processWebhookEvent(event)
+    //   …
+    //   await db.from('provider_webhook_events').delete().eq('provider_event_id', event.providerEventId)
     await db.from('payments').delete().eq('booking_id', booking.id)
   })
 })
