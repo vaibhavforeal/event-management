@@ -25,7 +25,7 @@ import type { Database } from '@/lib/supabase/types'
  */
 
 const BOOKING_COLUMNS =
-  'id, reference, quantity, status, created_at, total_paise, hold_expires_at, attendee_name, events(id, slug, title, starts_at, city, venue_name, refund_cutoff_hours), payments(provider_order_id, status)'
+  'id, reference, quantity, status, created_at, total_paise, hold_expires_at, attendee_id, attendee_name, attendee_note, payment_mode, approved_at, cancellation_reason, events(id, slug, title, starts_at, city, venue_name, venue_address, hide_venue_until_approved, refund_cutoff_hours), payments(provider_order_id, status)'
 
 /**
  * The RLS-scoped client, but only if somebody is actually signed in.
@@ -80,7 +80,12 @@ export interface MyBooking {
   created_at: string
   total_paise: number
   hold_expires_at: string | null
+  attendee_id: string
   attendee_name: string | null
+  attendee_note: string | null
+  payment_mode: string
+  approved_at: string | null
+  cancellation_reason: string | null
   events: {
     id: string
     slug: string
@@ -88,6 +93,8 @@ export interface MyBooking {
     starts_at: string
     city: string
     venue_name: string | null
+    venue_address: string | null
+    hide_venue_until_approved: boolean
     refund_cutoff_hours: number
   } | null
   /**
@@ -160,6 +167,7 @@ export interface EventAttendee {
   attendee_name: string | null
   quantity: number
   status: string
+  payment_mode: string
   created_at: string
   /** 0 for free bookings. What removing this guest refunds — the guest list
       states it beside the Cancel control before the host taps. */
@@ -209,7 +217,7 @@ export async function listEventAttendees(eventId: string): Promise<EventAttendee
   const { data, error } = await session.supabase
     .from('bookings')
     .select(
-      'id, reference, attendee_name, quantity, status, created_at, total_paise, profiles(phone), tickets(id, checked_in_at), events!inner(hosts!inner(profile_id))',
+      'id, reference, attendee_name, quantity, status, payment_mode, created_at, total_paise, profiles(phone), tickets(id, checked_in_at), events!inner(hosts!inner(profile_id))',
     )
     .eq('event_id', eventId)
     .eq('events.hosts.profile_id', session.userId)
@@ -218,4 +226,68 @@ export async function listEventAttendees(eventId: string): Promise<EventAttendee
 
   if (error) throw new Error(`Could not load the guest list: ${error.message}`)
   return (data ?? []) as unknown as EventAttendee[]
+}
+
+export interface EventRequest {
+  id: string
+  reference: string
+  attendee_name: string | null
+  attendee_note: string | null
+  payment_mode: string
+  quantity: number
+  created_at: string
+  profiles: { phone: string } | null
+}
+
+/** Pending requests for one event, oldest first — the host's approval queue.
+ *  Empty unless the caller hosts it, by the same !inner scoping as the guest
+ *  list. */
+export async function listEventRequests(eventId: string): Promise<EventRequest[]> {
+  const session = await signedInClient()
+  if (!session) return []
+
+  const { data, error } = await session.supabase
+    .from('bookings')
+    .select(
+      'id, reference, attendee_name, attendee_note, payment_mode, quantity, created_at, profiles(phone), events!inner(hosts!inner(profile_id))',
+    )
+    .eq('event_id', eventId)
+    .eq('events.hosts.profile_id', session.userId)
+    .eq('status', 'pending_approval')
+    .order('created_at', { ascending: true })
+
+  if (error) throw new Error(`Could not load the requests: ${error.message}`)
+  return (data ?? []) as unknown as EventRequest[]
+}
+
+export interface ApprovedUnpaid {
+  id: string
+  reference: string
+  attendee_name: string | null
+  quantity: number
+  total_paise: number
+  hold_expires_at: string | null
+  profiles: { phone: string } | null
+}
+
+/** Approved but not yet paid: awaiting_payment rows that carry approved_at.
+ *  The approved_at filter is load-bearing — a Phase 3 checkout hold is also
+ *  awaiting_payment and must not read as an approval to chase. */
+export async function listApprovedUnpaid(eventId: string): Promise<ApprovedUnpaid[]> {
+  const session = await signedInClient()
+  if (!session) return []
+
+  const { data, error } = await session.supabase
+    .from('bookings')
+    .select(
+      'id, reference, attendee_name, quantity, total_paise, hold_expires_at, profiles(phone), events!inner(hosts!inner(profile_id))',
+    )
+    .eq('event_id', eventId)
+    .eq('events.hosts.profile_id', session.userId)
+    .eq('status', 'awaiting_payment')
+    .not('approved_at', 'is', null)
+    .order('created_at', { ascending: true })
+
+  if (error) throw new Error(`Could not load the approved bookings: ${error.message}`)
+  return (data ?? []) as unknown as ApprovedUnpaid[]
 }
