@@ -3,7 +3,7 @@
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { currentCaller } from '@/lib/bookings/caller'
-import { bookFreeTickets } from '@/lib/bookings/service'
+import { bookCashTickets, bookFreeTickets, requestBooking } from '@/lib/bookings/service'
 import { startPaidCheckout as startPaidCheckoutService } from '@/lib/payments/service'
 import { loginPath } from '@/lib/auth/session'
 
@@ -65,6 +65,62 @@ export async function bookEvent(_previous: BookState, formData: FormData): Promi
   // They are kept because they cost nothing and are the only thing between a
   // raised staleTimes — or a route that stops being dynamic — and a seat count
   // that lies on Back. publishEvent and unpublishEvent revalidate '/' already.
+  const slug = String(formData.get('slug') ?? '')
+  if (slug) revalidatePath(`/e/${slug}`)
+  revalidatePath('/')
+  redirect(`/bookings/${result.reference}`)
+}
+
+export async function requestToJoin(_previous: BookState, formData: FormData): Promise<BookState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const ticketTypeId = String(formData.get('ticketTypeId') ?? '')
+  if (!ticketTypeId) return { error: 'Something went wrong. Reload the page and try again.' }
+
+  const quantity = Number(formData.get('quantity'))
+  if (!Number.isInteger(quantity) || quantity < 1) {
+    return { error: 'Choose how many seats you need.' }
+  }
+
+  const attendeeName = String(formData.get('attendeeName') ?? '').trim().slice(0, 80)
+  if (!attendeeName) return { error: 'Tell the host who to expect.' }
+
+  // The note is the request's pitch — optional, capped like the name is, and
+  // omitted rather than sent as ''. The mode is a two-value parse: anything
+  // that is not the literal 'cash' is online, so a handcrafted POST cannot
+  // invent a third mode.
+  const note = String(formData.get('note') ?? '').trim().slice(0, 280) || undefined
+  const paymentMode = formData.get('paymentMode') === 'cash' ? ('cash' as const) : ('online' as const)
+
+  const result = await requestBooking(caller, ticketTypeId, quantity, attendeeName, paymentMode, note)
+  if (!result.ok) return { error: result.error }
+
+  // No revalidatePath pair here, unlike bookEvent: a request moves no
+  // inventory, so neither the event payload nor the feed changed.
+  redirect(`/bookings/${result.reference}`)
+}
+
+export async function bookCashEvent(_previous: BookState, formData: FormData): Promise<BookState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const ticketTypeId = String(formData.get('ticketTypeId') ?? '')
+  if (!ticketTypeId) return { error: 'Something went wrong. Reload the page and try again.' }
+
+  const quantity = Number(formData.get('quantity'))
+  if (!Number.isInteger(quantity) || quantity < 1) {
+    return { error: 'Choose how many seats you need.' }
+  }
+
+  const attendeeName = String(formData.get('attendeeName') ?? '').trim().slice(0, 80)
+  if (!attendeeName) return { error: 'Tell the host who to expect.' }
+
+  const result = await bookCashTickets(caller, ticketTypeId, quantity, attendeeName)
+  if (!result.ok) return { error: result.error }
+
+  // The same pair as bookEvent, for the same reasons (see the essay above):
+  // a cash booking reserves and confirms, so reserved_count just moved.
   const slug = String(formData.get('slug') ?? '')
   if (slug) revalidatePath(`/e/${slug}`)
   revalidatePath('/')

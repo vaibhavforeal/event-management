@@ -1,6 +1,6 @@
 import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { mayCancel } from '@/lib/bookings/authorize'
+import { mayApprove, mayCancel } from '@/lib/bookings/authorize'
 import { mapBookingRpcError } from '@/lib/bookings/rpc-errors'
 import type { Caller } from '@/lib/bookings/caller'
 import type { CancelInitiator } from '@/lib/payments/refund-policy'
@@ -141,5 +141,107 @@ export async function cancelBooking(
   // not be sent is the sweep's job, not a failed cancel.
   await refundIfOwed(bookingId, initiator)
 
+  return { ok: true }
+}
+
+/** One refusal for approve and decline alike — "not yours", "does not exist"
+ *  and "the lookup failed" must be indistinguishable from outside. */
+const NOT_YOURS_TO_DECIDE = 'That request is not yours to decide.'
+
+export type ApproveResult = { ok: true } | { ok: false; error: string }
+
+export async function requestBooking(
+  caller: Caller,
+  ticketTypeId: string,
+  quantity: number,
+  attendeeName: string,
+  paymentMode: 'online' | 'cash',
+  note?: string,
+): Promise<BookingResult> {
+  const db = createAdminClient()
+  const { data, error } = await db.rpc('request_booking', {
+    p_ticket_type_id: ticketTypeId,
+    p_attendee_id: caller.id,
+    p_quantity: quantity,
+    p_attendee_name: attendeeName,
+    p_attendee_note: note,
+    p_payment_mode: paymentMode,
+  })
+  if (error) return { ok: false, error: mapBookingRpcError(error) }
+  return { ok: true, reference: data.reference }
+}
+
+export async function bookCashTickets(
+  caller: Caller,
+  ticketTypeId: string,
+  quantity: number,
+  attendeeName: string,
+  note?: string,
+): Promise<BookingResult> {
+  const db = createAdminClient()
+  const { data, error } = await db.rpc('book_cash_tickets', {
+    p_ticket_type_id: ticketTypeId,
+    p_attendee_id: caller.id,
+    p_quantity: quantity,
+    p_attendee_name: attendeeName,
+    p_attendee_note: note,
+  })
+  if (error) return { ok: false, error: mapBookingRpcError(error) }
+  return { ok: true, reference: data.reference }
+}
+
+/** The host-scoped read approve and decline share: the booking's status and
+ *  its event's host, in one round trip, service-role like every read that
+ *  precedes a service-role write. Null means "refuse with the one sentence". */
+async function readForDecision(
+  db: ReturnType<typeof createAdminClient>,
+  bookingId: string,
+): Promise<{ status: string; event_host_profile_id: string } | null> {
+  const { data: booking, error } = await db
+    .from('bookings')
+    .select('status, events(hosts(profile_id))')
+    .eq('id', bookingId)
+    .maybeSingle()
+  if (error) {
+    console.error('[bookings] could not read booking for an approval decision', error)
+    return null
+  }
+  if (!booking) return null
+  return { status: booking.status, event_host_profile_id: booking.events.hosts.profile_id }
+}
+
+export async function approveBooking(caller: Caller, bookingId: string): Promise<ApproveResult> {
+  const db = createAdminClient()
+  const booking = await readForDecision(db, bookingId)
+  if (!booking || !mayApprove(caller, booking)) {
+    return { ok: false, error: NOT_YOURS_TO_DECIDE }
+  }
+  // Fees deliberately not passed: they stay 0 this pilot and the RPC's
+  // defaults do it. approve_booking's fee parameters are the future wiring
+  // point for lib/pricing, not this call's business.
+  const { error } = await db.rpc('approve_booking', { p_booking_id: bookingId })
+  if (error) return { ok: false, error: mapBookingRpcError(error) }
+  return { ok: true }
+}
+
+export async function declineBooking(caller: Caller, bookingId: string): Promise<ApproveResult> {
+  const db = createAdminClient()
+  const booking = await readForDecision(db, bookingId)
+  if (!booking || !mayApprove(caller, booking)) {
+    return { ok: false, error: NOT_YOURS_TO_DECIDE }
+  }
+  // Declining is only meaningful while the request is pending. Anything else
+  // already left the queue — say so rather than cancelling a paid seat under
+  // a button labelled Decline.
+  if (booking.status !== 'pending_approval') {
+    return { ok: false, error: 'This request was already handled — refresh to see where it stands.' }
+  }
+  const { error } = await db.rpc('cancel_booking', {
+    p_booking_id: bookingId,
+    p_reason: 'declined by host',
+  })
+  if (error) return { ok: false, error: error.message }
+  // No refundIfOwed: a pending_approval booking cannot have a payment — the
+  // order is only ever created after approval.
   return { ok: true }
 }

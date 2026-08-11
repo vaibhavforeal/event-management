@@ -4,10 +4,12 @@ import { requireUser } from '@/lib/auth/session'
 import { getBookingByReference } from '@/lib/bookings/queries'
 import { serverEnv } from '@/lib/env'
 import { formatIst } from '@/lib/events/datetime'
+import { formatPaise } from '@/lib/money'
 import { refundPolicySentence } from '@/lib/payments/refund-policy'
 import { reconcileBooking } from '@/lib/payments/service'
 import { ticketQrSvg } from '@/lib/tickets/qr'
 import { listBookingTickets } from '@/lib/tickets/queries'
+import { ApprovedPayPanel } from './approved-pay-panel'
 import { CheckoutPanel } from './checkout-panel'
 
 // Not "Your booking": getBookingByReference deliberately also resolves for the
@@ -22,7 +24,7 @@ export const metadata = { title: 'Booking' }
 const STATUS_LINE: Record<string, string> = {
   confirmed: "You're going",
   awaiting_payment: 'Complete your payment',
-  pending_approval: 'Waiting for the host',
+  pending_approval: 'Request sent — the host will review it',
   expired: 'This booking expired — nothing was charged',
   cancelled: 'Booking cancelled',
   refunded: 'Booking cancelled — refund on its way',
@@ -46,7 +48,7 @@ function holdIsLive(holdExpiresAt: string | null): boolean {
 
 export default async function BookingPage(props: PageProps<'/bookings/[reference]'>) {
   const { reference } = await props.params
-  await requireUser()
+  const user = await requireUser()
 
   let booking = await getBookingByReference(reference)
   // RLS already refused someone else's booking, so "not found" and "not yours"
@@ -83,11 +85,27 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
   const keyId = serverEnv().RAZORPAY_KEY_ID
   const holdLive = holdIsLive(booking.hold_expires_at)
 
+  // Load-bearing, not a nicety: the payments embed is RLS-scoped to the
+  // attendee, so it is [] for a host viewing a guest's booking — without this
+  // guard, "no order yet" below would show the HOST a Pay button for someone
+  // else's approval.
+  const isAttendee = booking.attendee_id === user.id
+
+  // The declined ending is a cancel with a particular stored reason — the same
+  // prose-as-fact pattern the initiator uses in cancel_booking.
+  const statusLine =
+    booking.status === 'cancelled' && booking.cancellation_reason === 'declined by host'
+      ? "The host couldn't fit you in this time"
+      : (STATUS_LINE[booking.status] ?? `Booking ${booking.status}`)
+
+  // The address joins the Where row only once the viewer is entitled — this is
+  // what makes hide_venue_until_approved's public-page promise true.
+  const venueRevealed =
+    !event?.hide_venue_until_approved || !!booking.approved_at || booking.status === 'confirmed'
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-2xl px-5 py-10">
-      <p className="font-mono text-[13px] tracking-wide text-muted">
-        {STATUS_LINE[booking.status] ?? `Booking ${booking.status}`}
-      </p>
+      <p className="font-mono text-[13px] tracking-wide text-muted">{statusLine}</p>
 
       <h1 className="mt-2 text-2xl font-semibold break-words">{event?.title ?? 'Event'}</h1>
 
@@ -116,18 +134,43 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
             </div>
             <div>
               <dt className="text-muted">Where</dt>
-              <dd className="break-words">{[event.venue_name, event.city].filter(Boolean).join(', ')}</dd>
+              <dd className="break-words">
+                {[event.venue_name, event.city].filter(Boolean).join(', ')}
+                {event.venue_address && venueRevealed && (
+                  <p className="text-muted text-[13px] break-words">{event.venue_address}</p>
+                )}
+              </dd>
             </div>
           </>
         )}
       </dl>
 
+      {booking.status === 'pending_approval' && booking.attendee_note && (
+        <p className="text-muted mt-4 text-sm">Your note to the host: “{booking.attendee_note}”</p>
+      )}
+
       {/* The money rule, restated where the booking lives — the same sentence
           the event page showed before the tap. Paid bookings only: "free
-          cancellation" under a free booking reads as a price, not a policy. */}
-      {booking.total_paise > 0 && event && (
+          cancellation" under a free booking reads as a price, not a policy.
+          And online only: a cutoff sentence under a cash booking promises
+          money movement that cannot happen. */}
+      {booking.total_paise > 0 && booking.payment_mode !== 'cash' && event && (
         <p className="text-muted mt-4 text-sm">{refundPolicySentence(event.refund_cutoff_hours)}</p>
       )}
+
+      {booking.status === 'awaiting_payment' &&
+        booking.approved_at &&
+        isAttendee &&
+        !payment &&
+        holdLive &&
+        keyId &&
+        event && (
+          <ApprovedPayPanel
+            reference={booking.reference}
+            amountLabel={formatPaise(booking.total_paise)}
+            deadlineLabel={formatIst(new Date(booking.hold_expires_at!))}
+          />
+        )}
 
       {booking.status === 'awaiting_payment' && payment && holdLive && keyId && event && (
         <CheckoutPanel
@@ -138,7 +181,14 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
           eventTitle={event.title}
           holdExpiresAt={booking.hold_expires_at!}
           attendeeName={booking.attendee_name}
+          deadlineLabel={formatIst(new Date(booking.hold_expires_at!))}
         />
+      )}
+
+      {booking.status === 'confirmed' && booking.payment_mode === 'cash' && (
+        <p className="border-line mt-6 rounded-lg border p-3 text-sm">
+          Pay {formatPaise(booking.total_paise)} in cash at the door.
+        </p>
       )}
 
       {tickets.length > 0 && (

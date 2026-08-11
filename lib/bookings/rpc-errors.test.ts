@@ -46,3 +46,21 @@ describe('mapBookingRpcError', () => {
     ).toBe('only 3 seats remain')
   })
 })
+
+describe('mapBookingRpcError EH05x', () => {
+  it('maps every Phase 5a code to a sentence', () => {
+    expect(mapBookingRpcError(pgError({ code: 'EH050' }))).toBe("This event doesn't take requests — book it directly.")
+    expect(mapBookingRpcError(pgError({ code: 'EH051' }))).toBe('This event has already started.')
+    expect(mapBookingRpcError(pgError({ code: 'EH052' }))).toBe("This event doesn't take cash bookings.")
+    expect(mapBookingRpcError(pgError({ code: 'EH053' }))).toBe("That's more seats than this event allows per booking.")
+    expect(mapBookingRpcError(pgError({ code: 'EH054' }))).toBe('You have already booked this event. Cancel that booking first to change it.')
+    expect(mapBookingRpcError(pgError({ code: 'EH055' }))).toBe('This event has already started.')
+    expect(mapBookingRpcError(pgError({ code: 'EH056' }))).toBe('This request was already handled — refresh to see where it stands.')
+    expect(mapBookingRpcError(pgError({ code: 'EH057' }))).toBe('This event is free — book it without paying.')
+    expect(mapBookingRpcError(pgError({ code: 'EH058' }))).toBe('This host approves guests first — send a request instead.')
+    expect(mapBookingRpcError(pgError({ code: 'EH059' }))).toBe('This event has already started.')
+  })
+  it('passes unmapped refusals through', () => {
+    expect(mapBookingRpcError(pgError({ code: '23514', message: 'only 3 seats remain' }))).toBe('only 3 seats remain')
+  })
+})

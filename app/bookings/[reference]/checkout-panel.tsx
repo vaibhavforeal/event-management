@@ -56,6 +56,7 @@ export function CheckoutPanel({
   eventTitle,
   holdExpiresAt,
   attendeeName,
+  deadlineLabel,
 }: {
   reference: string
   orderId: string
@@ -64,6 +65,9 @@ export function CheckoutPanel({
   eventTitle: string
   holdExpiresAt: string
   attendeeName: string | null
+  /** Preformatted IST deadline; shown instead of the mm:ss clock when the
+   *  hold is longer than an hour (the 24h approval window). */
+  deadlineLabel: string
 }) {
   const router = useRouter()
   // Seeded from window rather than a bare `false`: on a client-side remount
@@ -158,7 +162,7 @@ export function CheckoutPanel({
               Pay {formatPaise(amountPaise)}
             </button>
             <p className="text-muted mt-2 text-center font-mono text-[12px]">
-              Seats held for another {clock(remaining)}
+              {remaining > 3600 ? `Pay by ${deadlineLabel}` : `Seats held for another ${clock(remaining)}`}
             </p>
           </>
         )}

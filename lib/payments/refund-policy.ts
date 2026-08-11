@@ -49,9 +49,12 @@ export function cancelConsequence(input: {
   totalPaise: number
   startsAt: string
   cutoffHours: number
+  /** 'cash' means no money ever moved online, so there is nothing to promise. */
+  paymentMode?: 'online' | 'cash'
   now?: Date
 }): string | null {
   if (input.totalPaise === 0) return null
+  if (input.paymentMode === 'cash') return null
   if (input.initiator === 'host') return `Removing refunds ${formatPaise(input.totalPaise)} in full.`
   return refundDecision(input) === 'full'
     ? `You'll be refunded ${formatPaise(input.totalPaise)}.`

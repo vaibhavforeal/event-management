@@ -44,24 +44,29 @@ export default async function BookingsPage() {
                 {booking.events && `${formatIst(new Date(booking.events.starts_at))} · `}
                 {booking.quantity} {booking.quantity === 1 ? 'seat' : 'seats'} · {booking.status}
               </p>
-              {/* Only a confirmed booking has anything to cancel. cancel_booking
-                  is idempotent, so offering this on a cancelled row would be
-                  harmless and still wrong: it would read as though the row might
-                  come back. */}
-              {booking.status === 'confirmed' && (
+              {/* A confirmed booking is cancelled; a pending request is
+                  withdrawn — same cancel_booking underneath. Not offered on a
+                  cancelled row: cancel_booking is idempotent so it would be
+                  harmless, and still wrong — it would read as though the row
+                  might come back. */}
+              {(booking.status === 'confirmed' || booking.status === 'pending_approval') && (
                 <CancelButton
                   bookingId={booking.id}
                   slug={booking.events?.slug ?? ''}
+                  label={booking.status === 'pending_approval' ? 'Withdraw request' : undefined}
                   /* What the tap will do to the money, computed here because the
                      server owns the clock. cancelConsequence returns null for
-                     free bookings, so free rows keep their plain button. */
+                     free and cash bookings, so those keep their plain button —
+                     and a pending request has no money and frees no inventory,
+                     so its consequence is null by construction. */
                   consequence={
-                    booking.events
+                    booking.status === 'confirmed' && booking.events
                       ? cancelConsequence({
                           initiator: 'attendee',
                           totalPaise: booking.total_paise,
                           startsAt: booking.events.starts_at,
                           cutoffHours: booking.events.refund_cutoff_hours,
+                          paymentMode: booking.payment_mode === 'cash' ? 'cash' : 'online',
                         })
                       : null
                   }

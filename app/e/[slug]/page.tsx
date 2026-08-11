@@ -7,6 +7,7 @@ import { formatPaise } from '@/lib/money'
 import { refundPolicySentence } from '@/lib/payments/refund-policy'
 import { clientEnv } from '@/lib/env'
 import { BookPanel } from './book-panel'
+import { RequestPanel } from './request-panel'
 
 /** How much of the description WhatsApp gets. Its card shows rather less. */
 const OG_DESCRIPTION_LIMIT = 200
@@ -159,13 +160,12 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   const startsAt = new Date(event.starts_at)
   const seatsLabel = soldOut ? 'Sold out' : `${remaining} of ${ticket?.quantity ?? 0} seats left`
 
-  // Phase 3 books free and paid, no-approval events. What remains inert is the
-  // control Phase 1 shipped, whose label is "Booking opens soon" — which is
-  // deliberately vaguer than the reason. An approval-gated event and an event
-  // with no ticket type at all are different problems, and neither is the
-  // visitor's to solve; "not yet" is the honest summary of a phase that cannot
-  // run an approval queue. Only the states the visitor can act on get their
-  // own sentence, below.
+  // Phase 3 books free and paid, no-approval events; Phase 5a's request panel
+  // takes approval-gated ones. What remains inert is the control Phase 1
+  // shipped, whose label is "Booking opens soon" — which is deliberately
+  // vaguer than the reason: an event with no ticket type at all is not the
+  // visitor's problem to solve, and "not yet" is the honest summary. Only the
+  // states the visitor can act on get their own sentence, below.
   //
   // `started` mirrors the EH013 guard in book_free_tickets, inclusive of the
   // start instant. It is deliberately not a "finished" state: ends_at is
@@ -181,6 +181,12 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   // pre-empt a case the database already refuses with a sentence the panel
   // prints. Offering the control and losing that race is the cheaper mistake.
   const started = hasStarted(event.starts_at)
+  // Requests stay open at capacity: over-requesting IS the curation model —
+  // the host approves as seats free up. Only a started event closes the door.
+  const requestable = !!ticket && !started && event.requires_approval
+  // For requests the picker caps at max_per_order, not seats remaining:
+  // a full room can still be asked.
+  const requestMax = ticket ? Math.max(1, Math.min(ticket.quantity, ticket.max_per_order ?? 10)) : 1
   // One gate, two doors: everything a booking needs regardless of money, then
   // the price decides which action the panel submits to. The two are mutually
   // exclusive by construction — price_paise is CHECKed non-negative — so the
@@ -252,9 +258,8 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           <p className="font-mono text-[15px]">{formatIst(startsAt)}</p>
           {/* Shown because it answers "can I make it?", which is the question
               between reading the page and booking. requires_approval and
-              allows_cash are on the row too and stay unrendered: the first is
-              read by the gate above rather than printed, and the second waits
-              for the cash flow a later task builds. */}
+              allows_cash are on the row too and stay unrendered: both are read
+              by the bottom bar's gates rather than printed. */}
           {event.ends_at && (
             <p className="text-muted font-mono text-[13px]">
               Ends {formatIst(new Date(event.ends_at))}
@@ -350,7 +355,15 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           bg-paper/95 rather than opaque paper so the backdrop-blur has something
           to do — content scrolling under the bar reads as under it. */}
       <div className="border-line bg-paper/95 fixed inset-x-0 bottom-0 border-t px-5 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur">
-        {bookableFree && ticket ? (
+        {requestable && ticket ? (
+          <RequestPanel
+            ticketTypeId={ticket.id}
+            slug={slug}
+            maxSeats={requestMax}
+            priceLabel={ticket.price_paise === 0 ? 'Free' : `${formatPaise(ticket.price_paise)} after approval`}
+            offerCash={event.allows_cash && ticket.price_paise > 0}
+          />
+        ) : bookableFree && ticket ? (
           <BookPanel
             ticketTypeId={ticket.id}
             slug={slug}
@@ -366,6 +379,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
             priceLabel={formatPaise(ticket.price_paise)}
             seatsLabel={seatsLabel}
             paid
+            cash={event.allows_cash}
           />
         ) : (
           <div className="mx-auto flex max-w-2xl items-center justify-between gap-4">
