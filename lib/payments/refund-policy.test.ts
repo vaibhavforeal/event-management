@@ -70,3 +70,28 @@ describe('cancelConsequence', () => {
     )
   })
 })
+
+describe('cancelConsequence for cash', () => {
+  it('promises nothing when the money never moved', () => {
+    expect(
+      cancelConsequence({
+        initiator: 'host',
+        totalPaise: 50_000,
+        startsAt: new Date(Date.now() + 48 * 3600_000).toISOString(),
+        cutoffHours: 24,
+        paymentMode: 'cash',
+      }),
+    ).toBeNull()
+  })
+  it('still promises the refund for online money', () => {
+    expect(
+      cancelConsequence({
+        initiator: 'host',
+        totalPaise: 50_000,
+        startsAt: new Date(Date.now() + 48 * 3600_000).toISOString(),
+        cutoffHours: 24,
+        paymentMode: 'online',
+      }),
+    ).toBe('Removing refunds ₹500 in full.')
+  })
+})

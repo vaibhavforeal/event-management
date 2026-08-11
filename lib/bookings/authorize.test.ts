@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mayCancel } from '@/lib/bookings/authorize'
+import { mayCancel, mayApprove } from '@/lib/bookings/authorize'
 import type { Caller } from '@/lib/bookings/caller'
 
 /**
@@ -43,5 +43,19 @@ describe('mayCancel', () => {
     // case it was written for and reporting the wrong answer about it.
     expect(mayCancel(callerOf(''), { attendee_id: ATTENDEE, event_host_profile_id: '' })).toBe(false)
     expect(mayCancel(callerOf(''), { attendee_id: '', event_host_profile_id: HOST })).toBe(false)
+  })
+})
+
+describe('mayApprove', () => {
+  const host = { id: 'host-profile' } as unknown as Caller
+  const attendee = { id: 'attendee' } as unknown as Caller
+  const blank = { id: '' } as unknown as Caller
+
+  it('allows only the host of the event', () => {
+    expect(mayApprove(host, { event_host_profile_id: 'host-profile' })).toBe(true)
+    expect(mayApprove(attendee, { event_host_profile_id: 'host-profile' })).toBe(false)
+  })
+  it('never matches an absent id against an absent column', () => {
+    expect(mayApprove(blank, { event_host_profile_id: '' })).toBe(false)
   })
 })
