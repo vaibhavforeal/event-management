@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { currentCaller } from '@/lib/bookings/caller'
 import { loginPath } from '@/lib/auth/session'
 import { getBookingByReference } from '@/lib/bookings/queries'
+import { claimOfferedSeat } from '@/lib/bookings/service'
 import { beginApprovedCheckout, reconcileAfterCheckout } from '@/lib/payments/service'
 
 /** The booking reference alphabet (Crockford-ish base32, no I L O U). */
@@ -78,5 +79,44 @@ export async function startApprovedPayment(
 
   // The payments row now exists; the server re-render mounts CheckoutPanel.
   revalidatePath(`/bookings/${reference}`)
+  return {}
+}
+
+export interface ClaimState {
+  error?: string
+}
+
+/**
+ * The Claim tap on a free or cash seat offer — the twin of startApprovedPayment,
+ * for the offers that have no online money to ask for.
+ *
+ * Same posture: the reference is shape-checked before it is used, the booking
+ * is resolved through the RLS read, and the service re-checks that the caller
+ * IS the attendee. getBookingByReference deliberately also resolves for the
+ * event's host, and a host must not be able to accept a seat on a guest's
+ * behalf — accepting is the guest's to do.
+ */
+export async function claimSeat(
+  _previous: ClaimState,
+  formData: FormData,
+): Promise<ClaimState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const reference = String(formData.get('reference') ?? '')
+  if (!REFERENCE_PATTERN.test(reference)) {
+    return { error: 'Something went wrong. Reload the page and try again.' }
+  }
+
+  const booking = await getBookingByReference(reference)
+  if (!booking) return { error: 'Something went wrong. Reload the page and try again.' }
+
+  const result = await claimOfferedSeat(caller, booking.id)
+  if (!result.ok) return { error: result.error }
+
+  // The seat is confirmed and tickets exist, so this page owes a QR — and the
+  // list owes a status that is no longer "in line".
+  revalidatePath(`/bookings/${reference}`)
+  revalidatePath('/bookings')
   return {}
 }
