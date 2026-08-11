@@ -3138,7 +3138,7 @@ with `currentCaller` imported from `@/lib/bookings/caller`. Do not pass `auth.us
 npx vitest run lib/events/validation.test.ts lib/events/waitlist-toggle.test.ts \
                lib/bookings/capacity-promote.test.ts
 npm test
-npx tsc --noEmit   # EVENT_FORM_FIELDS' `satisfies` is only enforced here
+npm run typecheck   # EVENT_FORM_FIELDS' `satisfies` is only enforced here
 git add lib/events/validation.ts app/host/events/actions.ts app/host/events/event-form.tsx \
         "app/host/events/[id]/edit/page.tsx" lib/bookings/service.ts \
         lib/events/validation.test.ts lib/events/waitlist-toggle.test.ts \
@@ -3523,7 +3523,7 @@ In the bottom bar, a branch between `requestable` and `bookableFree`. The two ca
 ```bash
 npx vitest run "app/e/[slug]/join-waitlist.test.ts"
 npm test
-npx tsc --noEmit
+npm run typecheck
 git add "app/e/[slug]/join-waitlist-panel.tsx" "app/e/[slug]/actions.ts" \
         "app/e/[slug]/page.tsx" "app/e/[slug]/join-waitlist.test.ts"
 git commit -m "feat: a sold-out event offers a place in the line instead of a closed door"
@@ -3989,7 +3989,7 @@ The meta line gains the position, and the control gains the third status:
 ```bash
 npx vitest run "app/bookings/[reference]/claim-seat.test.ts" "app/bookings/[reference]/approved-pay.test.ts"
 npm test
-npx tsc --noEmit
+npm run typecheck
 git add "app/bookings/[reference]/page.tsx" "app/bookings/[reference]/approved-pay-panel.tsx" \
         "app/bookings/[reference]/claim-seat-panel.tsx" "app/bookings/[reference]/actions.ts" \
         "app/bookings/[reference]/claim-seat.test.ts" app/bookings/page.tsx
@@ -4176,7 +4176,7 @@ and inside each row's meta line, the verb:
 ```bash
 npx vitest run lib/bookings/waitlist-service.test.ts
 npm test
-npx tsc --noEmit
+npm run typecheck
 git add "app/host/events/[id]/attendees/page.tsx" lib/bookings/waitlist-service.test.ts
 git commit -m "feat: the host sees the line and the offers in flight"
 ```
@@ -4191,8 +4191,10 @@ git commit -m "feat: the host sees the line and the offers in flight"
 
 ```bash
 npm test          # every file; count must be >= Task 1's baseline + this phase's new tests
-npx next lint
-npx tsc --noEmit
+npm run lint      # `eslint`. NOT `npx next lint` — Next 16 removed that subcommand
+                  # and reads the word "lint" as a directory name instead.
+npm run typecheck # `next typegen && tsc --noEmit` — the typegen half is what
+                  # makes the PageProps<'/route'> helpers exist.
 npm run build
 ```
 
