@@ -229,6 +229,50 @@ describe('join_waitlist refusals that need their own event', () => {
     await cleanupEvent(db, seed)
   })
 
+  it('does not offer seats on an event the host has unpublished', async () => {
+    // Promotion is automatic -- a cancel, or the argument-less reconciliation
+    // sweep nobody tapped -- so an unpublished event with a line would otherwise
+    // mint payable 24-hour offers on an event that has been taken down.
+    const seed = await seedEvent(db, { quantity: 1, pricePaise: 50_000, hasWaitlist: true })
+    const filler = await sellOut(seed, 1)
+    const { data: entry } = await db.rpc('join_waitlist', {
+      p_ticket_type_id: seed.ticketTypeId,
+      p_attendee_id: seed.attendeeId,
+      p_quantity: 1,
+      p_attendee_name: 'Asha',
+    })
+
+    await db.from('events').update({ status: 'draft' }).eq('id', seed.eventId)
+
+    // Free the seat the ordinary way. cancel_booking ends by calling the engine.
+    const { data: sold } = await db
+      .from('bookings')
+      .select('id')
+      .eq('event_id', seed.eventId)
+      .eq('attendee_id', filler)
+      .single()
+    const { error } = await db.rpc('cancel_booking', { p_booking_id: sold!.id })
+    expect(error).toBeNull()
+
+    const { data: after } = await db.from('bookings').select('status, approved_at, hold_expires_at').eq('id', entry!.id).single()
+    expect(after!.status).toBe('waitlisted')
+    expect(after!.approved_at).toBeNull()
+    expect(after!.hold_expires_at).toBeNull()
+    expect(await reservedCount(seed.ticketTypeId)).toBe(0)
+
+    // The control, without which this test would pass on an engine that never
+    // promotes anything: publish again and the same seat is offered at once.
+    await db.from('events').update({ status: 'published' }).eq('id', seed.eventId)
+    const { data: promoted } = await db.rpc('promote_from_waitlist', { p_ticket_type_id: seed.ticketTypeId })
+    expect(promoted).toBe(1)
+    const { data: offered } = await db.from('bookings').select('status').eq('id', entry!.id).single()
+    expect(offered!.status).toBe('awaiting_payment')
+
+    await db.from('bookings').delete().eq('event_id', seed.eventId)
+    await cleanupEvent(db, seed)
+    await db.auth.admin.deleteUser(filler).catch(() => {})
+  })
+
   it('refuses to sit a waitlist beside an approval queue', async () => {
     // events_one_queue, met head-on: the constraint is what lets every copy
     // branch trust "approved_at on a waitlist event means an offer".

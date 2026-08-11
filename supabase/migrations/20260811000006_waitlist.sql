@@ -335,10 +335,19 @@ begin
 
   select * into ev from events where id = tt.event_id;
 
-  -- Nobody is offered a seat to an event that is already happening. The
-  -- entries left in the line stay where they are: withdrawable, harmless, and
-  -- swept by nothing.
-  if not ev.has_waitlist or ev.starts_at <= now() then
+  -- Nobody is offered a seat to an event that is already happening, or to one
+  -- the host has taken down. The entries left in the line stay where they are:
+  -- withdrawable, harmless, and swept by nothing.
+  --
+  -- The status check is the one this function needs more than approve_booking
+  -- does, which is why it is here and not there. Promotion is AUTOMATIC: a host
+  -- unpublishes an event that already has a line, and the next cancel_booking --
+  -- or the argument-less reconciliation sweep, which nobody tapped at all --
+  -- would mint payable 24-hour offers on a withdrawn event. beginApprovedCheckout
+  -- validates the booking, not the event, so those offers would be chargeable.
+  -- approve_booking runs only on a host's deliberate tap, which is itself a human
+  -- saying the event is still on; nothing here represents that.
+  if not ev.has_waitlist or ev.status <> 'published' or ev.starts_at <= now() then
     return 0;
   end if;
 
@@ -562,6 +571,8 @@ declare
   available integer;
   subtotal  bigint;
   booking   bookings%rowtype;
+  -- v_ prefix is not decoration: an unprefixed `reference` collides with
+  -- bookings.reference and Postgres raises 42702 (ambiguous column reference).
   v_reference text;
   attempts    integer := 0;
 begin
@@ -577,6 +588,8 @@ begin
   -- every event that keeps no waitlist.
   perform promote_from_waitlist(p_ticket_type_id);
 
+  -- Serialises concurrent buyers of this ticket type. Everything below is
+  -- under this lock.
   select * into tt
     from ticket_types
    where id = p_ticket_type_id
@@ -626,6 +639,7 @@ begin
      set reserved_count = reserved_count + p_quantity
    where id = tt.id;
 
+  -- Reference collisions are vanishingly unlikely but cheap to retry.
   loop
     attempts := attempts + 1;
     v_reference := generate_booking_reference();
@@ -651,6 +665,303 @@ begin
   returning * into booking;
 
   return booking;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- The three direct-booking doors -- recreated, so their pre-check matches the
+-- index again
+-- ---------------------------------------------------------------------------
+-- bookings_one_active_per_attendee grew 'waitlisted' at the top of this file.
+-- These three carry the friendly half of that same rule and were written
+-- against the old predicate, so each is recreated here with 'waitlisted' added
+-- to its status list, in the index's position. Same signatures, so
+-- `create or replace` keeps every existing grant; the bodies are otherwise
+-- verbatim from 20260810000003, 20260811000002 and 20260811000004 respectively.
+--
+-- Left as a mismatch, the pre-check misses a waitlisted attendee and the index
+-- catches them instead. That is not merely the ugly path -- it is a deadlock.
+-- A is the head of the line. One session withdraws: cancel_booking locks A's
+-- booking row and then calls promote_from_waitlist, which wants the ticket_types
+-- lock. A second session has A booking directly: the pre-check misses, so
+-- reserve_tickets takes the ticket_types lock and its INSERT then blocks on A's
+-- uncommitted index entry. ABBA, and Postgres aborts one of them with a 40P01
+-- that nothing in this repo maps to a sentence. Widened, the second session
+-- refuses before it takes any lock at all.
+--
+-- Each function's unique_violation handler is unchanged, including the comment
+-- in book_free_tickets claiming the branch is unreachable single-threaded --
+-- which is true again precisely because of this fix.
+
+create or replace function book_free_tickets(
+  p_ticket_type_id uuid,
+  p_attendee_id    uuid,
+  p_quantity       integer,
+  p_attendee_name  text,
+  p_attendee_note  text default null
+)
+returns bookings
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  tt      ticket_types%rowtype;
+  ev      events%rowtype;
+  booking bookings%rowtype;
+begin
+  select * into tt from ticket_types where id = p_ticket_type_id;
+
+  if not found then
+    raise exception 'ticket type % not found', p_ticket_type_id
+      using errcode = 'no_data_found';
+  end if;
+
+  select * into ev from events where id = tt.event_id;
+
+  -- Both guards run before any inventory moves. The transaction would roll a
+  -- reservation back anyway; refusing first means the failure never depended on
+  -- that, and it keeps the reason legible in a log.
+  --
+  -- In SQL rather than only in the Server Action because these are the
+  -- conditions under which issuing a *confirmed* ticket is correct at all. A
+  -- caller that forgets them is asking for something that should not be
+  -- possible, and the answer should not depend on which caller asked.
+  if tt.price_paise <> 0 then
+    raise exception 'this event is not free (price %)', tt.price_paise
+      using errcode = 'EH010';
+  end if;
+
+  if ev.requires_approval then
+    raise exception 'this event requires host approval before booking'
+      using errcode = 'EH011';
+  end if;
+
+  -- reserve_tickets checks published status and the sales window, and a
+  -- finished event passes both -- sales_start and sales_end are null on every
+  -- event this product creates. Without this, last month's supper club is still
+  -- bookable by anyone scrolling back through a WhatsApp group.
+  if ev.starts_at <= now() then
+    raise exception 'this event started at %', ev.starts_at
+      using errcode = 'EH013';
+  end if;
+
+  -- The friendly half of the one-booking rule. bookings_one_active_per_attendee
+  -- is the half that actually holds under concurrency; this exists so the
+  -- ordinary case gets a sentence rather than an index name, and it is checked
+  -- before inventory moves so the refusal costs nothing.
+  if exists (
+    select 1 from bookings b
+     where b.event_id = ev.id
+       and b.attendee_id = p_attendee_id
+       and b.status in ('pending_approval', 'waitlisted', 'awaiting_payment', 'confirmed')
+  ) then
+    raise exception 'this attendee already has an active booking on event %', ev.id
+      using errcode = 'EH012';
+  end if;
+
+  -- Everything else -- published status, sales window, max_per_order,
+  -- availability under a row lock -- is already reserve_tickets' job, and its
+  -- refusals are already sentences a person can read. They pass through.
+  --
+  -- Defaults left alone: zero fee, zero commission, payment_mode 'online', a
+  -- ten-minute hold that confirm_booking clears microseconds later. A free
+  -- booking therefore stores payment_mode 'online' with total_paise 0, which
+  -- reads oddly and is correct: the column records how the attendee *would*
+  -- pay, and 'cash' means something specific that Phase 5 introduces.
+  booking := reserve_tickets(
+    p_ticket_type_id => p_ticket_type_id,
+    p_attendee_id    => p_attendee_id,
+    p_quantity       => p_quantity,
+    p_attendee_note  => p_attendee_note
+  );
+
+  -- reserve_tickets has no name parameter and should not grow one: it is the
+  -- shared path for every booking kind, and only this one asks for a name.
+  -- Written here instead, inside the same transaction.
+  update bookings
+     set attendee_name = nullif(btrim(p_attendee_name), '')
+   where id = booking.id;
+
+  return confirm_booking(booking.id);
+
+exception
+  -- The pre-check above loses the race sometimes; the index never does. Both
+  -- must say the same thing to the attendee, or the same situation reads as a
+  -- refusal one time and a database fault the next.
+  --
+  -- Not dead code, and no test reaches it: single-threaded, the pre-check
+  -- always wins, so this branch only runs when two requests interleave.
+  -- Verified by hand instead, with two concurrent sessions -- the second past
+  -- its pre-check before the first committed, blocking on reserve_tickets' row
+  -- lock on ticket_types, then tripping the index once the first committed. It
+  -- came back EH012 from this handler (confirmed by the RAISE line number in
+  -- the error CONTEXT, since both sites share message text). See the Task 1
+  -- report for the transcript before deleting this as unreachable.
+  when unique_violation then
+    if sqlerrm like '%bookings_one_active_per_attendee%' then
+      raise exception 'this attendee already has an active booking on event %', ev.id
+        using errcode = 'EH012';
+    end if;
+    raise;
+end;
+$$;
+
+create or replace function begin_paid_booking(
+  p_ticket_type_id uuid,
+  p_attendee_id    uuid,
+  p_quantity       integer,
+  p_attendee_name  text
+)
+returns bookings
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  tt      ticket_types%rowtype;
+  ev      events%rowtype;
+  booking bookings%rowtype;
+begin
+  select * into tt from ticket_types where id = p_ticket_type_id;
+
+  if not found then
+    raise exception 'ticket type % not found', p_ticket_type_id
+      using errcode = 'no_data_found';
+  end if;
+
+  select * into ev from events where id = tt.event_id;
+
+  if tt.price_paise = 0 then
+    raise exception 'this ticket type is free; use the free booking path'
+      using errcode = 'EH030';
+  end if;
+
+  if ev.requires_approval then
+    raise exception 'this event requires host approval before booking'
+      using errcode = 'EH031';
+  end if;
+
+  if ev.starts_at <= now() then
+    raise exception 'this event started at %', ev.starts_at
+      using errcode = 'EH032';
+  end if;
+
+  -- The friendly half of the one-booking rule; the partial unique index is
+  -- the half that holds under concurrency. Same shape as book_free_tickets.
+  if exists (
+    select 1 from bookings b
+     where b.event_id = ev.id
+       and b.attendee_id = p_attendee_id
+       and b.status in ('pending_approval', 'waitlisted', 'awaiting_payment', 'confirmed')
+  ) then
+    raise exception 'this attendee already has an active booking on event %', ev.id
+      using errcode = 'EH033';
+  end if;
+
+  booking := reserve_tickets(
+    p_ticket_type_id => p_ticket_type_id,
+    p_attendee_id    => p_attendee_id,
+    p_quantity       => p_quantity
+  );
+
+  -- reserve_tickets has no name parameter and should not grow one (see
+  -- 20260810000003). Written here, inside the same transaction.
+  update bookings
+     set attendee_name = nullif(btrim(p_attendee_name), '')
+   where id = booking.id
+  returning * into booking;
+
+  return booking;
+
+exception
+  -- The pre-check loses the race sometimes; the index never does. Same
+  -- remap, and the same reasoning, as book_free_tickets' handler.
+  when unique_violation then
+    if sqlerrm like '%bookings_one_active_per_attendee%' then
+      raise exception 'this attendee already has an active booking on event %', ev.id
+        using errcode = 'EH033';
+    end if;
+    raise;
+end;
+$$;
+
+create or replace function book_cash_tickets(
+  p_ticket_type_id uuid,
+  p_attendee_id    uuid,
+  p_quantity       integer,
+  p_attendee_name  text,
+  p_attendee_note  text default null
+)
+returns bookings
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  tt      ticket_types%rowtype;
+  ev      events%rowtype;
+  booking bookings%rowtype;
+begin
+  select * into tt from ticket_types where id = p_ticket_type_id;
+  if not found then
+    raise exception 'ticket type % not found', p_ticket_type_id
+      using errcode = 'no_data_found';
+  end if;
+
+  select * into ev from events where id = tt.event_id;
+
+  if tt.price_paise = 0 then
+    raise exception 'this ticket type is free; use the free booking path'
+      using errcode = 'EH057';
+  end if;
+
+  if ev.requires_approval then
+    raise exception 'this event requires host approval; request instead'
+      using errcode = 'EH058';
+  end if;
+
+  if ev.starts_at <= now() then
+    raise exception 'this event started at %', ev.starts_at
+      using errcode = 'EH059';
+  end if;
+
+  if exists (
+    select 1 from bookings b
+     where b.event_id = ev.id
+       and b.attendee_id = p_attendee_id
+       and b.status in ('pending_approval', 'waitlisted', 'awaiting_payment', 'confirmed')
+  ) then
+    raise exception 'this attendee already has an active booking on event %', ev.id
+      using errcode = 'EH054';
+  end if;
+
+  -- Published status, the sales window, max_per_order, availability under the
+  -- row lock, and the allows_cash refusal are reserve_tickets' job; its
+  -- sentences pass through.
+  booking := reserve_tickets(
+    p_ticket_type_id => p_ticket_type_id,
+    p_attendee_id    => p_attendee_id,
+    p_quantity       => p_quantity,
+    p_payment_mode   => 'cash',
+    p_attendee_note  => p_attendee_note
+  );
+
+  -- reserve_tickets has no name parameter and should not grow one (see
+  -- 20260810000003). Written here, inside the same transaction.
+  update bookings
+     set attendee_name = nullif(btrim(p_attendee_name), '')
+   where id = booking.id;
+
+  return confirm_booking(booking.id);
+
+exception
+  when unique_violation then
+    if sqlerrm like '%bookings_one_active_per_attendee%' then
+      raise exception 'this attendee already has an active booking on event %', ev.id
+        using errcode = 'EH054';
+    end if;
+    raise;
 end;
 $$;
 
