@@ -223,3 +223,84 @@ describe('claimOfferedSeat on offers it must not touch', () => {
     await db.auth.admin.deleteUser(filler.buyer).catch(() => {})
   })
 })
+
+/**
+ * The one control the host's waitlist section has, proved against the engine.
+ *
+ * Nothing here is new behaviour — cancel_booking already promotes on its way
+ * out and mayCancel already admits the host. That is the point: the page built
+ * on top of it offers no promote button, so removing a stuck head is the host's
+ * only way to unblock a line, and a later edit to the cancel path must not be
+ * able to take that away quietly.
+ */
+describe('the host removing somebody from the line', () => {
+  // Hoisted out of the test body so the teardown below can reach them. The
+  // alternative — cleaning up on the last lines of the `it` — runs only when
+  // every assertion above it passed, which is precisely when cleanup does not
+  // matter; this suite's shared dev database still carries seeded events left
+  // behind by exactly that shape.
+  let seed: SeededEvent | undefined
+  let filler = { buyer: '', bookingId: '' }
+  let bigHead = ''
+
+  afterAll(async () => {
+    // Guarded because a seedEvent that threw leaves nothing to delete, and an
+    // unguarded hook would bury the real failure under a TypeError. The user
+    // ids are guarded for the same reason one step later.
+    if (!seed) return
+    await db.from('bookings').delete().eq('event_id', seed.eventId)
+    await cleanupEvent(db, seed)
+    for (const id of [filler.buyer, bigHead]) {
+      if (id) await db.auth.admin.deleteUser(id).catch(() => {})
+    }
+  })
+
+  it('removes them and lets the line move, without touching money', async () => {
+    seed = await seedEvent(db, { quantity: 3, pricePaise: 50_000, hasWaitlist: true, maxPerOrder: 3 })
+    filler = await fill(seed, 3)
+    // A three-seat head blocking a one-seat entry behind it.
+    bigHead = await createTestUser(db)
+    await joinWaitlist(asCaller(bigHead), seed.ticketTypeId, 3, 'Head of three', 'online')
+    await joinWaitlist(asCaller(seed.attendeeId), seed.ticketTypeId, 1, 'Asha', 'online')
+
+    // One seat comes back; the head cannot use it and nobody may pass them.
+    await db.from('bookings').update({ quantity: 2 }).eq('id', filler.bookingId)
+    await db.from('ticket_types').update({ reserved_count: 2 }).eq('id', seed.ticketTypeId)
+    await db.rpc('promote_from_waitlist', { p_ticket_type_id: seed.ticketTypeId })
+
+    // The line has to be genuinely stuck before the host touches it, or this
+    // test proves nothing about the removal. Against a promoter that skipped
+    // whoever does not fit, Asha would already hold the seat by now and every
+    // assertion below would still pass while strict FIFO — the only reason a
+    // queue nobody can cut is worth joining — had quietly gone.
+    const { data: stillWaiting } = await db
+      .from('bookings').select('attendee_id').eq('event_id', seed.eventId).eq('status', 'waitlisted')
+    expect(stillWaiting).toHaveLength(2)
+
+    const { data: head } = await db.from('bookings').select('id').eq('attendee_id', bigHead).single()
+    // The host removes the blocking entry — the same cancelBooking a guest's
+    // own withdraw goes through, with 'host' as the initiator.
+    expect(await cancelBooking(asCaller(seed.hostProfileId), head!.id, 'host')).toEqual({ ok: true })
+
+    const { data: after } = await db
+      .from('bookings').select('status, cancellation_reason').eq('id', head!.id).single()
+    expect(after).toMatchObject({ status: 'cancelled', cancellation_reason: 'cancelled by host' })
+
+    // No refund row could exist — a waitlist entry never had a payment.
+    const { data: payments } = await db.from('payments').select('id').eq('booking_id', head!.id)
+    expect(payments).toHaveLength(0)
+
+    // And the line moved: Asha now holds the seat that was stuck behind them.
+    const { data: asha } = await db
+      .from('bookings').select('status').eq('attendee_id', seed.attendeeId).single()
+    expect(asha!.status).toBe('awaiting_payment')
+
+    // Two seats still with the filler, one now with Asha. The removal returned
+    // none of its own, because a waitlist entry never held a seat to return:
+    // were cancel_booking to credit three back for it, this would read 1 and a
+    // room of three would have two more seats to sell than it has chairs.
+    const { data: ticketType } = await db
+      .from('ticket_types').select('reserved_count').eq('id', seed.ticketTypeId).single()
+    expect(ticketType!.reserved_count).toBe(3)
+  })
+})

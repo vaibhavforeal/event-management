@@ -311,10 +311,20 @@ export interface WaitlistEntry {
  * caller hosts it, by the same !inner scoping as the guest list and the
  * request queue.
  *
- * No position column and no per-row query: this order IS the position, because
- * it is the same `created_at, id` ordering promote_from_waitlist promotes by.
- * The page numbers the rows from the array index, which cannot disagree with
- * the engine the way a separately-computed number could.
+ * No position column and no per-row query: this order IS the position — per
+ * ticket type — because it is the same `created_at, id` ordering
+ * promote_from_waitlist promotes by. The page numbers the rows from the array
+ * index, which cannot disagree with the engine the way a separately-computed
+ * number could.
+ *
+ * The qualifier is the live limit, not a caveat. This query scopes by
+ * `event_id`, while the engine and waitlist_length both scope by
+ * `ticket_type_id`, so today's one-ticket-type event makes the two identical
+ * and `index + 1` is the true position. Give an event a second ticket type and
+ * this returns two independent queues interleaved by join time, each promoted
+ * separately, and index + 1 is wrong for both. Whoever adds that second type
+ * groups this by ticket_type_id — the same "the day a second one exists"
+ * lib/events/queries.ts already writes about for ticket_types[0].
  */
 export async function listEventWaitlist(eventId: string): Promise<WaitlistEntry[]> {
   const session = await signedInClient()
