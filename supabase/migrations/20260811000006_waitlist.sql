@@ -539,16 +539,38 @@ $$;
 -- added line: a promote call beside the existing release_expired_holds call,
 -- before the row lock is taken and long before any seat is handed out.
 --
--- release_expired_holds alone would not be enough. It promotes only what it
--- actually reclaimed, so seats that appear by some other route -- a host
--- raising capacity on an event that already has a line -- would sit there for
--- the next walk-up to take, past everyone waiting. The unconditional call
--- closes that, and costs a non-waitlist event one extra select on a row it is
--- about to lock anyway plus an early return.
+-- What that line guarantees is that a walk-up can never TAKE a seat the line
+-- is owed. The promote runs before availability is judged, so the line's claim
+-- has already been deducted by the time this function looks, and the walk-up is
+-- refused with "only 0 seats remain" while a seat sits visibly free. No
+-- interleaving lets them through. release_expired_holds alone would not manage
+-- this: it promotes only what it itself reclaimed, so a seat that appears by
+-- some other route -- a host raising capacity on an event that already has a
+-- line -- is invisible to it.
 --
--- The consequence is intended and is what the concurrency test asserts: on a
--- waitlist event with a line, a walk-up's own reservation attempt hands the
--- free seats to the line first and is then refused with "only 0 seats remain".
+-- When the reservation SUCCEEDS the same line is productive as well: capacity
+-- raised by three against a one-entry line promotes the entry, sells the
+-- walk-up their seat, and commits both.
+--
+-- What it does NOT do is serve the line on the path where this function raises.
+-- PostgREST runs one transaction per RPC, so the `raise` that refuses the
+-- walk-up unwinds its own side effects, the promotion included: the entry goes
+-- back in the line and the seat back in the pool. The refusal still stands --
+-- the walk-up's booking is unwound with it -- so the guarantee above is intact,
+-- but nobody is served. A function that refuses its caller cannot also keep a
+-- side effect, whatever the statement order. This call is therefore load-bearing
+-- for safety always, and productive only when it does not refuse.
+--
+-- So the trigger for inventory that appears without being freed has to live in
+-- a transaction that goes on to commit, and does: promoteAfterCapacityChange in
+-- lib/bookings/service.ts, called by updateEvent once the save has committed.
+-- Two transactions, the capacity raise first -- no grant widened, no trigger
+-- added. lib/bookings/waitlist-promotion.test.ts pins both halves: the walk-up
+-- who is refused a seat they can see, and the rollback that is why the other
+-- caller exists.
+--
+-- Costs a non-waitlist event one extra select on a row it is about to lock
+-- anyway, plus an early return.
 
 create or replace function reserve_tickets(
   p_ticket_type_id        uuid,

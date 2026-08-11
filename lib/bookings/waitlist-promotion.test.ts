@@ -237,16 +237,26 @@ describe('promote_from_waitlist', () => {
     expect(data!.total_paise).toBe(80_000)
   })
 
-  it('a walk-up cannot cut the line: the waitlister gets the freed seat', async () => {
+  it('a walk-up cannot cut the line: the race cannot double-sell the freed seat', async () => {
     const seed = await waitlistEvent({ quantity: 1 })
     const filler = await fill(seed, 1)
     const asha = await join(seed, 1, 'Asha')
     const walkUp = await createTestUser(db)
     minted.push(walkUp)
 
-    // The cancel and the walk-up's reservation race. Whichever order they
-    // land in, the cancel's own promote runs under the ticket-type lock and
-    // reserve_tickets promotes before it sells, so the seat is Asha's.
+    // The cancel and the walk-up's reservation race, and the seat is Asha's in
+    // either order — but it is the CANCEL's own promote that does it, both
+    // times. cancel_booking takes the ticket-type row lock when it decrements
+    // reserved_count and holds it through its promote to commit, so no
+    // committed snapshot ever shows the seat free with Asha still in the line.
+    // reserve_tickets' own promote therefore reads available = 0 and exits
+    // whichever side of the lock it lands on: blocked behind the cancel it sees
+    // the seat already spent on Asha, and ahead of the cancel it sees the
+    // filler still holding it.
+    //
+    // So this test does NOT exercise reserve_tickets' promote line — the test
+    // below is the one that does. What it pins is the property worth pinning
+    // anyway: no interleaving of these two calls sells the same seat twice.
     const [, reserved] = await Promise.all([
       db.rpc('cancel_booking', { p_booking_id: filler, p_reason: 'test' }),
       db.rpc('reserve_tickets', {
@@ -261,18 +271,14 @@ describe('promote_from_waitlist', () => {
     expect(await reservedCount(seed.ticketTypeId)).toBe(1)
   })
 
-  it('refuses a walk-up a seat the line is owed, even with no cancel racing it', async () => {
-    // The test above races, so in the interleaving where the cancel commits
-    // first it is the CANCEL's promote call that saves the seat, and it would
-    // pass even on a reserve_tickets that had lost its own promote line. This
-    // one has no race in it and no cancel in it at all, so it is the assertion
-    // that actually pins `perform promote_from_waitlist` inside reserve_tickets:
-    // delete that line and the walk-up below simply succeeds.
-    //
-    // Inventory can appear without anything freeing it — a host raising
-    // capacity on an event that already has a line — and release_expired_holds
-    // promotes only what it itself reclaimed, so nothing else in the system
-    // reaches these seats.
+  it('refuses a walk-up a seat the line is owed, with no cancel racing it', async () => {
+    // The racing test above never reaches reserve_tickets' promote line in
+    // either interleaving, so this is the one that pins it: no race, no cancel,
+    // and inventory that appeared without anything freeing it — a host raising
+    // capacity on an event that already has a line. release_expired_holds never
+    // sees such a seat, because it promotes only what it itself reclaimed.
+    // Delete `perform promote_from_waitlist` from reserve_tickets and the
+    // walk-up below simply succeeds.
     const seed = await waitlistEvent({ quantity: 1 })
     await fill(seed, 1)
     const asha = await join(seed, 1, 'Asha')
@@ -290,24 +296,13 @@ describe('promote_from_waitlist', () => {
       p_quantity: 1,
     })
 
-    // A seat is plainly free and the walk-up is still turned away: inside the
-    // call, promote_from_waitlist spent it on Asha before the availability
-    // check ran. The protective half of that line holds.
+    // A seat is plainly free and the walk-up is still turned away with nothing:
+    // inside the call, promote_from_waitlist spent it on Asha before the
+    // availability check ran. That the promotion is then rolled back with the
+    // refusal (pinned in the next test) does not weaken this — the walk-up's
+    // own booking is rolled back too, so no interleaving lets them through.
     expect(error?.message).toContain('only 0 seats remain')
     expect(await db.from('bookings').select('id').eq('attendee_id', walkUp)).toMatchObject({ data: [] })
-
-    // KNOWN DEFECT, and this assertion pins it rather than blessing it: the
-    // promotion does NOT survive. PostgREST runs the RPC in one transaction, so
-    // the `raise` that refuses the walk-up rolls back the offer that caused the
-    // refusal. Asha is back in the line and the seat is back in the pool, which
-    // is why the two numbers below are the pre-call ones.
-    //
-    // reserve_tickets can therefore only ever be protective, never productive:
-    // on the path where it raises, every promotion it just made is undone. See
-    // .superpowers/sdd/2026-08-11-phase-5b-waitlist/task-2-report.md. When the
-    // productive trigger is added, this test must fail here and be updated.
-    expect(await statusOf(asha)).toBe('waitlisted')
-    expect(await reservedCount(seed.ticketTypeId)).toBe(1)
 
     // The control that says this is plumbing and not the engine: the seat is
     // genuinely owed to Asha, and the engine hands it over the moment it is
@@ -316,6 +311,40 @@ describe('promote_from_waitlist', () => {
     expect(promoted).toBe(1)
     expect(await statusOf(asha)).toBe('awaiting_payment')
     expect(await reservedCount(seed.ticketTypeId)).toBe(2)
+  })
+
+  it('a refused reservation rolls back the promotion it just made', async () => {
+    // The transactional fact behind promoteAfterCapacityChange (Task 6,
+    // lib/bookings/service.ts, called by updateEvent after the save commits).
+    //
+    // PostgREST runs one transaction per RPC, so the `raise` that refuses the
+    // walk-up unwinds its own side effects — the promotion that consumed the
+    // seat included. The entry goes back in the line, the seat back in the
+    // pool, and both numbers below are the pre-call ones. A function that
+    // refuses its caller cannot also keep a side effect, whatever the statement
+    // order, so reserve_tickets is productive only on the path where it
+    // succeeds. That is why the trigger for a capacity raise has to live in a
+    // transaction that goes on to commit, and does.
+    //
+    // This is a property of reserve_tickets, not a bug queued for repair, so
+    // Task 6 will not turn it red: it raises capacity through the ticket_types
+    // row directly, below the service layer where the fix lives. It stays here
+    // as the reason that fix exists.
+    const seed = await waitlistEvent({ quantity: 1 })
+    await fill(seed, 1)
+    const asha = await join(seed, 1, 'Asha')
+    const walkUp = await createTestUser(db)
+    minted.push(walkUp)
+
+    await db.from('ticket_types').update({ quantity: 2 }).eq('id', seed.ticketTypeId)
+    await db.rpc('reserve_tickets', {
+      p_ticket_type_id: seed.ticketTypeId,
+      p_attendee_id: walkUp,
+      p_quantity: 1,
+    })
+
+    expect(await statusOf(asha)).toBe('waitlisted')
+    expect(await reservedCount(seed.ticketTypeId)).toBe(1)
   })
 
   it('offers nothing once the event has started', async () => {
@@ -332,11 +361,43 @@ describe('promote_from_waitlist', () => {
   })
 
   it('is a no-op on an event that keeps no waitlist', async () => {
+    // Pins "safe to call anywhere", not the has_waitlist guard: with no line to
+    // walk, the loop would exit on its own even without the guard. The test
+    // below is the one that pins the guard.
     const seed = await seedEvent(db, { quantity: 2, pricePaise: 50_000 })
     seeded.push(seed)
     const { data, error } = await db.rpc('promote_from_waitlist', { p_ticket_type_id: seed.ticketTypeId })
     expect(error).toBeNull()
     expect(data).toBe(0)
+  })
+
+  it('stops offering when the host closes the line, and resumes when it reopens', async () => {
+    // A closed waitlist with people still standing in it is reachable, not
+    // hypothetical: update_event_with_ticket_type writes `has_waitlist =
+    // p_has_waitlist and not p_requires_approval`, so a host untoggling the
+    // waitlist — or ticking approval, which coerces the same way — leaves
+    // waitlisted rows behind on an event whose flag is now false. Nothing
+    // sweeps them.
+    const seed = await waitlistEvent({ quantity: 1 })
+    const filler = await fill(seed, 1)
+    const asha = await join(seed, 1, 'Asha')
+
+    await db.from('events').update({ has_waitlist: false }).eq('id', seed.eventId)
+    await db.rpc('cancel_booking', { p_booking_id: filler, p_reason: 'test' })
+
+    // Without `not ev.has_waitlist` in the guard, that cancel mints a payable
+    // 24-hour offer on a queue the host has closed. The seat goes back to the
+    // pool for ordinary sale instead, which is what closing the line means.
+    expect(await statusOf(asha)).toBe('waitlisted')
+    expect(await reservedCount(seed.ticketTypeId)).toBe(0)
+
+    // The control, without which this would pass on an engine that never
+    // promotes anything: reopen the line and the same seat is offered at once.
+    await db.from('events').update({ has_waitlist: true }).eq('id', seed.eventId)
+    const { data: promoted } = await db.rpc('promote_from_waitlist', { p_ticket_type_id: seed.ticketTypeId })
+    expect(promoted).toBe(1)
+    expect(await statusOf(asha)).toBe('awaiting_payment')
+    expect(await reservedCount(seed.ticketTypeId)).toBe(1)
   })
 
   it('is a no-op for a ticket type that does not exist', async () => {
