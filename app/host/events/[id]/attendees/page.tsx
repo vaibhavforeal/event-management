@@ -2,10 +2,19 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { requireUser } from '@/lib/auth/session'
 import { getOwnedEvent } from '@/lib/events/queries'
-import { listEventAttendees } from '@/lib/bookings/queries'
+import {
+  listApprovedUnpaid,
+  listEventAttendees,
+  listEventRequests,
+  type EventRequest,
+} from '@/lib/bookings/queries'
 import { cancelConsequence } from '@/lib/payments/refund-policy'
+import { formatPaise } from '@/lib/money'
+import { formatIst } from '@/lib/events/datetime'
+import { ApproveRequestButton } from './approve-request-button'
 import { CancelAttendeeButton } from './cancel-attendee-button'
 import { CheckInButton } from './check-in-button'
+import { DeclineRequestButton } from './decline-request-button'
 
 export const metadata = { title: 'Guest list' }
 
@@ -34,6 +43,20 @@ function dialable(phone: string): string {
   return phone.startsWith('+') ? phone : `+${phone}`
 }
 
+/** What approving takes and what the guest then owes, stated beside the
+    button before the tap — the approval queue's counterpart of
+    cancelConsequence. Computed here because this page is where the price is
+    known: getOwnedEvent carries ticket_types(price_paise). */
+function approveConsequence(request: EventRequest, pricePaise: number): string {
+  const total = pricePaise * request.quantity
+  const seats = `${request.quantity} ${request.quantity === 1 ? 'seat' : 'seats'}`
+  if (total === 0) return `Approving confirms ${seats}.`
+  if (request.payment_mode === 'cash') {
+    return `Approving takes ${seats}; they pay ${formatPaise(total)} at the door.`
+  }
+  return `Approving takes ${seats}; they pay ${formatPaise(total)} within 24 hours.`
+}
+
 export default async function AttendeesPage(
   props: PageProps<'/host/events/[id]/attendees'>,
 ) {
@@ -46,8 +69,15 @@ export default async function AttendeesPage(
   const event = await getOwnedEvent(id)
   if (!event) notFound()
 
-  const attendees = await listEventAttendees(id)
+  const [attendees, requests, unpaid] = await Promise.all([
+    listEventAttendees(id),
+    listEventRequests(id),
+    listApprovedUnpaid(id),
+  ])
   const seats = attendees.reduce((total, a) => total + a.quantity, 0)
+  // The one price this pilot's single ticket type carries — what
+  // approveConsequence turns into "they pay ₹X".
+  const price = event.ticket_types[0]?.price_paise ?? 0
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-2xl px-5 py-10">
@@ -59,6 +89,11 @@ export default async function AttendeesPage(
       <p className="text-muted mt-1 font-mono text-[13px]">
         {seats} {seats === 1 ? 'seat' : 'seats'} taken by {attendees.length}{' '}
         {attendees.length === 1 ? 'booking' : 'bookings'}
+        {/* The host's one-glance answer to "is anything waiting on me?" —
+            confirmed seats stay the headline count, and the queue's two
+            numbers ride beside it only while either is non-zero. */}
+        {(requests.length > 0 || unpaid.length > 0) &&
+          ` · ${requests.length} requested · ${unpaid.length} approved unpaid`}
       </p>
       {/* The door's main entrance. The buttons below are its fallback for a
           guest with no QR, no camera, or no Chrome. */}
@@ -67,6 +102,96 @@ export default async function AttendeesPage(
           Scan tickets →
         </Link>
       </p>
+
+      {/* The approval queue, above the guest list because it is the part
+          waiting on the host: a request sits pending until somebody taps one
+          of these two buttons. Rendered only while there is one, so a host
+          whose event takes no approvals never sees the machinery. */}
+      {requests.length > 0 && (
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold">Requests</h2>
+          <p className="text-muted mt-1 font-mono text-[13px]">
+            {requests.length} {requests.length === 1 ? 'request' : 'requests'} waiting on you
+          </p>
+          <ul className="divide-line mt-4 divide-y">
+            {requests.map((r) => (
+              <li key={r.id} className="flex items-start justify-between gap-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{r.attendee_name ?? 'Guest'}</p>
+                  <p className="text-muted font-mono text-[12px]">
+                    {r.quantity} {r.quantity === 1 ? 'seat' : 'seats'} · {r.reference} ·{' '}
+                    {formatIst(new Date(r.created_at))}
+                  </p>
+                  {/* The note is the request's whole case — "it's my sister's
+                      birthday" is what the host decides on. Quoted so the
+                      guest's words read as the guest's, not the page's. */}
+                  {r.attendee_note && <p className="mt-1 text-[13px]">“{r.attendee_note}”</p>}
+                  {r.profiles?.phone && (
+                    <a
+                      href={`tel:${dialable(r.profiles.phone)}`}
+                      className="font-mono text-[12px] underline"
+                    >
+                      {dialable(r.profiles.phone)}
+                    </a>
+                  )}
+                </div>
+                {/* Two forms, stacked: each button owns its pending and error
+                    state, and nesting forms is not HTML — the same split as
+                    the guest list's check-in/cancel pair below. */}
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <ApproveRequestButton
+                    bookingId={r.id}
+                    eventId={id}
+                    slug={event.slug}
+                    consequence={approveConsequence(r, price)}
+                  />
+                  <DeclineRequestButton bookingId={r.id} eventId={id} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Approved but not yet paid: seats these guests hold that money has not
+          confirmed. The host's move here is chasing (the phone link) or
+          freeing the seat — and cancelling costs the guest nothing, because
+          nothing was paid, which is why the consequence is null. */}
+      {unpaid.length > 0 && (
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold">Approved — payment pending</h2>
+          <ul className="divide-line mt-4 divide-y">
+            {unpaid.map((u) => (
+              <li key={u.id} className="flex items-start justify-between gap-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{u.attendee_name ?? 'Guest'}</p>
+                  <p className="text-muted font-mono text-[12px]">
+                    {u.quantity} {u.quantity === 1 ? 'seat' : 'seats'} ·{' '}
+                    {formatPaise(u.total_paise)} · Pay by{' '}
+                    {u.hold_expires_at ? formatIst(new Date(u.hold_expires_at)) : '—'}
+                  </p>
+                  {u.profiles?.phone && (
+                    <a
+                      href={`tel:${dialable(u.profiles.phone)}`}
+                      className="font-mono text-[12px] underline"
+                    >
+                      {dialable(u.profiles.phone)}
+                    </a>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-start">
+                  <CancelAttendeeButton
+                    bookingId={u.id}
+                    eventId={id}
+                    slug={event.slug}
+                    consequence={null}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {attendees.length === 0 ? (
         <p className="text-muted mt-8 text-[15px]">Nobody has booked yet.</p>
@@ -92,6 +217,9 @@ export default async function AttendeesPage(
                     totalPaise: a.total_paise,
                     startsAt: event.starts_at,
                     cutoffHours: event.refund_cutoff_hours,
+                    // A cash guest paid nothing online, so removing them must
+                    // not promise a refund — cancelConsequence returns null.
+                    paymentMode: a.payment_mode === 'cash' ? 'cash' : 'online',
                   })
                 : null
             return (

@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { currentCaller } from '@/lib/bookings/caller'
-import { cancelBooking } from '@/lib/bookings/service'
+import { approveBooking, cancelBooking, declineBooking } from '@/lib/bookings/service'
 import { checkInNextTicket } from '@/lib/checkin/service'
 import { isEventSlug } from '@/lib/events/slug'
 import { loginPath } from '@/lib/auth/session'
@@ -102,5 +102,58 @@ export async function checkInAttendee(
   if (!result.ok) return { error: result.error }
 
   revalidatePath(`/host/events/${eventId}/attendees`)
+  return {}
+}
+
+export interface ApprovalActionState {
+  error?: string
+}
+
+export async function approveRequest(
+  _previous: ApprovalActionState,
+  formData: FormData,
+): Promise<ApprovalActionState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const bookingId = String(formData.get('bookingId') ?? '')
+  const eventId = String(formData.get('eventId') ?? '')
+  if (!bookingId) return { error: 'Something went wrong. Reload the page and try again.' }
+
+  // The same posture as cancelAttendeeBooking above: the service owns the
+  // decision (mayApprove against the booking's real event), and eventId/slug
+  // from the form are used for revalidation only, shape-checked because both
+  // are interpolated into paths.
+  const result = await approveBooking(caller, bookingId)
+  if (!result.ok) return { error: result.error }
+
+  if (UUID_PATTERN.test(eventId)) revalidatePath(`/host/events/${eventId}/attendees`)
+
+  // Approval takes inventory, so the public page's seats-left line and the
+  // feed payload both just moved — the cancel action's pair, pointing the
+  // other way.
+  const slug = String(formData.get('slug') ?? '')
+  if (isEventSlug(slug)) revalidatePath(`/e/${slug}`)
+  revalidatePath('/')
+  return {}
+}
+
+export async function declineRequest(
+  _previous: ApprovalActionState,
+  formData: FormData,
+): Promise<ApprovalActionState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const bookingId = String(formData.get('bookingId') ?? '')
+  const eventId = String(formData.get('eventId') ?? '')
+  if (!bookingId) return { error: 'Something went wrong. Reload the page and try again.' }
+
+  const result = await declineBooking(caller, bookingId)
+  if (!result.ok) return { error: result.error }
+
+  // A decline moves no inventory — the request never held any — so only the
+  // queue itself needs repainting.
+  if (UUID_PATTERN.test(eventId)) revalidatePath(`/host/events/${eventId}/attendees`)
   return {}
 }
