@@ -117,6 +117,7 @@ export const eventDraftSchema = z
       .optional(),
     requiresApproval: z.boolean(),
     allowsCash: z.boolean(),
+    hasWaitlist: z.boolean(),
     hideVenueUntilApproved: z.boolean(),
   })
   .refine((v) => !v.endsAtLocal || v.endsAtLocal > v.startsAtLocal, {
@@ -162,6 +163,7 @@ export const EVENT_FORM_FIELDS = {
   hostDisplayName: 'text',
   requiresApproval: 'checkbox',
   allowsCash: 'checkbox',
+  hasWaitlist: 'checkbox',
   hideVenueUntilApproved: 'checkbox',
 } as const satisfies Record<keyof EventDraftInput, FieldKind>
 
@@ -217,7 +219,7 @@ function text(value: FormDataEntryValue | null): string | undefined {
  * absent from this map is genuinely optional and stays `undefined`. A price
  * left blank means free, which is why it is '0' rather than ''.
  *
- * Not a second copy of the field list — it holds six of the fifteen, and
+ * Not a second copy of the field list — it holds six of the sixteen, and
  * getting it wrong changes a message rather than dropping a field, which the
  * message assertions in validation.test.ts already catch.
  */

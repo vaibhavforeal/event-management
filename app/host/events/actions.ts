@@ -15,6 +15,8 @@ import {
 import { findHost, getCurrentHost, getCurrentHostId } from '@/lib/events/queries'
 import { mapEventRpcError } from '@/lib/events/rpc-errors'
 import { loginPath } from '@/lib/auth/session'
+import { currentCaller } from '@/lib/bookings/caller'
+import { promoteAfterCapacityChange } from '@/lib/bookings/service'
 import { rupeesToPaise } from '@/lib/money'
 import type { Database } from '@/lib/supabase/types'
 
@@ -146,6 +148,10 @@ export async function createEvent(
     p_price_paise: rupeesToPaise(input.priceRupees),
     p_quantity: input.seats,
     p_refund_cutoff_hours: input.refundCutoffHours,
+    // Raw. Exclusivity with requires_approval is the function's job
+    // (`p_has_waitlist and not p_requires_approval`), written once in SQL where
+    // both writers share it rather than twice here where the two could drift.
+    p_has_waitlist: input.hasWaitlist,
   } satisfies Nullable<CreateEventArgs> as CreateEventArgs)
 
   // One call, one transaction. The event and its ticket type land together or
@@ -167,6 +173,11 @@ export async function updateEvent(
   const host = await getCurrentHost()
   if (!host) redirect(await loginPath())
   const hostId = host.id
+  // Minted here rather than assembled from host.profile_id: `Caller` is branded
+  // so identity cannot be conjured from a string, and this call site is no
+  // exception. promoteAfterCapacityChange below is the only thing that needs it.
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
 
   const eventId = String(formData.get('eventId') ?? '')
   if (!eventId) return { error: 'Missing event id', values: submittedValues(formData) }
@@ -198,11 +209,18 @@ export async function updateEvent(
     p_price_paise: rupeesToPaise(input.priceRupees),
     p_quantity: input.seats,
     p_refund_cutoff_hours: input.refundCutoffHours,
+    p_has_waitlist: input.hasWaitlist,
   } satisfies Nullable<UpdateEventArgs> as UpdateEventArgs)
 
   // Especially on the oversell path: the host may have just typed the venue
   // that clears a publish blocker, and this refusal must not take it away.
   if (error) return { ...mapEventRpcError(error, input.seats), values: submittedValues(formData) }
+
+  // The save has committed, so any seats it added are real and visible. Only
+  // now can the line be served — see promoteAfterCapacityChange for why this
+  // cannot ride inside the writer's own transaction. Never throws, so a
+  // waitlist problem cannot fail a save that already succeeded.
+  await promoteAfterCapacityChange(caller, eventId)
 
   // Last, and on its own row rather than the event's: renaming yourself changes
   // every event page you have, so it must not ride along with an edit that was

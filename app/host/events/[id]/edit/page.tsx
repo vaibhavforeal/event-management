@@ -83,6 +83,7 @@ export default async function EditEventPage(props: PageProps<'/host/events/[id]/
           hostDisplayName: event.hosts?.display_name,
           requiresApproval: event.requires_approval,
           allowsCash: event.allows_cash,
+          hasWaitlist: event.has_waitlist,
           hideVenueUntilApproved: event.hide_venue_until_approved,
         }}
       />

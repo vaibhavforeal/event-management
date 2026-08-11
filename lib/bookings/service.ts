@@ -387,3 +387,53 @@ export async function waitlistPosition(caller: Caller, bookingId: string): Promi
   // the same thing, so no caller has to know about the sentinel.
   return data && data > 0 ? data : null
 }
+
+/**
+ * Offers newly-added seats to the line, after the host's save has committed.
+ *
+ * The one seat-appearing path the SQL seams cannot cover. cancel_booking needs
+ * a booking and release_expired_holds promotes only what it reclaimed, so a
+ * capacity raise frees seats through neither — and reserve_tickets' own
+ * promote call cannot do it either, because one PostgREST transaction per RPC
+ * means its "only 0 seats remain" raise unwinds the promotion that produced
+ * it. Hence a second, committing call from here.
+ *
+ * Never throws. A failed promote must not turn a successful save into an
+ * error the host has to interpret — the seats are added either way, and the
+ * next cancel or hold expiry serves the line. Same posture as refundIfOwed.
+ *
+ * Host-only, and the check is real rather than ceremonial: this is reached
+ * from a Server Action carrying an eventId out of a form.
+ */
+export async function promoteAfterCapacityChange(caller: Caller, eventId: string): Promise<void> {
+  try {
+    const db = createAdminClient()
+
+    const { data: event, error } = await db
+      .from('events')
+      .select('id, has_waitlist, hosts(profile_id), ticket_types(id)')
+      .eq('id', eventId)
+      .maybeSingle()
+
+    if (error) {
+      console.error('[bookings] could not read the event to serve its waitlist', error)
+      return
+    }
+    // No event, no waitlist, or not this caller's to touch — all silent, all
+    // the same nothing. promote_from_waitlist would refuse the middle one
+    // anyway; checking here saves a round trip per ticket type.
+    if (!event || !event.has_waitlist) return
+    if (!mayApprove(caller, { event_host_profile_id: event.hosts.profile_id })) return
+
+    for (const ticketType of event.ticket_types) {
+      const { error: promoteError } = await db.rpc('promote_from_waitlist', {
+        p_ticket_type_id: ticketType.id,
+      })
+      if (promoteError) {
+        console.error('[bookings] could not serve the waitlist after a capacity change', promoteError)
+      }
+    }
+  } catch (cause) {
+    console.error('[bookings] serving the waitlist after a capacity change threw', cause)
+  }
+}
