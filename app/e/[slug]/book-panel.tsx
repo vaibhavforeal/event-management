@@ -1,7 +1,7 @@
 'use client'
 
 import { useActionState } from 'react'
-import { bookEvent, startPaidCheckout, type BookState } from './actions'
+import { bookCashEvent, bookEvent, startPaidCheckout, type BookState } from './actions'
 
 // Colours come from the globals.css tokens. This file used to carry its own
 // MIST/SLATE literals that had drifted a few values away from the page it sits
@@ -22,6 +22,8 @@ interface Props {
    * refuse the same mistakes with the same sentences.
    */
   paid?: boolean
+  /** Offers "cash at the door" beside the online button. Paid panels only. */
+  cash?: boolean
 }
 
 /**
@@ -37,11 +39,17 @@ export function BookPanel({
   priceLabel,
   seatsLabel,
   paid = false,
+  cash = false,
 }: Props) {
   const [state, action, pending] = useActionState<BookState, FormData>(
     paid ? startPaidCheckout : bookEvent,
     {},
   )
+  // A second useActionState for the cash path: two dispatchers, one form —
+  // each button names its action via formAction, each action owns its
+  // pending/error state.
+  const [cashState, cashAction, cashPending] = useActionState<BookState, FormData>(bookCashEvent, {})
+  const busy = pending || cashPending
 
   return (
     <form action={action} className="mx-auto flex max-w-2xl items-center justify-between gap-3">
@@ -51,7 +59,7 @@ export function BookPanel({
       <div className="min-w-0">
         <p className="font-mono text-[19px] leading-tight font-semibold">{priceLabel}</p>
         <p className="text-muted font-mono text-[12px]">
-          {state.error ?? seatsLabel}
+          {state.error ?? cashState.error ?? seatsLabel}
         </p>
       </div>
 
@@ -66,7 +74,7 @@ export function BookPanel({
           required
           maxLength={80}
           placeholder="Your name"
-          disabled={pending}
+          disabled={busy}
           className="border-line w-28 rounded-lg border px-3 py-3 text-[15px]"
         />
 
@@ -77,7 +85,7 @@ export function BookPanel({
           id="quantity"
           name="quantity"
           defaultValue="1"
-          disabled={pending}
+          disabled={busy}
           className="border-line rounded-lg border px-3 py-3 font-mono text-[15px]"
         >
           {Array.from({ length: maxSeats }, (_, i) => i + 1).map((n) => (
@@ -89,11 +97,22 @@ export function BookPanel({
 
         <button
           type="submit"
-          disabled={pending}
+          disabled={busy}
           className="bg-ink text-paper rounded-lg px-5 py-3 text-[15px] font-medium disabled:opacity-60"
         >
           {pending ? (paid ? 'Starting payment…' : 'Booking…') : paid ? `Pay ${priceLabel}` : 'Book'}
         </button>
+
+        {paid && cash && (
+          <button
+            type="submit"
+            formAction={cashAction}
+            disabled={busy}
+            className="border-line text-ink rounded-lg border px-4 py-3 text-[14px] font-medium disabled:opacity-60"
+          >
+            {cashPending ? 'Booking…' : 'Cash at the door'}
+          </button>
+        )}
       </div>
     </form>
   )
