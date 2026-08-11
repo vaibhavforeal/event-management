@@ -4223,7 +4223,7 @@ Open `docs/specs/2026-08-11-phase-5b-waitlist-design.md` and verify each is true
 - a lapsed offer expires and the same call offers it onward (Task 2)
 - promotion no-ops after `starts_at`; un-promoted entries sit inert and withdrawable (Task 2, Task 8)
 - walk-ups cannot cut, in SQL and on the page (Task 2's concurrency test; Task 7's `joinable` gate)
-- a host adding seats to a sold-out event serves the line rather than the next walk-up (Task 6's `promoteAfterCapacityChange`), and Task 2's KNOWN DEFECT pin has been deleted because the defect is gone
+- a host adding seats to a sold-out event serves the line rather than the next walk-up (Task 6's `promoteAfterCapacityChange`), **and Task 2's rollback pin — `a refused reservation rolls back the promotion it just made` — is still green and still there.** It is not a defect awaiting repair; it is the documented reason `promoteAfterCapacityChange` exists, and it stays green because that fix adds a committing caller at the service layer without touching `reserve_tickets`, while the pin drives `reserve_tickets` directly. Do not delete it.
 - repricing is at offer time, against a mid-queue price edit (Task 2)
 - every `EH06x` guard, plus unpublished passing through unmapped (Task 1)
 - `has_waitlist` toggle, hidden under `requires_approval`, exclusive by CHECK and by coercion (Task 6)
