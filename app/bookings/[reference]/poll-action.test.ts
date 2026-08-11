@@ -41,6 +41,7 @@ vi.mock('@/lib/bookings/caller', () => ({ currentCaller: async () => caller }))
  * action do — which inputs reach the service, and which never leave the guard.
  */
 vi.mock('@/lib/payments/service', () => ({
+  beginApprovedCheckout: vi.fn(),
   reconcileAfterCheckout: vi.fn(),
   reconcileBooking: vi.fn(),
 }))

@@ -11,10 +11,14 @@ import { cancelMyBooking, type CancelState } from './actions'
 export function CancelButton({
   bookingId,
   slug,
+  label = 'Cancel booking',
   consequence,
 }: {
   bookingId: string
   slug: string
+  /** What the idle button says. A pending request is withdrawn, not
+      cancelled — same action underneath, different verb on the surface. */
+  label?: string
   /** The money consequence of this cancel, stated before the tap. Computed by
       the server (it owns the clock and the policy); null when no money moved. */
   consequence?: string | null
@@ -30,7 +34,7 @@ export function CancelButton({
         disabled={pending}
         className="text-[13px] underline disabled:opacity-60"
       >
-        {pending ? 'Cancelling…' : 'Cancel booking'}
+        {pending ? 'Cancelling…' : label}
       </button>
       {/* The live region is rendered whether or not there is an error, because
           aria-live is only honoured on an element that was already in the DOM
