@@ -20,7 +20,7 @@ function seatsPhrase(seats: number): string {
 
 /** Where the attendee stands, on their own booking page. */
 export function waitlistPositionLine(position: number, seats: number): string {
-  return `You're #${position} in line for ${seatsPhrase(seats)}.`
+  return `You’re #${position} in line for ${seatsPhrase(seats)}.`
 }
 
 /** The same fact in a list row, where the seats are already in the line above. */
@@ -38,7 +38,7 @@ export function waitlistShortPosition(position: number): string {
  */
 export function waitlistPriceLine(amountLabel: string | null): string {
   return amountLabel === null
-    ? `Free — you're in only if a seat opens for you`
+    ? 'Free — you’re in only if a seat opens for you'
     : `${amountLabel} — you pay only if a seat opens for you`
 }
 
@@ -56,7 +56,7 @@ export function lineLengthLine(length: number): string {
  * other is a seat coming free.
  */
 export function approvedPaySentence(amountLabel: string, deadlineLabel: string): string {
-  return `You're approved! Pay ${amountLabel} by ${deadlineLabel} to confirm your seat.`
+  return `You’re approved! Pay ${amountLabel} by ${deadlineLabel} to confirm your seat.`
 }
 
 /** An online offer: the news first, then what it costs to take. */
@@ -76,7 +76,7 @@ export function offerClaimSentence(deadlineLabel: string, doorAmountLabel: strin
   const claim = `A seat opened up — claim it by ${deadlineLabel}.`
   return doorAmountLabel === null
     ? claim
-    : `${claim} You'll pay ${doorAmountLabel} in cash at the door.`
+    : `${claim} You’ll pay ${doorAmountLabel} in cash at the door.`
 }
 
 /**
