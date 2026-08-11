@@ -121,6 +121,7 @@ export interface SeedOptions {
   allowsCash?: boolean
   status?: 'draft' | 'published'
   maxPerOrder?: number
+  hasWaitlist?: boolean
 }
 
 /** Seeds one host, one published event and one ticket type, plus an attendee. */
@@ -135,6 +136,7 @@ export async function seedEvent(
     allowsCash = false,
     status = 'published',
     maxPerOrder = 10,
+    hasWaitlist = false,
   } = options
 
   const hostProfileId = await createTestUser(db)
@@ -159,6 +161,7 @@ export async function seedEvent(
       status,
       requires_approval: requiresApproval,
       allows_cash: allowsCash,
+      has_waitlist: hasWaitlist,
       published_at: status === 'published' ? new Date().toISOString() : null,
     })
     .select()
