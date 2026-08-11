@@ -80,6 +80,102 @@ export async function startPaidCheckout(
   return { ok: true, reference: booking.reference }
 }
 
+export type ApprovedCheckoutStart = { ok: true } | { ok: false; error: string }
+
+/** One refusal for "not yours", "does not exist" and "the lookup failed". */
+const NOT_YOURS_TO_PAY = 'That booking is not yours to pay for.'
+const NOT_PAYABLE = 'There is nothing to pay on this booking right now.'
+
+/**
+ * The missing piece between an approval and the Phase 3 rails: the Razorpay
+ * order, created lazily on the explicit Pay tap — never on a page load — for
+ * a booking approve_booking left awaiting_payment. Once the payments row
+ * exists, the existing CheckoutPanel, first-poll proof, webhook and
+ * reconcile paths run unchanged.
+ *
+ * Idempotent by the payments_one_per_booking index: a second tap (or a lost
+ * race) finds or collides with the existing row and reports ok — one order
+ * per booking's lifetime, Phase 3's rule.
+ *
+ * Unlike startPaidCheckout, a failure here never cancels the booking: the
+ * approval hold is the host's yes, and it must survive a Razorpay outage so
+ * the attendee can retry inside the 24-hour window.
+ */
+export async function beginApprovedCheckout(
+  caller: Caller,
+  bookingId: string,
+): Promise<ApprovedCheckoutStart> {
+  let provider: PaymentProvider
+  try {
+    provider = razorpayProvider()
+  } catch (error) {
+    console.error('[payments] beginApprovedCheckout refused: Razorpay env vars missing', error)
+    return { ok: false, error: NOT_CONFIGURED }
+  }
+
+  const db = createAdminClient()
+
+  const { data: booking, error } = await db
+    .from('bookings')
+    .select('id, attendee_id, status, total_paise, reference, approved_at, payment_mode, hold_expires_at')
+    .eq('id', bookingId)
+    .maybeSingle()
+  if (error) {
+    console.error('[payments] could not read the booking for an approved checkout', error)
+    return { ok: false, error: NOT_YOURS_TO_PAY }
+  }
+  // Same answer for missing and not-theirs — no oracle for strangers.
+  if (!booking || booking.attendee_id !== caller.id) return { ok: false, error: NOT_YOURS_TO_PAY }
+
+  if (
+    booking.status !== 'awaiting_payment' ||
+    !booking.approved_at ||
+    booking.payment_mode !== 'online' ||
+    !booking.hold_expires_at ||
+    new Date(booking.hold_expires_at).getTime() <= Date.now()
+  ) {
+    return { ok: false, error: NOT_PAYABLE }
+  }
+
+  const { data: existing, error: existingError } = await db
+    .from('payments')
+    .select('id')
+    .eq('booking_id', booking.id)
+    .maybeSingle()
+  if (existingError) {
+    console.error('[payments] could not read payments for an approved checkout', existingError)
+    return { ok: false, error: COULD_NOT_START }
+  }
+  if (existing) return { ok: true }
+
+  try {
+    const order = await provider.createOrder({
+      amountPaise: booking.total_paise,
+      receipt: booking.reference,
+      notes: { booking_reference: booking.reference },
+    })
+    const { error: insertError } = await db.from('payments').insert({
+      booking_id: booking.id,
+      provider: 'razorpay',
+      provider_order_id: order.orderId,
+      amount_paise: booking.total_paise,
+      status: 'created',
+    })
+    if (insertError) {
+      // Two taps raced past the read: payments_one_per_booking let exactly
+      // one insert win, and the loser's order dies unpaid at Razorpay. The
+      // attendee has an order either way.
+      if (insertError.code === '23505') return { ok: true }
+      throw new Error(`could not record the order: ${insertError.message}`)
+    }
+  } catch (cause) {
+    console.error('[payments] approved checkout could not start; the Pay button retries', cause)
+    return { ok: false, error: COULD_NOT_START }
+  }
+
+  return { ok: true }
+}
+
 export type WebhookOutcome = 'processed' | 'duplicate'
 
 type AdminDb = ReturnType<typeof createAdminClient>
