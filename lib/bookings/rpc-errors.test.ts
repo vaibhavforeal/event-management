@@ -64,3 +64,16 @@ describe('mapBookingRpcError EH05x', () => {
     expect(mapBookingRpcError(pgError({ code: '23514', message: 'only 3 seats remain' }))).toBe('only 3 seats remain')
   })
 })
+
+describe('mapBookingRpcError EH06x', () => {
+  it('maps every Phase 5b code to a sentence', () => {
+    expect(mapBookingRpcError(pgError({ code: 'EH060' }))).toBe("This event doesn't keep a waitlist.")
+    expect(mapBookingRpcError(pgError({ code: 'EH061' }))).toBe('This event has already started.')
+    expect(mapBookingRpcError(pgError({ code: 'EH062' }))).toBe("This event doesn't take cash bookings.")
+    expect(mapBookingRpcError(pgError({ code: 'EH063' }))).toBe("That's more seats than this event allows per booking.")
+    expect(mapBookingRpcError(pgError({ code: 'EH064' }))).toBe('Seats are open — book instead of joining the waitlist.')
+    expect(mapBookingRpcError(pgError({ code: 'EH065' }))).toBe(
+      'You have already booked this event. Cancel that booking first to change it.',
+    )
+  })
+})
