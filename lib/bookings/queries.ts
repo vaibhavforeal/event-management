@@ -25,7 +25,7 @@ import type { Database } from '@/lib/supabase/types'
  */
 
 const BOOKING_COLUMNS =
-  'id, reference, quantity, status, created_at, total_paise, hold_expires_at, attendee_id, attendee_name, attendee_note, payment_mode, approved_at, cancellation_reason, events(id, slug, title, starts_at, city, venue_name, venue_address, hide_venue_until_approved, refund_cutoff_hours), payments(provider_order_id, status)'
+  'id, reference, quantity, status, created_at, total_paise, hold_expires_at, attendee_id, attendee_name, attendee_note, payment_mode, approved_at, cancellation_reason, events(id, slug, title, starts_at, city, venue_name, venue_address, hide_venue_until_approved, requires_approval, has_waitlist, refund_cutoff_hours), payments(provider_order_id, status)'
 
 /**
  * The RLS-scoped client, but only if somebody is actually signed in.
@@ -95,6 +95,10 @@ export interface MyBooking {
     venue_name: string | null
     venue_address: string | null
     hide_venue_until_approved: boolean
+    /** The pair that says which queue this booking came from — and therefore
+     *  which sentence an approved_at row deserves. See app/bookings/[reference]. */
+    requires_approval: boolean
+    has_waitlist: boolean
     refund_cutoff_hours: number
   } | null
   /**
@@ -290,4 +294,68 @@ export async function listApprovedUnpaid(eventId: string): Promise<ApprovedUnpai
 
   if (error) throw new Error(`Could not load the approved bookings: ${error.message}`)
   return (data ?? []) as unknown as ApprovedUnpaid[]
+}
+
+export interface WaitlistEntry {
+  id: string
+  reference: string
+  attendee_name: string | null
+  quantity: number
+  payment_mode: string
+  created_at: string
+  profiles: { phone: string } | null
+}
+
+/**
+ * The line for one event, in the order it will be served. Empty unless the
+ * caller hosts it, by the same !inner scoping as the guest list and the
+ * request queue.
+ *
+ * No position column and no per-row query: this order IS the position, because
+ * it is the same `created_at, id` ordering promote_from_waitlist promotes by.
+ * The page numbers the rows from the array index, which cannot disagree with
+ * the engine the way a separately-computed number could.
+ */
+export async function listEventWaitlist(eventId: string): Promise<WaitlistEntry[]> {
+  const session = await signedInClient()
+  if (!session) return []
+
+  const { data, error } = await session.supabase
+    .from('bookings')
+    .select(
+      'id, reference, attendee_name, quantity, payment_mode, created_at, profiles(phone), events!inner(hosts!inner(profile_id))',
+    )
+    .eq('event_id', eventId)
+    .eq('events.hosts.profile_id', session.userId)
+    .eq('status', 'waitlisted')
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+
+  if (error) throw new Error(`Could not load the waitlist: ${error.message}`)
+  return (data ?? []) as unknown as WaitlistEntry[]
+}
+
+/**
+ * How many people are in line for one ticket type. Works signed out, which is
+ * the whole reason it is an RPC.
+ *
+ * The one read in this file that does NOT go through signedInClient(), and the
+ * exception is deliberate rather than an oversight: every other read here
+ * touches `bookings`, which is granted to `authenticated` alone
+ * (20260808000003:212), so a signed-out caller gets 42501 rather than an empty
+ * list. waitlist_length is SECURITY DEFINER and granted to `anon` precisely so
+ * the public event page — served to strangers, and gated on this number — can
+ * ask. What crosses the boundary is one integer with no identity in it, which
+ * that page then prints to the same stranger.
+ *
+ * Throws rather than returning 0 on error, for the reason the module comment
+ * gives at length: a swallowed failure here would put the page back into
+ * "book now" mode with a full line behind it, which is the exact silent-empty
+ * shape this file is written against.
+ */
+export async function waitlistLength(ticketTypeId: string): Promise<number> {
+  const supabase = await createClient()
+  const { data, error } = await supabase.rpc('waitlist_length', { p_ticket_type_id: ticketTypeId })
+  if (error) throw new Error(`Could not read the waitlist: ${error.message}`)
+  return data ?? 0
 }
