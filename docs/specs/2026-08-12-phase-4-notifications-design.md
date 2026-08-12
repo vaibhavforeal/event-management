@@ -137,6 +137,12 @@ and so a first run can be rehearsed by moving it forward.
 
 One migration, `20260812000001_message_outbox.sql`:
 
+- `message_log.variables jsonb not null default '{}'::jsonb` — without this
+  the outbox cannot function: a row records *which* template to send but not
+  what to fill it with, so a message queued on one tick could not be sent on
+  the next. Written at enqueue time deliberately — the message was decided
+  then and should say what it said then, and it makes "what exactly did we
+  tell this person" a query rather than a reconstruction.
 - `message_log.attempts integer not null default 0` — `status` and `error`
   exist, but nothing counts tries, so a permanently failing message would
   retry until the end of time. **After 5 attempts** the row goes `dead` and
@@ -207,13 +213,26 @@ idempotent and re-running is free.
 | `approval_requested` | `status = 'pending_approval'`, to the event's host | `booking:<id>:requested` |
 | `approval_granted` | `awaiting_payment` + `approved_at`, event `requires_approval` | `booking:<id>:approved` |
 | `waitlist_seat_offered` | `awaiting_payment` + `approved_at`, event `has_waitlist` | `booking:<id>:offered` |
-| `booking_cancelled` | `cancelled`, reason `cancelled by host` | `booking:<id>:cancelled` |
+| `booking_cancelled` | `cancelled` **or `refunded`**, reason `cancelled by host` | `booking:<id>:cancelled` |
 | `request_declined` | `cancelled`, reason `declined by host` | `booking:<id>:declined` |
 | `event_reminder` | `confirmed`, `starts_at` between now and 24 hours out | `booking:<id>:reminder` |
 
 `cancellation_reason` is load-bearing: it separates "the host removed you"
 (say so) from "you cancelled it yourself" (say nothing — they did it) from
-"payment hold expired" (already the whole story on their page). The two
+"payment hold expired" (already the whole story on their page).
+
+**`booking_cancelled` must match `refunded` as well as `cancelled`, and this
+is the derivation most likely to be got wrong.** `cancel_booking` sets
+`cancelled`, but `refundIfOwed` then flips a booking that had a captured
+payment to `refunded` at refund *creation* — keeping `cancellation_reason`
+untouched. So a host removing a **paid** guest ends at `refunded`, and a
+sweep matching only `cancelled` would silently skip precisely the people
+whose money moved. `request_declined` needs no such arm: a request never
+held a payment, so it can never reach `refunded`.
+
+That distinction also fills the template's `refundNote` variable — a
+`refunded` row says the money is on its way, a `cancelled` one says no
+payment was taken. The two
 `awaiting_payment` + `approved_at` rows are separated by the event flags,
 which `events_one_queue` keeps mutually exclusive — the same inference every
 copy branch in 5b makes, and it carries the same caveat, recorded in that
