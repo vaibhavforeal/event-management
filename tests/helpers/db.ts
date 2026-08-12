@@ -106,6 +106,16 @@ export async function createTestUser(db: SupabaseClient): Promise<string> {
   return data.user!.id
 }
 
+/** Creates a user who is a platform admin. Cascades away with the auth user. */
+export async function seedPlatformAdmin(db: SupabaseClient): Promise<string> {
+  const profileId = await createTestUser(db)
+  const { error } = await db
+    .from('platform_admins')
+    .insert({ profile_id: profileId, note: 'test' })
+  if (error) throw new Error(`seedPlatformAdmin failed: ${error.message}`)
+  return profileId
+}
+
 export interface SeededEvent {
   hostProfileId: string
   hostId: string
@@ -122,6 +132,10 @@ export interface SeedOptions {
   status?: 'draft' | 'published'
   maxPerOrder?: number
   hasWaitlist?: boolean
+  /** Defaults to seven days out. Pass a past instant to seed a settleable event. */
+  startsAt?: string
+  /** Nullable in the schema, and left null by default — exactly like a real event that never set one. */
+  endsAt?: string | null
 }
 
 /** Seeds one host, one published event and one ticket type, plus an attendee. */
@@ -137,6 +151,8 @@ export async function seedEvent(
     status = 'published',
     maxPerOrder = 10,
     hasWaitlist = false,
+    startsAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
+    endsAt = null,
   } = options
 
   const hostProfileId = await createTestUser(db)
@@ -157,7 +173,8 @@ export async function seedEvent(
       slug,
       title: 'Test Supper Club',
       city: 'Indore',
-      starts_at: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
+      starts_at: startsAt,
+      ends_at: endsAt,
       status,
       requires_approval: requiresApproval,
       allows_cash: allowsCash,
@@ -190,8 +207,116 @@ export async function seedEvent(
   }
 }
 
+let bookingCounter = 0
+
+export interface SeededBooking {
+  bookingId: string
+  paymentId: string | null
+}
+
+/**
+ * A booking in a terminal money state, written straight in.
+ *
+ * Not built from the booking RPCs on purpose: `begin_paid_booking` and
+ * `book_free_tickets` both refuse an event that has already started (EH032,
+ * EH013) — and every settleable event has by definition started. A settlement
+ * fixture therefore cannot come from the booking path at all.
+ *
+ * Pass a distinct `attendeeId` per booking on the same event: the one-active-
+ * booking-per-attendee index will otherwise reject the second.
+ */
+export async function seedCapturedBooking(
+  db: SupabaseClient,
+  seed: SeededEvent,
+  options: {
+    status?: string
+    paymentMode?: 'online' | 'cash'
+    subtotalPaise?: number
+    commissionPaise?: number
+    captured?: boolean
+    refunded?: boolean
+    attendeeId?: string
+  } = {},
+): Promise<SeededBooking> {
+  const {
+    status = 'confirmed',
+    paymentMode = 'online',
+    subtotalPaise = 50_000,
+    commissionPaise = 0,
+    captured = true,
+    refunded = false,
+    attendeeId = seed.attendeeId,
+  } = options
+
+  bookingCounter += 1
+  const reference = `TST${String(Date.now() % 100_000).padStart(5, '0')}${String(bookingCounter).padStart(3, '0')}`
+
+  const { data: booking, error } = await db
+    .from('bookings')
+    .insert({
+      reference,
+      event_id: seed.eventId,
+      ticket_type_id: seed.ticketTypeId,
+      attendee_id: attendeeId,
+      quantity: 1,
+      status,
+      payment_mode: paymentMode,
+      subtotal_paise: subtotalPaise,
+      convenience_fee_paise: 0,
+      total_paise: subtotalPaise,
+      commission_paise: commissionPaise,
+    })
+    .select()
+    .single()
+  if (error) throw new Error(`seedCapturedBooking: ${error.message}`)
+  if (!captured) return { bookingId: booking.id, paymentId: null }
+
+  const { data: payment, error: paymentError } = await db
+    .from('payments')
+    .insert({
+      booking_id: booking.id,
+      provider: 'razorpay',
+      provider_order_id: `order_${reference}`,
+      provider_payment_id: `pay_${reference}`,
+      amount_paise: subtotalPaise,
+      status: 'captured',
+    })
+    .select()
+    .single()
+  if (paymentError) throw new Error(`seedCapturedBooking payment: ${paymentError.message}`)
+
+  if (refunded) {
+    const { error: refundError } = await db.from('refunds').insert({
+      payment_id: payment.id,
+      provider_refund_id: `rfnd_${reference}`,
+      amount_paise: subtotalPaise,
+      status: 'processed',
+    })
+    if (refundError) throw new Error(`seedCapturedBooking refund: ${refundError.message}`)
+  }
+
+  return { bookingId: booking.id, paymentId: payment.id }
+}
+
 /** Removes a seeded event and everything hanging off it. */
 export async function cleanupEvent(db: SupabaseClient, seed: SeededEvent): Promise<void> {
+  // Order matters and used not to. payouts, payments and refunds are all
+  // `on delete restrict` against the rows below them, and none of these
+  // deletes checks its error — so before this, any seed carrying a payment
+  // failed to delete and leaked its event, host and auth users in silence.
+  await db.from('payouts').delete().eq('event_id', seed.eventId)
+
+  const { data: bookings } = await db.from('bookings').select('id').eq('event_id', seed.eventId)
+  const bookingIds = (bookings ?? []).map((row) => row.id)
+  if (bookingIds.length > 0) {
+    const { data: payments } = await db.from('payments').select('id').in('booking_id', bookingIds)
+    const paymentIds = (payments ?? []).map((row) => row.id)
+    if (paymentIds.length > 0) {
+      await db.from('refunds').delete().in('payment_id', paymentIds)
+      await db.from('payments').delete().in('id', paymentIds)
+    }
+  }
+
   await db.from('bookings').delete().eq('event_id', seed.eventId)
   await db.from('events').delete().eq('id', seed.eventId)
   await db.from('hosts').delete().eq('id', seed.hostId)

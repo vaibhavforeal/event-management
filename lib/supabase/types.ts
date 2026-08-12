@@ -480,6 +480,32 @@ export type Database = {
           },
         ]
       }
+      platform_admins: {
+        Row: {
+          created_at: string
+          note: string | null
+          profile_id: string
+        }
+        Insert: {
+          created_at?: string
+          note?: string | null
+          profile_id: string
+        }
+        Update: {
+          created_at?: string
+          note?: string | null
+          profile_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "platform_admins_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: true
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -987,6 +1013,7 @@ export type Database = {
       }
       current_host_id: { Args: never; Returns: string }
       generate_booking_reference: { Args: never; Returns: string }
+      is_platform_admin: { Args: never; Returns: boolean }
       join_waitlist: {
         Args: {
           p_attendee_id: string
