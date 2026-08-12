@@ -40,9 +40,14 @@ export default async function HostDashboard() {
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Your events</h1>
-        <Link href="/host/events/new" className="bg-ink text-paper rounded-lg px-4 py-2 text-sm">
-          New event
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link href="/host/payouts" className="text-muted text-sm hover:underline">
+            Payouts
+          </Link>
+          <Link href="/host/events/new" className="bg-ink text-paper rounded-lg px-4 py-2 text-sm">
+            New event
+          </Link>
+        </div>
       </div>
 
       {events.length === 0 ? (

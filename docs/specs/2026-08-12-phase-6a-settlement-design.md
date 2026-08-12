@@ -181,12 +181,12 @@ what it always meant.
 **The freeze is a trigger, not an application check.**
 `payouts_frozen_when_paid`, `before update on payouts for each row`,
 raises when `old.status = 'paid'` and any of `gross_paise`,
-`commission_paise`, `net_paise`, `forfeited_paise` or `utr_reference`
-differs. `notes` stays editable — annotating a settled row is how an
-out-of-band correction gets recorded.
+`commission_paise`, `net_paise`, `forfeited_paise`, `utr_reference`,
+`status` or `paid_at` differs. `notes` stays editable — annotating a
+settled row is how an out-of-band correction gets recorded.
 
-**Two `SECURITY DEFINER` functions, each gated on `is_platform_admin()`
-in its first statement:**
+**Three `SECURITY DEFINER` functions, each gated on `is_platform_admin()`
+or `owns_event()` in its first statement:**
 
 - `record_payout(p_event_id, p_gross_paise, p_commission_paise,
   p_forfeited_paise, p_status payout_status, p_utr_reference, p_notes)`
@@ -196,6 +196,10 @@ in its first statement:**
   set when the status is `paid`.
 - `admin_host_payout_target(p_host_id)` — returns `upi_id` and
   `bank_account_ref`.
+- `host_settlement_rows(p_event_id)` — host-or-admin gated via
+  `owns_event()` / `is_platform_admin()`, returns per-booking money
+  facts with no instrument detail; exists because hosts may not read
+  `payments`.
 
 That second function exists for a reason worth naming, because it is not
 obvious and would otherwise be discovered halfway through implementation:
@@ -224,12 +228,25 @@ Which bookings count:
 
 | Booking state | Into gross? | Why |
 |---|---|---|
-| `confirmed`, online, payment `captured` | **yes** | the ordinary case |
+| `confirmed`, online, payment `captured`, no refund row | **yes** | the ordinary case |
+| `confirmed` but carrying a refund row | **no** | see below — added after the Task 2 review |
 | `cancelled`, payment `captured`, no refund row | **yes**, and into `forfeited_paise` | past the cutoff, so the money stayed; it is the host's |
 | `confirmed`, cash | **no** | the host already holds the cash; commission on cash is 0 by construction |
 | `refunded` | **no** | the money went back |
 | `refunded`, `refunds.status = 'failed'` | **no** | fail toward not paying — an underpayment is correctable, an overpayment is a conversation |
 | `pending_approval`, `awaiting_payment`, `expired`, `waitlisted` | **no** | no money ever moved |
+
+**A refund disqualifies a booking whatever its status.** The first draft of
+this table let a refund disqualify only a `cancelled` booking, on the
+reasoning that a refunded booking is already excluded by status. The Task 2
+review found the gap: `applyRefundEvent` (`lib/payments/service.ts:565`)
+inserts the refund row *before* flipping `payments.status`, so if that second
+write throws, a processed refund sits against a still-`captured` payment on a
+still-`confirmed` booking until Razorpay redelivers. Settlement inside that
+window would pay out money that had already gone back to the attendee. The
+guard costs nothing at the pilot's ₹0 and moves the way the rest of this
+module argues: an underpayment is a correction, an overpayment is a
+conversation.
 
 Refunds are all-or-nothing — `refund-policy.ts` types the decision as
 `'full' | 'none'` and there is no partial path — so excluding a
@@ -331,8 +348,10 @@ catches.
   the opposite of what `hasStarted` returns for the same input. That
   contrast is worth an explicit test — it is the kind of thing a later
   reader "fixes" by delegating to `hasStarted`.
-- **Screens**: an anonymous and a non-admin request to `/admin` both get
-  404; a host's `/host/payouts` shows their own statements and no others.
+- **Screens**: an anonymous visitor to `/admin` is redirected to login
+  by `requireUser()`; a signed-in non-admin gets 404 — the non-disclosure
+  applies to authenticated non-admins, not to the signed-out. A host's
+  `/host/payouts` shows their own statements and no others.
 
 ## Known limitations, deliberate
 
@@ -364,3 +383,82 @@ catches.
   ceiling, and a pilot that exceeds 1000 ended events has better problems
   — but this is the same silent-tail failure 5b recorded for the waitlist
   query, and it is written down here for the same reason.
+
+## Carried into Phase 6b
+
+Shipped knowingly. Each came out of the task reviews or the whole-phase
+verification, was triaged as non-blocking, and is written down here so the
+next phase inherits a list rather than a surprise. The manual walk itself —
+all seven steps, in a real browser against the local stack — found nothing
+new: the non-admin 404, the settle, the reload, the host's mirror, the
+drift banner and the EH073 refusal all behaved exactly as designed.
+
+**`listHostStatements` reads the whole platform to find one host's
+events.** It lists every ended event on the platform, then calls
+`host_settlement_rows()` once per event and discards the EH076 refusals
+for the ones the caller does not own. Correct — the RPC is the authority
+and refuses what is not theirs — but the work is O(all ended events), one
+RPC round-trip each, on every load of `/host/payouts`. The fix is a
+`host_id` filter on the events query, with the RPC kept as the gate.
+
+**Nothing checks `forfeited_paise <= gross_paise`.** `settle()` cannot
+produce such a statement — forfeits are a subset of counted gross — but
+`record_payout` accepts the two numbers independently and the `payouts`
+table carries no CHECK tying them together, so a hand-crafted admin call
+could record a payout whose forfeit exceeds its gross. The net CHECK has a
+sibling missing.
+
+**The freeze on a paid row guards the money and not the pointers.** The
+trigger refuses changes to the amounts and the status of a `paid` payout,
+but `host_id` and `event_id` stay mutable, and DELETE is stopped only by
+the absence of any policy or grant — service-role sessions can still
+re-point or remove a settled row. The freeze should name the pointer
+columns and a no-DELETE policy should say so explicitly.
+
+**Test debt, named.** The payout-RPC test called "refuses an anonymous
+caller" runs as a signed-in non-admin, so EH071's true anonymous case is
+unexercised under that name; EH072 (no such event) has no test at all;
+the `is_platform_admin` branch of `host_settlement_rows`'s gate — an
+admin reading another host's rows — is untested; and `platform_admins`'s
+invisibility is pinned only in aggregate, not per layer (the absent
+SELECT policy and the revoked grants are two defences, tested as one).
+
+**TS and SQL disagree on a booking with two captured payments.**
+`joinPaymentFacts` takes the *first* captured payment per booking and asks
+whether *that one* has a refund; `host_settlement_rows()` asks whether
+*any* captured payment exists and whether *any* refund exists against the
+booking's payments. The payments flow is built never to produce a second
+captured payment on one booking, so the disagreement is unreachable today
+— but the two surfaces would count that pathological row differently, and
+the arithmetic module should not have two definitions of one fact.
+
+**The suite carries one pre-existing flake, in Phase 3's module.**
+`lib/payments/webhook-processor.test.ts` › "the same capture racing
+itself under two fresh event ids" failed the full run and 1 of 4 re-runs
+(`could not confirm booking …: cannot confirm a booking with status
+expired`). The window is real: two concurrent deliveries, one reads
+`awaiting_payment` before the other's expiry commits, and its
+`confirm_booking` then refuses. In production the failed delivery answers
+non-2xx and the provider's retry self-heals it. Not this phase's code —
+`lib/payments` is untouched on this branch — but 6b inherits the flake.
+
+**The money sub-queries in `bookingRowsFor` fetch across ALL ended events
+in single `.in()` calls, so PostgREST's `max_rows = 1000` truncates at
+roughly 20–50 events' worth of bookings** — far earlier than the
+1000-ended-events posture the limitations section states. Truncation
+understates statements (phantom drift); the 6b fix for
+`listHostStatements`' O(platform) shape should cover this sibling.
+
+**Neither list filters `events.status`, so ended drafts (and cancelled
+events) render ₹0 statement rows on both pages, and `record_payout` would
+freeze a ₹0 paid row for a draft;** and an admin visiting `/host/payouts`
+sees every host's events labelled "Owed to you". Clutter and wrong copy,
+not a leak; needs a decision about cancelled-event settlement in 6b.
+
+**`payoutRowsFor` still swallows its read error** — the sibling of the
+`bookingRowsFor` fix the final review landed. A failed `payouts` read
+renders a settled event as unsettled, so the operator sees a form instead
+of a frozen row. Harmless in the write path — `record_payout`'s upsert
+meets the freeze trigger and EH070 refuses — but the page lies until the
+next successful read. Same three-line fix, same direction: a failed read
+must not read as "no payout".

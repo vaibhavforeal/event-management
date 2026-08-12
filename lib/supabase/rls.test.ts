@@ -6,6 +6,7 @@ import {
   cleanupEvent,
   createTestUser,
   seedEvent,
+  seedPlatformAdmin,
   userClient,
   type SeededEvent,
 } from '@/tests/helpers/db'
@@ -342,5 +343,80 @@ describe('privileged functions', () => {
     expect(error?.message, `${fn} should be unreachable by anon`).toBe(
       `permission denied for function ${fn}`,
     )
+  })
+})
+
+describe('platform admins', () => {
+  let adminProfileId: string
+  let otherHost: SeededEvent
+
+  beforeAll(async () => {
+    adminProfileId = await seedPlatformAdmin(db)
+    otherHost = await seedEvent(db, { quantity: 5, status: 'published' })
+    await db.from('payouts').insert({
+      host_id: otherHost.hostId,
+      event_id: otherHost.eventId,
+      gross_paise: 50_000,
+      commission_paise: 0,
+      net_paise: 50_000,
+    })
+  })
+
+  afterAll(async () => {
+    await cleanupEvent(db, otherHost)
+    await db.auth.admin.deleteUser(adminProfileId).catch(() => {})
+  })
+
+  it('hides platform_admins from a signed-in non-admin', async () => {
+    // The same posture as fee_rules and provider_webhook_events: RLS on, no
+    // policy, no grant. Knowing WHO can settle is itself worth withholding.
+    const { data, error } = await userClient(outsiderId).from('platform_admins').select('profile_id')
+    expect(data ?? []).toHaveLength(0)
+    if (error) expect(error.code).toBeTruthy()
+  })
+
+  it('hides platform_admins from an admin too — nothing grants it', async () => {
+    const { data } = await userClient(adminProfileId).from('platform_admins').select('profile_id')
+    expect(data ?? []).toHaveLength(0)
+  })
+
+  it('does not let one host read another host\'s payouts', async () => {
+    const { data } = await userClient(published.hostProfileId)
+      .from('payouts')
+      .select('id')
+      .eq('event_id', otherHost.eventId)
+    expect(data ?? []).toHaveLength(0)
+  })
+
+  it('lets a platform admin read payouts across hosts', async () => {
+    const { data, error } = await userClient(adminProfileId)
+      .from('payouts')
+      .select('id, net_paise')
+      .eq('event_id', otherHost.eventId)
+    expect(error).toBeNull()
+    expect(data).toHaveLength(1)
+    expect(data![0].net_paise).toBe(50_000)
+  })
+
+  it('lets a platform admin read an event they do not host', async () => {
+    // draft, so events_select_published cannot be what allows it.
+    const { data, error } = await userClient(adminProfileId)
+      .from('events')
+      .select('id')
+      .eq('id', draft.eventId)
+    expect(error).toBeNull()
+    expect(data).toHaveLength(1)
+  })
+
+  it('does not let a non-admin read a draft event they do not host', async () => {
+    const { data } = await userClient(outsiderId).from('events').select('id').eq('id', draft.eventId)
+    expect(data ?? []).toHaveLength(0)
+  })
+
+  it('still withholds host payout secrets from an admin on the ordinary client', async () => {
+    // The column grant, not a policy, is what hides upi_id — and no policy can
+    // widen a grant. This is precisely why admin_host_payout_target exists.
+    const { error } = await userClient(adminProfileId).from('hosts').select('upi_id')
+    expect(error).not.toBeNull()
   })
 })

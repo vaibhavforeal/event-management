@@ -201,14 +201,15 @@ Tasks 5, 6 and 7 rely on exactly these names.
 
 | Booking | Into gross? | Why |
 |---|---|---|
-| `confirmed`, online, has a `captured` payment | **yes** | the ordinary case |
+| `confirmed`, online, has a `captured` payment, **no** refund row | **yes** | the ordinary case |
+| `confirmed` but carrying a refund row | **no** | amended after the Task 2 review: `applyRefundEvent` writes the refund row before flipping `payments.status`, so this state is reachable and would over-pay |
 | `cancelled`, has a `captured` payment, **no** refund row against it | **yes**, and into `forfeitedPaise` | cancelled past the cutoff, so the money stayed; it is the host's |
 | `confirmed`, cash | **no** — into `cashPaise` | the host already holds the cash |
 | `refunded` (any refund status) | **no** | the money went back; and where a refund row exists but `failed`, fail toward not paying |
 | `confirmed`, online, no `captured` payment | **no** | we do not pay out money we do not hold |
 | `pending_approval`, `awaiting_payment`, `expired`, `waitlisted` | **no** | no money ever moved |
 
-`refunds` is consulted for exactly one thing: disqualifying a `cancelled` booking that does have a refund. A `refunded` booking is excluded on status alone.
+`refunds` is consulted to disqualify any counted booking — `confirmed` or `cancelled` — that carries a refund row; a `refunded` booking is excluded on status alone.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -508,7 +509,7 @@ export function settle(bookings: SettlementBooking[]): Statement {
 
     if (!booking.has_captured_payment) continue
 
-    const isOrdinary = booking.status === 'confirmed'
+    const isOrdinary = booking.status === 'confirmed' && !booking.has_refund
     const isForfeit = booking.status === 'cancelled' && !booking.has_refund
     if (!isOrdinary && !isForfeit) continue
 
@@ -1726,11 +1727,16 @@ import { createClient } from '@/lib/supabase/server'
 /**
  * Reads for the settlement loop, through the ordinary session client.
  *
- * Nothing here reaches for the service role, and nothing here performs its own
- * authorisation: the admin policies added in 20260812000002 decide what comes
- * back, so a non-admin caller gets an empty list from the database rather than
- * from an `if` in this file. That is the whole reason the admin predicate lives
- * in RLS.
+ * Nothing here reaches for the service role. The money rows — bookings,
+ * payments, refunds, payouts — are guarded by the admin policies added in
+ * 20260812000002, so RLS decides what comes back for everything that matters.
+ * One thing RLS cannot decide: published events are world-readable by design
+ * (the feed depends on it), so "which events ended" is a question anyone may
+ * ask. listSettleableEvents therefore asks the database is_platform_admin()
+ * and returns nothing to a non-admin — a gate answered by the database, held
+ * in front of a list that would otherwise be meaningless zero-statement
+ * shells. Amended after the Task 5 review: the original design fact ("no if
+ * in this file") assumed RLS hid events, and it deliberately does not.
  */
 
 export interface PayoutRow {
@@ -2315,6 +2321,17 @@ export default async function AdminConsole() {
 
   const events = await listSettleableEvents()
 
+  // Resolved BEFORE the JSX, not inside the map. `events.map(async …)` yields an
+  // array of promises as children, which is not a thing a Server Component may
+  // render — and it would fire one RPC per row serially even if it were.
+  const targets = new Map(
+    await Promise.all(
+      events
+        .filter((event) => event.payout?.status !== 'paid')
+        .map(async (event) => [event.eventId, await hostPayoutTarget(event.hostId)] as const),
+    ),
+  )
+
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
       <h1 className="mb-6 text-2xl font-semibold">Settlements</h1>
@@ -2325,8 +2342,8 @@ export default async function AdminConsole() {
         </p>
       ) : (
         <ul className="space-y-4">
-          {events.map(async (event) => {
-            const target = event.payout?.status === 'paid' ? null : await hostPayoutTarget(event.hostId)
+          {events.map((event) => {
+            const target = targets.get(event.eventId) ?? null
             return (
               <li key={event.eventId} className="border-line rounded-xl border p-4">
                 <div className="flex items-start justify-between gap-4">
