@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   formatIst,
   formatIstDateOnly,
+  hasEnded,
   hasStarted,
   istLocalToUtc,
   utcToIstLocal,
@@ -94,5 +95,47 @@ describe('hasStarted', () => {
   it('reads the real clock when none is given', () => {
     expect(hasStarted(new Date(Date.now() - 60_000).toISOString())).toBe(true)
     expect(hasStarted(new Date(Date.now() + 60_000).toISOString())).toBe(false)
+  })
+})
+
+describe('hasEnded', () => {
+  const now = new Date('2026-08-15T14:00:00.000Z')
+
+  it('is false for an event whose end is still ahead', () => {
+    expect(hasEnded('2026-08-15T10:00:00.000Z', '2026-08-15T14:00:00.001Z', now)).toBe(false)
+  })
+
+  it('is true once the end is behind us', () => {
+    expect(hasEnded('2026-08-15T10:00:00.000Z', '2026-08-15T13:59:59.999Z', now)).toBe(true)
+  })
+
+  it('is false at the exact end instant — "ended" means strictly past', () => {
+    expect(hasEnded('2026-08-15T10:00:00.000Z', '2026-08-15T14:00:00.000Z', now)).toBe(false)
+  })
+
+  it('falls back to starts_at when the event carries no end time', () => {
+    // ends_at is nullable, and without this fallback every such host is
+    // permanently unpayable and nothing says so.
+    expect(hasEnded('2026-08-15T13:00:00.000Z', null, now)).toBe(true)
+    expect(hasEnded('2026-08-15T15:00:00.000Z', null, now)).toBe(false)
+  })
+
+  it('fails closed on an unreadable time — the OPPOSITE of hasStarted', () => {
+    // hasStarted('nonsense') is true: no Book button is the safe answer there.
+    // Here the safe answer is refusing to pay, so this must be false. A later
+    // reader will be tempted to implement this by calling hasStarted; these two
+    // assertions are what stops them.
+    expect(hasStarted('nonsense', now)).toBe(true)
+    expect(hasEnded('nonsense', null, now)).toBe(false)
+    expect(hasEnded('2026-08-15T10:00:00.000Z', 'nonsense', now)).toBe(false)
+  })
+
+  it('fails closed on an unreadable clock', () => {
+    expect(hasEnded('2026-08-15T10:00:00.000Z', null, new Date(NaN))).toBe(false)
+  })
+
+  it('defaults now to the current time', () => {
+    expect(hasEnded(new Date(Date.now() - 60_000).toISOString(), null)).toBe(true)
+    expect(hasEnded(new Date(Date.now() + 60_000).toISOString(), null)).toBe(false)
   })
 })

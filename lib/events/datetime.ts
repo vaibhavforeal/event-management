@@ -92,3 +92,24 @@ export function hasStarted(startsAt: string, now: Date = new Date()): boolean {
   const nowTime = now.getTime()
   return Number.isNaN(time) || Number.isNaN(nowTime) || time <= nowTime
 }
+
+/**
+ * Whether an event is over, and therefore settleable.
+ *
+ * `ends_at` is nullable — events_end_after_start allows it — so an event with
+ * no stated end falls back to its start. Without that fallback a host who
+ * never filled in an end time could never be paid, and nothing would say so.
+ *
+ * Fails closed in the opposite direction to hasStarted, which is why this is a
+ * separate function and not a call to it. There, an unreadable time returns
+ * true because the safe answer is withholding a Book button. Here the safe
+ * answer is refusing to move money, so an unreadable time — on either side of
+ * the comparison — returns false. Strictly past, too: at the exact end instant
+ * the event is not yet over.
+ */
+export function hasEnded(startsAt: string, endsAt: string | null, now: Date = new Date()): boolean {
+  const end = new Date(endsAt ?? startsAt).getTime()
+  const nowTime = now.getTime()
+  if (Number.isNaN(end) || Number.isNaN(nowTime)) return false
+  return end < nowTime
+}
