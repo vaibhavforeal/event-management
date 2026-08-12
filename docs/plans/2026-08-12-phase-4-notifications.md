@@ -4,7 +4,7 @@
 
 **Goal:** Every outcome this product produces — a confirmed seat, a request waiting on a host, an approval, a waitlist offer, a removal, a decline, tomorrow's event — arrives as a WhatsApp message, over the channel the login OTP already uses.
 
-**Architecture:** Phase 0 built the seam and stopped, so this phase fills it in rather than inventing it. A Meta Cloud API adapter implements the existing `NotificationProvider` interface, and `notificationProvider()` stops throwing for `'meta'`. `message_log` becomes a real outbox: one migration adds an attempt counter, pins the status vocabulary with a CHECK, and adds the drain's partial index. The decision layer is a **pure** module — given booking rows and a clock, which messages are owed and under which `dedupe_key` — so the phase's logic is testable with no database and no provider. A single fenced service module holds the service role, performs the reads that module judges, and owns every write to `message_log`. A cron-invoked API route runs sweep → drain → the reconciliation sweep that has been hand-run since Phase 3. **There are no send sites**: every non-OTP message is derivable from booking state, so `lib/bookings/`, `lib/payments/` and every SQL function are untouched.
+**Architecture:** Phase 0 built the seam and stopped, so this phase fills it in rather than inventing it. A Meta Cloud API adapter implements the existing `NotificationProvider` interface, and `notificationProvider()` stops throwing for `'meta'`. `message_log` becomes a real outbox: one migration adds an attempt counter, pins the status vocabulary with a CHECK, and adds the drain's partial index. The decision layer is a **pure** module — given booking rows and a clock, which messages are owed and under which `dedupe_key` — so the phase's logic is testable with no database and no provider. A single fenced service module holds the service role, performs the reads that module judges, and owns every write to `message_log`. A cron-invoked API route runs the reconciliation sweep that has been hand-run since Phase 3, then sweep → drain — reconciliation first, because it can flip a booking to confirmed when a webhook was dropped and a message decided after it would otherwise wait a whole tick. **There are no send sites**: every non-OTP message is derivable from booking state, so `lib/bookings/`, `lib/payments/` and every SQL function are untouched.
 
 **Tech Stack:** Next.js 16.3 App Router, React 19.2, TypeScript, Postgres 17 (local Supabase), supabase-js 2.x, Zod 4, Vitest 4, Vercel Cron. **No new runtime dependencies** — the Meta adapter uses `fetch`.
 
@@ -2173,16 +2173,21 @@ describe('GET /api/cron', () => {
       reconcile: { reconciled: 1, released: 0, refundsRetried: 0 },
     })
 
-    // Enqueue must precede drain, or a message decided this tick waits a full
-    // interval for no reason.
+    // Reconcile must precede the sweep: it can flip a booking to confirmed
+    // when a webhook was dropped, and running it after would make that
+    // confirmation wait a whole tick. Enqueue must then precede drain, or a
+    // message decided this tick waits an interval for no reason.
+    expect(runReconciliationSweep.mock.invocationCallOrder[0]).toBeLessThan(
+      enqueueOwedMessages.mock.invocationCallOrder[0],
+    )
     expect(enqueueOwedMessages.mock.invocationCallOrder[0]).toBeLessThan(
       drainOutbox.mock.invocationCallOrder[0],
     )
   })
 
   it('still runs the later arms when an earlier one throws', async () => {
-    // One broken arm must not silently stop the other two. A failed sweep
-    // should not also mean payments go unreconciled.
+    // One broken arm must not silently stop the other two — a database hiccup
+    // in one must not take the other two down with it.
     enqueueOwedMessages.mockRejectedValue(new Error('database is down'))
 
     const response = await GET(request({ authorization: `Bearer ${SECRET}` }))

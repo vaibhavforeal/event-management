@@ -264,10 +264,13 @@ failure returns 502 so the user is told rather than left waiting. The only
 difference after this phase is which provider answers.
 
 **Everything else.** Cron calls `/api/cron`, which authenticates a shared
-secret and runs three things in order: the state sweep (enqueue what is
-owed), the outbox drain (send what is queued or failed and not yet dead),
-and Phase 3's reconciliation sweep, which has been hand-run since it was
-written. Each message is a `message_log` row from the moment it is decided,
+secret and runs three things in order: Phase 3's reconciliation sweep, which
+has been hand-run since it was written; then the state sweep (enqueue what
+is owed); then the outbox drain (send what is queued or failed and not yet
+dead). Reconciliation runs **first** because it can flip a booking to
+`confirmed` when a webhook was dropped — running it last would make that
+confirmation wait a whole tick, and this route's own reasoning is that the
+interval decides *whether*, not merely *when*. Each message is a `message_log` row from the moment it is decided,
 so "what did we send this person" is a query rather than a guess.
 
 **Failure.** The provider returns a `SendResult`; a failure stamps `failed`

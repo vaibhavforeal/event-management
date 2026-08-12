@@ -114,7 +114,7 @@ Non-negotiables:
 
 These get disproportionate design attention because they are where ticketing systems fail.
 
-**1. Overselling.** Two people buy the last seat at the same instant. Solved with a Postgres function holding a row lock on `ticket_types` that checks and increments `sold_count` in one transaction, creating the booking in `awaiting_payment` with a **10-minute hold** (`hold_expires_at`). A `pg_cron` job releases expired holds. Available count is *always* derived from the DB, never from application state.
+**1. Overselling.** Two people buy the last seat at the same instant. Solved with a Postgres function holding a row lock on `ticket_types` that checks and increments `sold_count` in one transaction, creating the booking in `awaiting_payment` with a **10-minute hold** (`hold_expires_at`). Expired holds are released inline at every reserve and read seam by `release_expired_holds`, plus the scheduled sweep at `/api/cron` — not `pg_cron`; see Phase 4's design for why one scheduler is enough. Available count is *always* derived from the DB, never from application state.
 
 **2. Payment webhooks.** The attendee's browser can die right after they pay. The client redirect is a UX nicety; **the Razorpay webhook is the only source of truth.** The handler verifies the signature, is idempotent via a unique constraint on `razorpay_payment_id`, and stores the raw payload. A reconciliation cron polls Razorpay for orders stuck in `awaiting_payment` past their hold — because webhooks do get dropped.
 
