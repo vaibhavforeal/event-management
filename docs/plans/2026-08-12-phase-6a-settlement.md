@@ -1727,11 +1727,16 @@ import { createClient } from '@/lib/supabase/server'
 /**
  * Reads for the settlement loop, through the ordinary session client.
  *
- * Nothing here reaches for the service role, and nothing here performs its own
- * authorisation: the admin policies added in 20260812000002 decide what comes
- * back, so a non-admin caller gets an empty list from the database rather than
- * from an `if` in this file. That is the whole reason the admin predicate lives
- * in RLS.
+ * Nothing here reaches for the service role. The money rows — bookings,
+ * payments, refunds, payouts — are guarded by the admin policies added in
+ * 20260812000002, so RLS decides what comes back for everything that matters.
+ * One thing RLS cannot decide: published events are world-readable by design
+ * (the feed depends on it), so "which events ended" is a question anyone may
+ * ask. listSettleableEvents therefore asks the database is_platform_admin()
+ * and returns nothing to a non-admin — a gate answered by the database, held
+ * in front of a list that would otherwise be meaningless zero-statement
+ * shells. Amended after the Task 5 review: the original design fact ("no if
+ * in this file") assumed RLS hid events, and it deliberately does not.
  */
 
 export interface PayoutRow {
