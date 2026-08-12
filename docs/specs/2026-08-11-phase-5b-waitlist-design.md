@@ -277,3 +277,44 @@ action tests with mocked navigation.
 - Carried forward: one active booking per attendee per event, one order
   per booking's lifetime, fees and commission at ₹0, `refunded` means
   created-not-settled.
+
+## Carried into Phase 6
+
+Shipped knowingly. Each came out of the nine task reviews or the
+whole-branch review, was triaged as non-blocking, and is written down here
+so the next phase inherits a list rather than a surprise.
+
+**The row outlives the toggle.** Three surfaces branch on
+`events.has_waitlist` — a mutable host flag — to interpret an immutable fact
+about a booking. The migration's inference is stated one-directionally and
+is true: on a `has_waitlist` event, an `awaiting_payment` row carrying
+`approved_at` is always an offer. Every copy branch uses the converse, which
+is false the moment a host flips the toggle. The controls were made
+row-derived before merge (`claimableOffer`), so nobody can be stranded
+holding a live offer; the *wording* is still flag-derived, so an offer on a
+just-untoggled event says "You're approved!" and the host's strip labels it
+"Approved — payment pending". The honest fix is for the row to record its own
+provenance — a nullable `offered_at`, or splitting the offer stamp from
+`approved_at` — after which all three surfaces key off the booking.
+
+**Copy is drifting back into JSX.** `waitlist-copy.ts` exists because four
+surfaces have to say "a seat opened up" identically. Two status sentences
+(`'A seat opened up for you'`, `'Your seat offer expired'`) and the 24-hour
+note live in `app/bookings/[reference]/page.tsx` instead. A fourth surface
+should force them into the module.
+
+**`listEventWaitlist` scopes by `event_id`; the engine scopes by
+`ticket_type_id`.** The host page numbers the line from the array index,
+which is only the true position while an event has one ticket type. Two
+would interleave two independent queues and mis-number both. Documented at
+the query; untested, by design.
+
+**Smaller things.** No `.limit()` on the line, so a queue past PostgREST's
+`max_rows = 1000` loses its tail silently. `confirm_booking`'s race in
+`claimOfferedSeat` leaks raw Postgres prose ("cannot confirm a booking with
+status expired") to an already-authorised owner where `NOTHING_TO_CLAIM` is
+the right answer. `/bookings` costs two round trips per waitlisted row.
+`cancel_booking` now takes an exclusive `ticket_types` row lock on every
+call, including declining a request that holds no inventory. And
+`fill()` in the test helpers mints its user before the RPC, so a failing RPC
+orphans an auth user beyond `afterAll`'s reach.
