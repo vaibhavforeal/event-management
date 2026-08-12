@@ -22,15 +22,46 @@ import { runReconciliationSweep } from '@/lib/payments/service'
  */
 
 /**
- * The drain sends up to DRAIN_LIMIT messages one at a time and the reconcile
- * arm makes a Razorpay round trip per stuck refund, so a busy tick is measured
- * in tens of seconds, not the platform default. 60 is the ceiling Vercel's
- * Hobby plan allows, so this value needs no plan to be raised for it. A tick
- * killed mid-drain is not lost work — the claimed rows keep their spent
- * attempt and the next tick picks them up — but it is a message arriving an
- * interval late for no reason.
+ * ON THE SCHEDULE, which vercel.json cannot carry a comment about.
+ *
+ * `0 3 * * *` — once a day, 08:30 IST. Daily is not a preference: Vercel's
+ * Hobby plan permits a minimum interval of once per day, and a more frequent
+ * expression does not get throttled, it FAILS THE DEPLOYMENT with "Hobby
+ * accounts are limited to daily cron jobs. This cron expression would run more
+ * than once per day." An hourly `0 * * * *` here does not mean late messages;
+ * it means nothing ships.
+ *
+ * On Pro the minimum interval is once per minute and this one string can go
+ * back to `0 * * * *`, which gives the 24-hour reminder a tight 23–24 hour
+ * window. On Hobby the reminder instead lands somewhere between 0 and 24 hours
+ * ahead depending where the event falls, and a confirmation for a booking made
+ * just after a tick waits until the next morning. `dedupe_key` makes it
+ * exactly-once on either schedule, so what changes is when, never whether.
+ *
+ * Hobby scheduling precision is per-hour, ±59 minutes, so 08:30 IST is really
+ * somewhere in 08:30–09:29. That is why the hour is 03:00 UTC and not, say,
+ * 23:00 UTC: the slop has to stay inside waking hours in the one timezone this
+ * product serves, because the tick is also when the messages actually go out.
  */
-export const maxDuration = 60
+
+/**
+ * ON DURATION, and why there is deliberately no `maxDuration` export.
+ *
+ * Under Fluid compute — the default for projects created since April 2025 —
+ * Hobby's function duration is 300s both by default and at maximum, so there
+ * is nothing here to raise: an export could only equal that ceiling or lower
+ * it. (60s was the pre-Fluid Hobby maximum; writing it here would have CUT the
+ * budget to a fifth while claiming to protect it.) A number would also be one
+ * more thing to go stale, and a wrong one in this file is expensive, because a
+ * deployment that fails on config is the one failure this route cannot report.
+ *
+ * The budget matters because a tick is not cheap: the drain sends up to
+ * DRAIN_LIMIT messages one at a time and reconcile makes a Razorpay round trip
+ * per stuck refund. 300s covers roughly 750 sequential sends, so DRAIN_LIMIT
+ * (100) is not close to the wall. And a tick killed anyway degrades gracefully
+ * — a claimed row keeps its spent attempt and is selectable on the next tick,
+ * so the cost is lateness, not loss.
+ */
 
 /** Constant-time compare, so the secret cannot be recovered a byte at a time. */
 function credentialMatches(header: string | null, secret: string): boolean {
