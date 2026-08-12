@@ -150,7 +150,7 @@ describe('MetaNotificationProvider', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('https://graph.facebook.com/v21.0/111222333/messages')
+    expect(url).toBe('https://graph.facebook.com/v25.0/111222333/messages')
     expect(init.method).toBe('POST')
     expect(init.headers).toMatchObject({
       Authorization: 'Bearer test-token',
