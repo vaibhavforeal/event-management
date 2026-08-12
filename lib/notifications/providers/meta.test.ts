@@ -110,6 +110,66 @@ describe('MetaNotificationProvider', () => {
     })
   })
 
+  it('sends an authentication template with the code in the body AND the button', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, OK_BODY))
+
+    const otp: OutboundMessage = {
+      to: '+919876543210',
+      template: 'auth_otp',
+      variables: { otp: '482913' },
+      dedupeKey: 'otp:+919876543210:1',
+    }
+
+    const result = await new MetaNotificationProvider().send(otp)
+    expect(result).toMatchObject({ status: 'sent' })
+
+    const [, init] = fetchMock.mock.calls[0]
+    // The whole payload again, and for the same reason as above: this one is
+    // the live login path, and the button component is exactly the kind of
+    // thing a toMatchObject would let vanish. Meta requires the button on
+    // every authentication template, so a body-only payload is rejected —
+    // which would break OTP login on the first send after the provider flips
+    // to meta, not gradually.
+    expect(JSON.parse(init.body)).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '+919876543210',
+      type: 'template',
+      template: {
+        name: 'auth_otp',
+        language: { code: 'en' },
+        components: [
+          { type: 'body', parameters: [{ type: 'text', text: '482913' }] },
+          {
+            type: 'button',
+            sub_type: 'url',
+            // A string, not the number 0. Meta's example writes it quoted and
+            // this payload is JSON on the wire, where the two are not the same
+            // token.
+            index: '0',
+            parameters: [{ type: 'text', text: '482913' }],
+          },
+        ],
+      },
+    })
+  })
+
+  it('sends a utility template with a body component and nothing else', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, OK_BODY))
+
+    await new MetaNotificationProvider().send(message)
+
+    const [, init] = fetchMock.mock.calls[0]
+    const { components } = JSON.parse(init.body).template
+    // The button is scoped to authentication by category. Bolting one onto a
+    // utility send is rejected just as surely as omitting one from an
+    // authentication send — the payload has to match what the template was
+    // registered with, in both directions.
+    expect(components).toHaveLength(1)
+    expect(components[0].type).toBe('body')
+    expect(JSON.stringify(components)).not.toContain('button')
+  })
+
   it('reports a 5xx as retryable and does not throw', async () => {
     fetchMock.mockResolvedValue(jsonResponse(503, { error: { message: 'upstream' } }))
 

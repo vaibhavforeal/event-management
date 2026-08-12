@@ -15,11 +15,25 @@
  * authentication-international rate of ~₹2.30, twenty times more, and the
  * setting cannot be changed afterwards.
  *
- * Register auth_otp as a PLAIN authentication template with no copy-code and
- * no one-tap button. Meta rejects a send whose payload omits the button
- * component a template was created with, and lib/notifications/providers/meta.ts
- * sends body parameters only. A buttoned template would pass review and then
- * fail every send.
+ * Register auth_otp WITH a copy-code OTP button:
+ *
+ *   { "type": "buttons",
+ *     "buttons": [{ "type": "otp", "otp_type": "copy_code" }] }
+ *
+ * Not optional, and not a preference. Meta requires a buttons component on
+ * every authentication template. Its docs offer "no button at all" only for
+ * zero-tap, and zero-tap still requires one-tap and copy-code buttons in the
+ * creation payload — plus an Android package_name and signature_hash, which a
+ * web app does not have. That leaves copy code.
+ *
+ * The consequence lands on the send: an authentication template's payload
+ * carries the code TWICE, once in the body component and once in a button
+ * component. lib/notifications/providers/meta.ts adds the second one for
+ * templates whose category here is 'authentication', so the category field
+ * below is not documentation — it is what decides the wire format.
+ *
+ * The other seven are utility and must be created with NO buttons, since a
+ * button they were registered with is a button every send has to carry.
  */
 
 export type TemplateCategory = 'authentication' | 'utility' | 'marketing'

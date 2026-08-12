@@ -1,5 +1,5 @@
 import { serverEnv } from '@/lib/env'
-import { templateComponents } from '@/lib/notifications/templates'
+import { TEMPLATES, templateComponents } from '@/lib/notifications/templates'
 import type { NotificationProvider, OutboundMessage, SendResult } from '@/lib/notifications/types'
 
 /**
@@ -13,10 +13,17 @@ import type { NotificationProvider, OutboundMessage, SendResult } from '@/lib/no
  * The only module in the repo that knows Meta's wire format. Everything else
  * speaks OutboundMessage.
  *
- * Sends BODY PARAMETERS ONLY. If a template is registered with a copy-code or
- * one-tap button, Meta rejects a payload that omits the matching button
- * component — so auth_otp must be registered as a plain authentication
- * template with no button. See the note in lib/notifications/templates.ts.
+ * Utility templates send BODY PARAMETERS ONLY. Authentication templates send a
+ * body component AND a button component carrying the same code, because Meta
+ * requires a buttons component on every authentication template and rejects a
+ * payload that omits the matching component at send time. See the note in
+ * lib/notifications/templates.ts for why a buttonless authentication template
+ * is not available to us.
+ *
+ * The two shapes are chosen by the template's CATEGORY, never by its name. A
+ * name check would be a list to keep in sync with the registry; the category
+ * is already the thing that decides the wire format, and the registry is its
+ * only source.
  */
 
 /**
@@ -67,6 +74,33 @@ export class MetaNotificationProvider implements NotificationProvider {
 
     let body: string
     try {
+      // templateComponents returns the values in the template's declared order,
+      // which is what positional {{1}}, {{2}} … means. Building this from
+      // Object.values(variables) instead would be correct until someone
+      // reorders the object literal.
+      const values = templateComponents(message.template, message.variables)
+      const components: unknown[] = [
+        { type: 'body', parameters: values.map((text) => ({ type: 'text', text })) },
+      ]
+
+      if (TEMPLATES[message.template].category === 'authentication') {
+        // The code, a second time. Meta's copy-code button carries the value it
+        // copies, so the same string appears in both components — and a send
+        // that omits this one is rejected outright rather than degraded, which
+        // on the OTP path means nobody can log in.
+        //
+        // `index` is a string because Meta's example quotes it, and this is
+        // JSON on the wire where '0' and 0 are different tokens. Meta's own
+        // body is the fixed one-parameter "{{1}} is your verification code.",
+        // so values[0] is the code.
+        components.push({
+          type: 'button',
+          sub_type: 'url',
+          index: '0',
+          parameters: [{ type: 'text', text: values[0] }],
+        })
+      }
+
       body = JSON.stringify({
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
@@ -75,19 +109,7 @@ export class MetaNotificationProvider implements NotificationProvider {
         template: {
           name: message.template,
           language: { code: TEMPLATE_LANGUAGE },
-          components: [
-            {
-              type: 'body',
-              // templateComponents returns the values in the template's declared
-              // order, which is what positional {{1}}, {{2}} … means. Building
-              // this from Object.values(variables) instead would be correct
-              // until someone reorders the object literal.
-              parameters: templateComponents(message.template, message.variables).map((text) => ({
-                type: 'text',
-                text,
-              })),
-            },
-          ],
+          components,
         },
       })
     } catch (cause) {
