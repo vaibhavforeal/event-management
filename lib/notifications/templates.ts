@@ -14,6 +14,12 @@
  * billing. A WABA registered elsewhere bills authentication at the
  * authentication-international rate of ~₹2.30, twenty times more, and the
  * setting cannot be changed afterwards.
+ *
+ * Register auth_otp as a PLAIN authentication template with no copy-code and
+ * no one-tap button. Meta rejects a send whose payload omits the button
+ * component a template was created with, and lib/notifications/providers/meta.ts
+ * sends body parameters only. A buttoned template would pass review and then
+ * fail every send.
  */
 
 export type TemplateCategory = 'authentication' | 'utility' | 'marketing'
@@ -47,7 +53,10 @@ export const TEMPLATES = {
       'Hi {{1}}, you are confirmed for {{2}} on {{3}} at {{4}}.\n\n' +
       'Booking reference: {{5}}\n' +
       'Show the QR code in the app at the door.',
-    purpose: 'Sent immediately on payment capture. Carries the ticket.',
+    purpose:
+      'Sent once a booking reaches confirmed, by any route: payment capture, ' +
+      'a free booking, a cash booking, an approved cash-or-free request, or a ' +
+      'claimed waitlist seat. Carries the reference; the QR lives in the app.',
   },
   event_reminder: {
     name: 'event_reminder',
@@ -60,7 +69,13 @@ export const TEMPLATES = {
     name: 'booking_cancelled',
     category: 'utility',
     variables: ['attendeeName', 'eventTitle', 'refundNote'],
-    body: 'Hi {{1}}, your booking for {{2}} has been cancelled. {{3}}',
+    // The closing sentence is here to keep {{3}} off the end of the body, which
+    // Meta rejects at submission. It also earns its place: refundNote is a whole
+    // sentence from cancelConsequence and says nothing about what the attendee
+    // is expected to do next, which after a cancellation is the open question.
+    body:
+      'Hi {{1}}, your booking for {{2}} has been cancelled. {{3}} ' +
+      'Nothing else is needed from you.',
     purpose: 'Sent when a host cancels an event or a booking is refunded.',
   },
   approval_requested: {
@@ -77,7 +92,39 @@ export const TEMPLATES = {
     body:
       'Hi {{1}}, you are approved for {{2}}. ' +
       'Complete payment by {{3}} to confirm your spot.',
-    purpose: 'Sent when a host approves a request. Starts the payment hold clock.',
+    purpose:
+      'Sent when a host approves a request that still owes an online payment. ' +
+      'NOT sent for cash or free approvals: approve_booking confirms those ' +
+      'straight from pending_approval, so there is no payment to complete and ' +
+      'no hold to beat — they get booking_confirmed instead.',
+  },
+  waitlist_seat_offered: {
+    name: 'waitlist_seat_offered',
+    category: 'utility',
+    variables: ['attendeeName', 'eventTitle', 'deadline'],
+    // Deliberately silent about money so one template serves both paths: an
+    // online offer that is paid for, and a cash or free offer that is claimed
+    // with a tap. Naming an amount would mean two templates, two approval
+    // rounds, and a routing decision at send time.
+    body:
+      'Hi {{1}}, a seat opened up for {{2}}. It’s held for you until {{3}} — ' +
+      'open your booking to take it.',
+    purpose:
+      'Sent when the waitlist promotes someone. Without it a freed seat is ' +
+      'discovered only by opening the page, which is what Phase 5b named as ' +
+      'its worst case: 24 hours lost per inattentive person in the line.',
+  },
+  request_declined: {
+    name: 'request_declined',
+    category: 'utility',
+    variables: ['attendeeName', 'eventTitle'],
+    body:
+      'Hi {{1}}, {{2}} is full this time and the host couldn’t fit you in. ' +
+      'You’ll see other events from them soon.',
+    purpose:
+      'Sent when a host declines a request. Separate from booking_cancelled ' +
+      'because that one opens "your booking has been cancelled", which is ' +
+      'false for someone who asked and was turned down.',
   },
 } as const satisfies Record<string, TemplateDefinition>
 
