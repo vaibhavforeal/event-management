@@ -38,6 +38,17 @@ describe('settle', () => {
     expect(result.countedBookingIds).toEqual([])
   })
 
+  it('excludes a confirmed booking whose refund row exists but payment is still captured', () => {
+    // applyRefundEvent inserts the refund row BEFORE flipping payments.status to
+    // 'refunded'. If that second write throws, a processed refund sits against a
+    // still-captured payment on a still-confirmed booking until Razorpay redelivers.
+    // Paying it out would double-pay: once to the attendee (refund succeeded), once
+    // to the host (payout). has_refund disqualifies it.
+    const result = settle([booking({ id: 'b1', status: 'confirmed', has_refund: true })])
+    expect(result.grossPaise).toBe(0)
+    expect(result.countedBookingIds).toEqual([])
+  })
+
   it('excludes a refunded booking even when its refund failed', () => {
     // has_refund is true whatever the refund's own status, so a 'failed' refund
     // — where the money may still be ours — is still not paid out. An
@@ -96,6 +107,17 @@ describe('settle', () => {
     expect(result.netPaise).toBe(18_000)
   })
 
+  it('sums commission across multiple counted bookings', () => {
+    const result = settle([
+      booking({ id: 'b1', subtotal_paise: 50_000, commission_paise: 5_000 }),
+      booking({ id: 'b2', subtotal_paise: 30_000, commission_paise: 3_000 }),
+      booking({ id: 'b3', subtotal_paise: 20_000, commission_paise: 2_000, status: 'cancelled' }),
+    ])
+    expect(result.grossPaise).toBe(100_000)
+    expect(result.commissionPaise).toBe(10_000)
+    expect(result.netPaise).toBe(90_000)
+  })
+
   it('sums a mixed event', () => {
     const result = settle([
       booking({ id: 'b1', subtotal_paise: 50_000 }),
@@ -108,6 +130,27 @@ describe('settle', () => {
     expect(result.forfeitedPaise).toBe(30_000)
     expect(result.cashPaise).toBe(25_000)
     expect(result.netPaise).toBe(80_000)
+    expect(result.countedBookingIds.sort()).toEqual(['b1', 'b2'])
+  })
+
+  it('settles an all-cash event', () => {
+    const result = settle([
+      booking({ id: 'b1', subtotal_paise: 30_000, payment_mode: 'cash', has_captured_payment: false }),
+      booking({ id: 'b2', subtotal_paise: 20_000, payment_mode: 'cash', has_captured_payment: false }),
+    ])
+    expect(result.grossPaise).toBe(0)
+    expect(result.cashPaise).toBe(50_000)
+    expect(result.countedBookingIds).toEqual([])
+  })
+
+  it('settles an event that is entirely forfeits', () => {
+    const result = settle([
+      booking({ id: 'b1', subtotal_paise: 40_000, status: 'cancelled' }),
+      booking({ id: 'b2', subtotal_paise: 30_000, status: 'cancelled' }),
+    ])
+    expect(result.grossPaise).toBe(70_000)
+    expect(result.forfeitedPaise).toBe(70_000)
+    expect(result.netPaise).toBe(70_000)
     expect(result.countedBookingIds.sort()).toEqual(['b1', 'b2'])
   })
 
@@ -124,13 +167,39 @@ describe('settle', () => {
   })
 
   it('settles a free event to zero', () => {
-    const result = settle([booking({ id: 'b1', subtotal_paise: 0, has_captured_payment: false })])
+    const result = settle([booking({ id: 'b1', subtotal_paise: 0 })])
     expect(result.grossPaise).toBe(0)
+    expect(result.netPaise).toBe(0)
+    expect(result.countedBookingIds).toEqual(['b1'])
+  })
+
+  it('excludes a cash booking with a captured payment, because the host holds it', () => {
+    // Captured payment on a cash booking is inconsistent, but if it happens
+    // (say, a mode toggle after payment), the cash rule wins — the host took
+    // the money at the door, so paying it again would be double-paying.
+    const result = settle([booking({ id: 'b1', payment_mode: 'cash', has_captured_payment: true })])
+    expect(result.grossPaise).toBe(0)
+    expect(result.cashPaise).toBe(50_000)
+    expect(result.countedBookingIds).toEqual([])
+  })
+
+  it('excludes a cancelled cash booking', () => {
+    const result = settle([booking({ id: 'b1', payment_mode: 'cash', status: 'cancelled', has_captured_payment: false })])
+    expect(result.cashPaise).toBe(0)
+  })
+
+  it('excludes an expired cash booking', () => {
+    const result = settle([booking({ id: 'b1', payment_mode: 'cash', status: 'expired', has_captured_payment: false })])
+    expect(result.cashPaise).toBe(0)
   })
 
   it('refuses a non-integer or negative amount rather than settling it', () => {
     expect(() => settle([booking({ subtotal_paise: 1.5 })])).toThrow(MoneyError)
     expect(() => settle([booking({ subtotal_paise: -1 })])).toThrow(MoneyError)
+  })
+
+  it('refuses a commission that exceeds the subtotal', () => {
+    expect(() => settle([booking({ subtotal_paise: 10_000, commission_paise: 11_000 })])).toThrow(MoneyError)
   })
 })
 
@@ -170,5 +239,32 @@ describe('joinPaymentFacts', () => {
     const [row] = joinPaymentFacts([raw], [], [])
     expect(row.has_captured_payment).toBe(false)
     expect(row.has_refund).toBe(false)
+  })
+
+  it('joins payment facts to the correct booking when multiple bookings exist', () => {
+    const raw1 = { id: 'b1', status: 'confirmed', payment_mode: 'online' as const, subtotal_paise: 100, commission_paise: 0 }
+    const raw2 = { id: 'b2', status: 'confirmed', payment_mode: 'online' as const, subtotal_paise: 200, commission_paise: 0 }
+    const [row1, row2] = joinPaymentFacts(
+      [raw1, raw2],
+      [{ id: 'p1', booking_id: 'b1', status: 'captured' }],
+      [],
+    )
+    expect(row1.has_captured_payment).toBe(true)
+    expect(row2.has_captured_payment).toBe(false)
+  })
+
+  it('attributes a refund to the correct booking when multiple bookings exist', () => {
+    const raw1 = { id: 'b1', status: 'confirmed', payment_mode: 'online' as const, subtotal_paise: 100, commission_paise: 0 }
+    const raw2 = { id: 'b2', status: 'confirmed', payment_mode: 'online' as const, subtotal_paise: 200, commission_paise: 0 }
+    const [row1, row2] = joinPaymentFacts(
+      [raw1, raw2],
+      [
+        { id: 'p1', booking_id: 'b1', status: 'captured' },
+        { id: 'p2', booking_id: 'b2', status: 'captured' },
+      ],
+      [{ payment_id: 'p2' }],
+    )
+    expect(row1.has_refund).toBe(false)
+    expect(row2.has_refund).toBe(true)
   })
 })

@@ -84,6 +84,16 @@ export function joinPaymentFacts(
   })
 }
 
+/**
+ * Counting rules (what enters gross):
+ * - confirmed, online, has_captured_payment, !has_refund → YES (ordinary case)
+ * - cancelled, has_captured_payment, !has_refund → YES + forfeitedPaise (cancelled past cutoff, money kept)
+ * - confirmed, cash → NO (into cashPaise; host already holds it)
+ * - confirmed, online, has_refund → NO (refund row exists but status not yet flipped; window condition)
+ * - refunded (any refund status) → NO (money went back)
+ * - confirmed, online, !has_captured_payment → NO (we don't pay out money we don't hold)
+ * - pending_approval, awaiting_payment, expired, waitlisted → NO (no money ever moved)
+ */
 export function settle(bookings: SettlementBooking[]): Statement {
   let grossPaise = 0
   let commissionPaise = 0
@@ -105,7 +115,7 @@ export function settle(bookings: SettlementBooking[]): Statement {
 
     if (!booking.has_captured_payment) continue
 
-    const isOrdinary = booking.status === 'confirmed'
+    const isOrdinary = booking.status === 'confirmed' && !booking.has_refund
     const isForfeit = booking.status === 'cancelled' && !booking.has_refund
     if (!isOrdinary && !isForfeit) continue
 
