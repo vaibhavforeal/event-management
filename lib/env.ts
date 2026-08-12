@@ -26,6 +26,12 @@ const serverSchema = z.object({
   WHATSAPP_PROVIDER: z.enum(['log', 'meta', 'aisensy']).default('log'),
   WHATSAPP_API_KEY: z.string().optional(),
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  // Bookings created before this instant are invisible to the notification
+  // sweep. Without it the first run messages every attendee about every event
+  // this product has ever run. ISO 8601; z.iso.datetime() rejects a date-only
+  // value, which would otherwise be read as midnight UTC and silently shift
+  // the cutoff by up to a day.
+  NOTIFICATIONS_LAUNCH_AT: z.iso.datetime().default('2026-08-12T00:00:00Z'),
 })
 
 function fail(scope: string, error: z.ZodError): never {
