@@ -307,6 +307,7 @@ export type Database = {
       }
       message_log: {
         Row: {
+          attempts: number
           booking_id: string | null
           cost_paise: number | null
           created_at: string
@@ -319,8 +320,10 @@ export type Database = {
           status: string
           template: string
           updated_at: string
+          variables: Json
         }
         Insert: {
+          attempts?: number
           booking_id?: string | null
           cost_paise?: number | null
           created_at?: string
@@ -333,8 +336,10 @@ export type Database = {
           status?: string
           template: string
           updated_at?: string
+          variables?: Json
         }
         Update: {
+          attempts?: number
           booking_id?: string | null
           cost_paise?: number | null
           created_at?: string
@@ -347,6 +352,7 @@ export type Database = {
           status?: string
           template?: string
           updated_at?: string
+          variables?: Json
         }
         Relationships: [
           {
