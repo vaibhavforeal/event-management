@@ -181,12 +181,12 @@ what it always meant.
 **The freeze is a trigger, not an application check.**
 `payouts_frozen_when_paid`, `before update on payouts for each row`,
 raises when `old.status = 'paid'` and any of `gross_paise`,
-`commission_paise`, `net_paise`, `forfeited_paise` or `utr_reference`
-differs. `notes` stays editable — annotating a settled row is how an
-out-of-band correction gets recorded.
+`commission_paise`, `net_paise`, `forfeited_paise`, `utr_reference`,
+`status` or `paid_at` differs. `notes` stays editable — annotating a
+settled row is how an out-of-band correction gets recorded.
 
-**Two `SECURITY DEFINER` functions, each gated on `is_platform_admin()`
-in its first statement:**
+**Three `SECURITY DEFINER` functions, each gated on `is_platform_admin()`
+or `owns_event()` in its first statement:**
 
 - `record_payout(p_event_id, p_gross_paise, p_commission_paise,
   p_forfeited_paise, p_status payout_status, p_utr_reference, p_notes)`
@@ -196,6 +196,10 @@ in its first statement:**
   set when the status is `paid`.
 - `admin_host_payout_target(p_host_id)` — returns `upi_id` and
   `bank_account_ref`.
+- `host_settlement_rows(p_event_id)` — host-or-admin gated via
+  `owns_event()` / `is_platform_admin()`, returns per-booking money
+  facts with no instrument detail; exists because hosts may not read
+  `payments`.
 
 That second function exists for a reason worth naming, because it is not
 obvious and would otherwise be discovered halfway through implementation:
@@ -344,8 +348,10 @@ catches.
   the opposite of what `hasStarted` returns for the same input. That
   contrast is worth an explicit test — it is the kind of thing a later
   reader "fixes" by delegating to `hasStarted`.
-- **Screens**: an anonymous and a non-admin request to `/admin` both get
-  404; a host's `/host/payouts` shows their own statements and no others.
+- **Screens**: an anonymous visitor to `/admin` is redirected to login
+  by `requireUser()`; a signed-in non-admin gets 404 — the non-disclosure
+  applies to authenticated non-admins, not to the signed-out. A host's
+  `/host/payouts` shows their own statements and no others.
 
 ## Known limitations, deliberate
 
@@ -435,3 +441,16 @@ expired`). The window is real: two concurrent deliveries, one reads
 `confirm_booking` then refuses. In production the failed delivery answers
 non-2xx and the provider's retry self-heals it. Not this phase's code —
 `lib/payments` is untouched on this branch — but 6b inherits the flake.
+
+**The money sub-queries in `bookingRowsFor` fetch across ALL ended events
+in single `.in()` calls, so PostgREST's `max_rows = 1000` truncates at
+roughly 20–50 events' worth of bookings** — far earlier than the
+1000-ended-events posture the limitations section states. Truncation
+understates statements (phantom drift); the 6b fix for
+`listHostStatements`' O(platform) shape should cover this sibling.
+
+**Neither list filters `events.status`, so ended drafts (and cancelled
+events) render ₹0 statement rows on both pages, and `record_payout` would
+freeze a ₹0 paid row for a draft;** and an admin visiting `/host/payouts`
+sees every host's events labelled "Owed to you". Clutter and wrong copy,
+not a leak; needs a decision about cancelled-event settlement in 6b.

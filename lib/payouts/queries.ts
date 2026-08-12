@@ -124,22 +124,28 @@ async function bookingRowsFor(
   supabase: Awaited<ReturnType<typeof createClient>>,
   eventIds: string[],
 ): Promise<Map<string, SettlementBooking[]>> {
-  const { data: bookings } = await supabase
+  // A failed read must not read as "no refunds" — that direction over-pays.
+  // Throw on any query error so the statement page fails to render rather than
+  // silently understating what is owed.
+  const { data: bookings, error: bookingsError } = await supabase
     .from('bookings')
     .select('id, event_id, status, payment_mode, subtotal_paise, commission_paise')
     .in('event_id', eventIds)
+  if (bookingsError) throw new Error(`Failed to read bookings: ${bookingsError.message}`)
   if (!bookings || bookings.length === 0) return new Map()
 
   const bookingIds = bookings.map((booking) => booking.id)
-  const { data: payments } = await supabase
+  const { data: payments, error: paymentsError } = await supabase
     .from('payments')
     .select('id, booking_id, status')
     .in('booking_id', bookingIds)
+  if (paymentsError) throw new Error(`Failed to read payments: ${paymentsError.message}`)
 
   const paymentIds = (payments ?? []).map((payment) => payment.id)
-  const { data: refunds } = paymentIds.length
+  const { data: refunds, error: refundsError } = paymentIds.length
     ? await supabase.from('refunds').select('payment_id').in('payment_id', paymentIds)
-    : { data: [] }
+    : { data: [], error: null }
+  if (refundsError) throw new Error(`Failed to read refunds: ${refundsError.message}`)
 
   const joined = joinPaymentFacts(bookings, payments ?? [], refunds ?? [])
   const byEvent = new Map<string, SettlementBooking[]>()

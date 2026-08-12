@@ -209,7 +209,7 @@ Tasks 5, 6 and 7 rely on exactly these names.
 | `confirmed`, online, no `captured` payment | **no** | we do not pay out money we do not hold |
 | `pending_approval`, `awaiting_payment`, `expired`, `waitlisted` | **no** | no money ever moved |
 
-`refunds` is consulted for exactly one thing: disqualifying a `cancelled` booking that does have a refund. A `refunded` booking is excluded on status alone.
+`refunds` is consulted to disqualify any counted booking — `confirmed` or `cancelled` — that carries a refund row; a `refunded` booking is excluded on status alone.
 
 - [ ] **Step 1: Write the failing tests**
 

@@ -84,7 +84,7 @@ export default async function AdminConsole() {
                   )}
                 </dl>
 
-                {event.driftPaise !== null && event.driftPaise !== 0 && (
+                {event.driftPaise !== null && event.driftPaise !== 0 && event.payout?.status === 'paid' && (
                   <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
                     Settled at {formatPaise(event.payout!.net_paise)}, now computes{' '}
                     {formatPaise(event.statement.netPaise)} — a difference of{' '}
