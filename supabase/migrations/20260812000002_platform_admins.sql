@@ -15,12 +15,15 @@ create table platform_admins (
 
 alter table platform_admins enable row level security;
 
+-- The Phase-0 blanket `grant all on all tables to service_role` (migration
+-- 20260808000003) is not retroactive. This is the first table created since it
+-- ran, so the grant must be explicit. BYPASSRLS bypasses policies, not privileges.
 grant select, insert, delete on platform_admins to service_role;
 
--- No policies and no grant, exactly as fee_rules and provider_webhook_events
--- have none: RLS is on and nothing is granted, so the table is invisible to
--- anon and authenticated alike — including to admins themselves. Who can
--- settle is not a fact any browser needs. Seeded by hand against the service
+-- No policies and no browser grant, exactly as fee_rules and provider_webhook_events
+-- have neither: RLS is on and nothing is granted to anon or authenticated, so the
+-- table is invisible to every browser client — including to admins themselves. Who
+-- can settle is not a fact any browser needs. Seeded by hand against the service
 -- role:  insert into platform_admins (profile_id) values ('<uuid>');
 
 -- SECURITY DEFINER for the same reason current_host_id() is: a policy on
