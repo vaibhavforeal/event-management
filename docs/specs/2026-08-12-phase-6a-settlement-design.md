@@ -454,3 +454,11 @@ events) render ₹0 statement rows on both pages, and `record_payout` would
 freeze a ₹0 paid row for a draft;** and an admin visiting `/host/payouts`
 sees every host's events labelled "Owed to you". Clutter and wrong copy,
 not a leak; needs a decision about cancelled-event settlement in 6b.
+
+**`payoutRowsFor` still swallows its read error** — the sibling of the
+`bookingRowsFor` fix the final review landed. A failed `payouts` read
+renders a settled event as unsettled, so the operator sees a form instead
+of a frozen row. Harmless in the write path — `record_payout`'s upsert
+meets the freeze trigger and EH070 refuses — but the page lies until the
+next successful read. Same three-line fix, same direction: a failed read
+must not read as "no payout".
