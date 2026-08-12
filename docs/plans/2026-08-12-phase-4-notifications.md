@@ -1489,6 +1489,31 @@ git commit -m "feat: what the product owes people, derived from state"
 
 **The fence grows by one file, and this is the only place it does.** `eslint.config.mjs:41` lists the three modules allowed to import `lib/supabase/admin`; `lib/notifications/service.ts` becomes the fourth. Update both the `ignores` array and the rule's `message` string, which names the allowed files to whoever trips it — a message that lists three files while four are permitted is worse than no message.
 
+- [ ] **Step 0: Add the cutoff environment variable**
+
+`enqueueOwedMessages` reads it, so it must exist before this task's tests can run. (`CRON_SECRET` is Task 6's, because that is where it is first read.)
+
+`lib/env.ts`, in `serverSchema`:
+
+```ts
+  // Bookings created before this instant are invisible to the notification
+  // sweep. Without it the first run messages every attendee about every event
+  // this product has ever run. ISO 8601; z.iso.datetime() rejects a date-only
+  // value, which would otherwise be read as midnight UTC and silently shift
+  // the cutoff by up to a day.
+  NOTIFICATIONS_LAUNCH_AT: z.iso.datetime().default('2026-08-12T00:00:00Z'),
+```
+
+`.env.example`, after the WhatsApp block:
+
+```bash
+# --- Notifications (Phase 4) ---
+# Bookings created before this instant are invisible to the notification
+# sweep. Set it once, to the moment Phase 4 goes live. Moving it backwards
+# will message people about events they booked long ago.
+NOTIFICATIONS_LAUNCH_AT="2026-08-12T00:00:00Z"
+```
+
 - [ ] **Step 1: Widen the fence**
 
 `eslint.config.mjs`:
@@ -2027,7 +2052,9 @@ git commit -m "feat: the outbox writes and drains, and the fence grows by one"
 
 **This route also finally schedules Phase 3's reconciliation sweep.** `runReconciliationSweep` has been hand-run via `npm run reconcile` since it was written — its own doc comment says "No pg_cron and no deploy-target cron yet". This phase creates the deploy-target cron, so leaving it hand-run would be leaving a job undone for want of one line.
 
-- [ ] **Step 1: Add the two environment variables**
+- [ ] **Step 1: Add the cron secret**
+
+`NOTIFICATIONS_LAUNCH_AT` already exists — Task 5 added it, because that is where it is first read. This task adds only the secret.
 
 `lib/env.ts`, in `serverSchema`:
 
@@ -2036,27 +2063,15 @@ git commit -m "feat: the outbox writes and drains, and the fence grows by one"
   // Optional so local development and tests run without it; the route refuses
   // every request when it is absent, which is the safe direction.
   CRON_SECRET: z.string().optional(),
-  // Bookings created before this instant are invisible to the notification
-  // sweep. Without it the first run messages every attendee about every event
-  // this product has ever run. ISO 8601; z.iso.datetime() rejects a date-only
-  // value, which would otherwise be read as midnight UTC and silently shift
-  // the cutoff by up to a day.
-  NOTIFICATIONS_LAUNCH_AT: z.iso.datetime().default('2026-08-12T00:00:00Z'),
 ```
 
-`.env.example`, after the WhatsApp block:
+`.env.example`, beside `NOTIFICATIONS_LAUNCH_AT`:
 
 ```bash
-# --- Scheduled work (Phase 4) ---
 # Vercel Cron presents this as `Authorization: Bearer <secret>`. Any request
 # without it is refused, so an unset value means the route is closed.
 # Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 CRON_SECRET=""
-
-# Bookings created before this instant are invisible to the notification
-# sweep. Set it once, to the moment Phase 4 goes live. Moving it backwards
-# will message people about events they booked long ago.
-NOTIFICATIONS_LAUNCH_AT="2026-08-12T00:00:00Z"
 ```
 
 - [ ] **Step 2: Write the failing route tests**
