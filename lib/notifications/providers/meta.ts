@@ -34,6 +34,11 @@ export class MetaNotificationProvider implements NotificationProvider {
    * Never throws. The drain records an outcome per message and one
    * unreachable host must not abort the rest of the batch — so every failure
    * path returns a SendResult instead.
+   *
+   * The serverEnv() call below is the only statement here outside a try, and
+   * it cannot throw at this point: notificationProvider() reads serverEnv() in
+   * order to decide on this class at all, and lib/env.ts memoises the parse —
+   * so by the time send() runs, that parse has already succeeded once.
    */
   async send(message: OutboundMessage): Promise<SendResult> {
     const env = serverEnv()
@@ -110,7 +115,7 @@ export class MetaNotificationProvider implements NotificationProvider {
     }
 
     const payload = (await response.json().catch(() => null)) as
-      | { messages?: Array<{ id?: string }>; error?: { message?: string } }
+      | { messages?: Array<{ id?: string }>; error?: { message?: string; code?: number } }
       | null
 
     if (!response.ok) {
@@ -119,18 +124,29 @@ export class MetaNotificationProvider implements NotificationProvider {
       // approved, a number not on WhatsApp, an expired token — and repeating
       // it changes nothing.
       const retryable = response.status === 429 || response.status >= 500
+      // Keep the numeric code. It is what an operator triages a dead-lettered
+      // row from; "Template name does not exist" on its own turns a lookup in
+      // Meta's error reference into a search.
+      const detail = payload?.error?.message ?? `Meta returned ${response.status}`
+      const code = payload?.error?.code
       return {
         status: 'failed',
         retryable,
-        error: payload?.error?.message ?? `Meta returned ${response.status}`,
+        error: code === undefined ? detail : `${detail} (Meta code ${code})`,
       }
     }
 
     const providerMessageId = payload?.messages?.[0]?.id
     if (!providerMessageId) {
-      // A 200 we cannot record. Treated as retryable on purpose: the likeliest
-      // cause is a shape change on Meta's side, and the dedupe key means a
-      // retry cannot double-send if the first one did land.
+      // A 200 whose message id we cannot record. Retryable on purpose, and the
+      // trade is explicit: a retry may deliver the message twice, because
+      // nothing downstream can tell whether the first attempt landed. The
+      // dedupe key does not help — it is unique per message_log ROW, so it
+      // stops a duplicate enqueue, not the drain re-attempting this same row.
+      //
+      // We take that risk because a send lost in silence is worse than a rare
+      // duplicate, and the only thing that gets us here is Meta changing its
+      // response shape.
       return {
         status: 'failed',
         retryable: true,

@@ -137,6 +137,9 @@ describe('MetaNotificationProvider', () => {
     expect(result.status).toBe('failed')
     expect(result.retryable).toBe(false)
     expect(result.error).toContain('Template name does not exist')
+    // The numeric code survives into the recorded error. It is what an operator
+    // triages a dead-lettered row from — the prose alone is not searchable.
+    expect(result.error).toContain('132001')
   })
 
   it('treats a network throw as retryable rather than letting it escape', async () => {
