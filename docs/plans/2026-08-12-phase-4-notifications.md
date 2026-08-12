@@ -68,7 +68,7 @@
   - `SendResult` gains `retryable?: boolean` — Task 5's drain uses it to send a permanently-broken message straight to `dead` instead of burning five attempts on it.
   - `notificationProvider()` returns a `MetaNotificationProvider` when `WHATSAPP_PROVIDER=meta`.
 
-**A constraint that feeds back into what gets submitted to Meta.** This adapter sends **body parameters only**. Meta requires that if an authentication template is created with a copy-code or one-tap button, the send payload must also carry a `button` component — a body-only payload is then rejected. So `auth_otp` must be registered as a **plain authentication template with no button**. Write that into the template registry's comment in Task 2 so nobody submits the buttoned variant.
+**A constraint that feeds back into what gets submitted to Meta.** Utility templates send **body parameters only**. Authentication templates do not: Meta's options are "one-tap autofill, copy code, or no button at all **if using zero-tap**", and zero-tap needs an Android `package_name` and `signature_hash` a web app does not have — so `auth_otp` is registered **with a copy-code OTP button**, and its send payload carries the code **twice**, once in the body parameters and once in `{ "type": "button", "sub_type": "url", "index": "0", … }`. The adapter branches on the template's own `category`, never its name. Task 2 records this in the registry's header for whoever submits it.
 
 - [ ] **Step 1: Branch and confirm the baseline**
 
@@ -295,10 +295,12 @@ import type { NotificationProvider, OutboundMessage, SendResult } from '@/lib/no
  * The only module in the repo that knows Meta's wire format. Everything else
  * speaks OutboundMessage.
  *
- * Sends BODY PARAMETERS ONLY. If a template is registered with a copy-code or
- * one-tap button, Meta rejects a payload that omits the matching button
- * component — so auth_otp must be registered as a plain authentication
- * template with no button. See the note in lib/notifications/templates.ts.
+ * Utility templates send BODY PARAMETERS ONLY. Authentication templates also
+ * carry a button component repeating the code, because Meta requires a
+ * BUTTONS component on every authentication template — "no button at all"
+ * applies only to zero-tap, which needs Android identifiers a web app does
+ * not have. The branch keys on the registry's own `category`, never on a
+ * template's name. See the header in lib/notifications/templates.ts.
  */
 
 /**
@@ -646,16 +648,27 @@ Expected: FAIL — eight templates expected, six found; the two new names do not
       'no hold to beat — they get booking_confirmed instead.',
 ```
 
-- [ ] **Step 5: Record the no-button constraint**
+- [ ] **Step 5: Record the button constraint**
 
 In the file's header comment, below the paragraph about India/INR registration:
 
 ```ts
- * Register auth_otp as a PLAIN authentication template with no copy-code and
- * no one-tap button. Meta rejects a send whose payload omits the button
- * component a template was created with, and lib/notifications/providers/meta.ts
- * sends body parameters only. A buttoned template would pass review and then
- * fail every send.
+ * Register auth_otp WITH a copy-code OTP button:
+ *
+ *   { "type": "buttons", "buttons": [{ "type": "otp", "otp_type": "copy_code" }] }
+ *
+ * Not optional, and not a preference. Meta's authentication templates offer a
+ * one-tap autofill button, a copy code button, or no button at all ONLY when
+ * using zero-tap -- and zero-tap still requires both buttons in the creation
+ * payload plus an Android package_name and signature_hash, which a web app
+ * does not have. So copy-code is the one reachable option.
+ *
+ * The send payload therefore carries the code TWICE: once in the body
+ * parameters and once in a button component. lib/notifications/providers/meta.ts
+ * does this, branching on this registry's own `category` field.
+ *
+ * The other seven are utility templates and must be created with NO buttons:
+ * a send that adds a button component to them is rejected just as surely.
 ```
 
 - [ ] **Step 6: Green, then commit**
@@ -676,7 +689,7 @@ node --import=tsx -e "const {TEMPLATES}=require('./lib/notifications/templates.t
   || grep -n "name:\|category:\|body:" lib/notifications/templates.ts
 ```
 
-Say in the task report that this list is ready for submission, and that `auth_otp` must be created **without a button**.
+Say in the task report that this list is ready for submission, and that `auth_otp` must be created **with a copy-code OTP button** while the other seven are created with **no buttons at all**.
 
 ---
 
@@ -2406,8 +2419,9 @@ Keep the branch, matching the repo's convention. Push only when the user confirm
 
 Report to the user, explicitly:
 
-1. The eight template bodies to submit, and that `auth_otp` must be created **without** a copy-code or one-tap button.
-2. That the WABA must be created with **India as Sold-To country and INR billing** — irreversible, and twenty times the cost if wrong.
-3. That going live afterwards is `WHATSAPP_PROVIDER=meta` plus `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID`, and that `NOTIFICATIONS_LAUNCH_AT` should be set to the moment of that switch rather than left at its default.
-4. Which cron schedule shipped in `vercel.json`, and that Hobby allows only a daily run.
+1. The eight template bodies to submit; that `auth_otp` must be created **with** a copy-code OTP button (`{"type":"otp","otp_type":"copy_code"}`) because zero-tap is the only buttonless variant and needs Android identifiers this product lacks; and that the other seven are utility templates created with **no** buttons.
+2. That the authentication send path has never run against Meta, since no WABA existed while this was built — **send one OTP to a test number before pointing real traffic at `WHATSAPP_PROVIDER=meta`.** A failure there would be total rather than partial, and it would be on the login path.
+3. That the WABA must be created with **India as Sold-To country and INR billing** — irreversible, and twenty times the cost if wrong.
+4. That going live afterwards is `WHATSAPP_PROVIDER=meta` plus `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID`, and that `NOTIFICATIONS_LAUNCH_AT` should be set to the moment of that switch rather than left at its default.
+5. Which cron schedule shipped in `vercel.json`, and that Hobby allows only a daily run.
 
