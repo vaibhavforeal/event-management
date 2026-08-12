@@ -2315,6 +2315,17 @@ export default async function AdminConsole() {
 
   const events = await listSettleableEvents()
 
+  // Resolved BEFORE the JSX, not inside the map. `events.map(async …)` yields an
+  // array of promises as children, which is not a thing a Server Component may
+  // render — and it would fire one RPC per row serially even if it were.
+  const targets = new Map(
+    await Promise.all(
+      events
+        .filter((event) => event.payout?.status !== 'paid')
+        .map(async (event) => [event.eventId, await hostPayoutTarget(event.hostId)] as const),
+    ),
+  )
+
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
       <h1 className="mb-6 text-2xl font-semibold">Settlements</h1>
@@ -2325,8 +2336,8 @@ export default async function AdminConsole() {
         </p>
       ) : (
         <ul className="space-y-4">
-          {events.map(async (event) => {
-            const target = event.payout?.status === 'paid' ? null : await hostPayoutTarget(event.hostId)
+          {events.map((event) => {
+            const target = targets.get(event.eventId) ?? null
             return (
               <li key={event.eventId} className="border-line rounded-xl border p-4">
                 <div className="flex items-start justify-between gap-4">
