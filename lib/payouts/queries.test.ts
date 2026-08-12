@@ -24,6 +24,7 @@ let adminId: string
 let outsiderId: string
 let ended: SeededEvent
 let ended2: SeededEvent
+let ongoing: SeededEvent
 let future: SeededEvent
 const extraAttendees: string[] = []
 
@@ -40,9 +41,14 @@ beforeAll(async () => {
     startsAt: new Date(Date.now() - 72 * HOUR).toISOString(),
     endsAt: new Date(Date.now() - 48 * HOUR).toISOString(),
   })
+  // Ongoing event (started but not ended) to test hasEnded filter
+  ongoing = await seedEvent(db, {
+    startsAt: new Date(Date.now() - 2 * HOUR).toISOString(),
+    endsAt: new Date(Date.now() + 22 * HOUR).toISOString(),
+  })
   future = await seedEvent(db, { startsAt: new Date(Date.now() + 24 * HOUR).toISOString() })
 
-  for (let i = 0; i < 4; i += 1) extraAttendees.push(await createTestUser(db))
+  for (let i = 0; i < 5; i += 1) extraAttendees.push(await createTestUser(db))
 
   // ₹500 confirmed, ₹300 forfeited, ₹400 refunded, ₹250 cash.
   await seedCapturedBooking(db, ended, { subtotalPaise: 50_000 })
@@ -59,6 +65,9 @@ beforeAll(async () => {
   // Second event with one booking to ensure grouping works
   await seedCapturedBooking(db, ended2, { subtotalPaise: 100_000, attendeeId: extraAttendees[3] })
 
+  // Ongoing event with one booking - should not be settleable
+  await seedCapturedBooking(db, ongoing, { subtotalPaise: 75_000, attendeeId: extraAttendees[4] })
+
   await db.from('hosts').update({ upi_id: 'host@upi' }).eq('id', ended.hostId)
 })
 
@@ -66,6 +75,7 @@ afterAll(async () => {
   signInAs(null)
   await cleanupEvent(db, ended)
   await cleanupEvent(db, ended2)
+  await cleanupEvent(db, ongoing)
   await cleanupEvent(db, future)
   await db.auth.admin.deleteUser(adminId).catch(() => {})
   await db.auth.admin.deleteUser(outsiderId).catch(() => {})
@@ -101,6 +111,7 @@ describe('listSettleableEvents', () => {
     signInAs(adminId)
     const rows = await listSettleableEvents()
     expect(rows.map((r) => r.eventId)).not.toContain(future.eventId)
+    expect(rows.map((r) => r.eventId)).not.toContain(ongoing.eventId)
   })
 
   it('returns nothing to a signed-in non-admin', async () => {
@@ -157,10 +168,12 @@ describe('recordPayout', () => {
       notes: null,
     })
     expect(result.ok).toBe(false)
-    expect(result.ok === false && result.error).toMatch(/not.*admin/i)
+    // Check for the exact mapped sentence, not just keywords that appear in raw Postgres message
+    expect(result.ok === false && result.error).toBe('You are not a platform admin.')
   })
 
   it('refuses to rewrite a settled payout', async () => {
+    // This test depends on the "reports drift" test having run first to create the payout
     signInAs(adminId)
     const result = await recordPayout({
       eventId: ended.eventId,
@@ -172,7 +185,8 @@ describe('recordPayout', () => {
       notes: null,
     })
     expect(result.ok).toBe(false)
-    expect(result.ok === false && result.error).toMatch(/settled/i)
+    // Check for mapped sentence's actionable part that doesn't appear in raw Postgres
+    expect(result.ok === false && result.error).toContain('record the correction in the notes')
   })
 })
 
@@ -198,6 +212,12 @@ describe('listHostStatements', () => {
     expect(row!.statement.netPaise).toBe(50_000)
     expect(row!.statement.cashPaise).toBe(25_000)
     expect(row!.payout!.utr_reference).toBe('UTR900001')
+  })
+
+  it('leaves out ongoing events for the host', async () => {
+    signInAs(ongoing.hostProfileId)
+    const rows = await listHostStatements()
+    expect(rows.map((r) => r.eventId)).not.toContain(ongoing.eventId)
   })
 
   it('shows a host nothing about another host\'s event', async () => {
