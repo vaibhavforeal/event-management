@@ -301,9 +301,17 @@ import type { NotificationProvider, OutboundMessage, SendResult } from '@/lib/no
  * template with no button. See the note in lib/notifications/templates.ts.
  */
 
-/** Pinned rather than floating: Meta ships breaking changes between versions,
- *  and a silently-moving URL is a silently-changing payload contract. */
-const GRAPH_VERSION = 'v21.0'
+/**
+ * Pinned rather than floating: Meta ships breaking changes between versions,
+ * and a silently-moving URL is a silently-changing payload contract.
+ *
+ * **Available until 29 July 2028.** The expiry is in this comment because a
+ * pin without one stops pinning on a date nobody wrote down: Meta routes
+ * calls to an expired version onto the next-oldest usable one *silently*, so
+ * the failure is not an error but a different contract than this file claims.
+ * Bump before that date, and move the date with it.
+ */
+const GRAPH_VERSION = 'v25.0'
 
 /** The language a template is registered under. Templates are per-language in
  *  Meta's registry, so this must match what was submitted or the send 404s. */
