@@ -128,8 +128,17 @@ describe('GET /api/cron', () => {
       reconcile: { reconciled: 1, released: 0, refundsRetried: 0 },
     })
 
-    // Enqueue must precede drain, or a message decided this tick waits a full
-    // interval for no reason.
+    // reconcile -> sweep -> drain, each arm reading what the one before it
+    // wrote. Reconcile must precede the sweep because it is what flips a
+    // booking whose webhook was dropped to `confirmed`; a sweep that ran first
+    // would read the stale row and defer that confirmation a whole interval,
+    // which for a booking close to its event start is a message lost rather
+    // than late. Enqueue must then precede drain for the same reason one step
+    // on. Asserted on the pair of gaps, not just the ends, so reordering any
+    // single arm fails here.
+    expect(runReconciliationSweep.mock.invocationCallOrder[0]).toBeLessThan(
+      enqueueOwedMessages.mock.invocationCallOrder[0],
+    )
     expect(enqueueOwedMessages.mock.invocationCallOrder[0]).toBeLessThan(
       drainOutbox.mock.invocationCallOrder[0],
     )
@@ -163,8 +172,10 @@ describe('GET /api/cron', () => {
   })
 
   it('still runs the later arms when an earlier one throws', async () => {
-    // One broken arm must not silently stop the other two. A failed sweep
-    // should not also mean payments go unreconciled.
+    // One broken arm must not silently stop the ones after it. The sweep is
+    // the middle arm, so a database failure there must still leave the drain
+    // free to send whatever earlier ticks queued — the outbox is durable, and
+    // messages already owed should not wait on today's read succeeding.
     enqueueOwedMessages.mockRejectedValue(new Error('database is down'))
 
     const response = await GET(request({ authorization: `Bearer ${SECRET}` }))

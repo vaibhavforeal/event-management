@@ -90,7 +90,12 @@ export const TEMPLATES = {
     body:
       'Hi {{1}}, your booking for {{2}} has been cancelled. {{3}} ' +
       'Nothing else is needed from you.',
-    purpose: 'Sent when a host cancels an event or a booking is refunded.',
+    purpose:
+      'Sent when a HOST removes a booking — status cancelled or refunded ' +
+      'with reason "cancelled by host" — and carries where the money ended ' +
+      'up. Not sent when the attendee cancels their own, or when a hold ' +
+      'expires: they did it, and it is already the whole story on their ' +
+      'page. There is no event-cancellation flow in this product.',
   },
   approval_requested: {
     name: 'approval_requested',

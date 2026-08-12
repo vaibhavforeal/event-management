@@ -79,6 +79,20 @@ Everything else in this phase is built and tested against the log provider
 and a fake, so the code is complete and green before approval lands. Going
 live is then a change of one environment variable.
 
+**The gap between deploy and approval is the dangerous part, and the order
+is: provider first, cron second.** Do not set `CRON_SECRET` in Vercel
+Production until `WHATSAPP_PROVIDER=meta` is live. With the provider still
+`log` the sweep decides real messages for real bookings, the drain marks
+them `sent`, and `dedupe_key` then guarantees they are never enqueued
+again — so a tick that runs in that window does not delay a confirmation,
+approval, waitlist offer or cancellation, it consumes it, and no later tick
+recovers it. This is the same failure `NOTIFICATIONS_LAUNCH_AT` exists to
+prevent, pointed the other way. An unset `CRON_SECRET` 401s every tick, so
+leaving it unset until the switch keeps the door shut by default. If a tick
+does run against `log`, nothing left the machine and the window is
+recoverable in one statement — see the handover in
+[the plan](../plans/2026-08-12-phase-4-notifications.md).
+
 ## Decisions taken in brainstorming
 
 **Meta Cloud API direct, not a BSP.** The per-message economics the whole
@@ -271,7 +285,7 @@ about a failed message affects the booking it describes — the same posture
 | `lib/notifications/templates.ts` | **Modified.** Two new definitions; two corrected purpose lines. |
 | `lib/notifications/sweep.ts` | **New.** Pure decision layer: given booking rows and a clock, which messages are owed and under which `dedupe_key`. No database, no provider, no I/O — the phase's logic lives here so it can be tested exhaustively without either. |
 | `lib/notifications/service.ts` | **New.** The only module holding the service role: the reads `sweep.ts` judges, `enqueue()`, and `drainOutbox()`. The only writer of `message_log`. Named `service.ts` because that is what the three files already inside the ESLint admin-import fence are called, and it joins them — taking the fence from three files to four, the only fence change this phase asks for. |
-| `app/api/cron/route.ts` | **New.** Shared-secret auth, then sweep → drain → reconcile. |
+| `app/api/cron/route.ts` | **New.** Shared-secret auth, then reconcile → sweep → drain, so the sweep reads what reconcile just fixed. |
 | `vercel.json` | **New.** The cron schedule. |
 | `.env.example` | **Modified.** `CRON_SECRET` and `NOTIFICATIONS_LAUNCH_AT`. `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID` already exist and are all the Cloud API needs to send. |
 

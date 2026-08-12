@@ -9,14 +9,25 @@ import { runReconciliationSweep } from '@/lib/payments/service'
  * endpoint in an app whose other entry points are all POSTs.
  *
  * Three arms, in order:
- *   1. the notification sweep — decide what is owed and queue it
- *   2. the outbox drain — send what is queued
- *   3. the reconciliation sweep — Phase 3's, hand-run via `npm run reconcile`
+ *   1. the reconciliation sweep — Phase 3's, hand-run via `npm run reconcile`
  *      since it was written, because there was no deploy-target cron until
  *      this file existed
+ *   2. the notification sweep — decide what is owed and queue it
+ *   3. the outbox drain — send what is queued
+ *
+ * The order is the data's, not the phases'. Reconcile runs first because it
+ * WRITES the state the sweep then reads: a dropped Razorpay webhook leaves a
+ * booking in `awaiting_payment` that reconcile flips to `confirmed`, and a
+ * sweep that ran before it would see the stale row, owe nothing, and defer
+ * that confirmation a full interval. Deferring is not free here — by the
+ * schedule note below, the sweep's own gates mean an interval can decide
+ * WHETHER a message is ever sent, not only when, so a booking reconciled
+ * within an hour of its event start would lose the message rather than
+ * receive it late. Sweep before drain for the same reason one step further
+ * down: queue it, then send it, on the same tick.
  *
  * Each arm is isolated: one throwing must not stop the others, or a database
- * hiccup in the sweep would also mean payments go unreconciled. Failures are
+ * hiccup in reconcile would also mean nothing gets messaged. Failures are
  * reported in the body rather than as a non-2xx, because the run as a whole
  * did happen and a red cron alert per transient error trains you to ignore it.
  */
@@ -121,12 +132,12 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ error: 'unauthorized' }, { status: 401 })
   }
 
-  // Enqueue before draining, and awaited rather than raced, so a message
-  // decided on this tick goes out on this tick rather than waiting a full
-  // interval for the next one.
+  // Awaited in sequence rather than raced: each arm reads what the one before
+  // it wrote, so a message this tick makes true is also decided and sent on
+  // this tick rather than waiting a full interval for the next one.
+  const reconcile = await arm('reconcile', () => runReconciliationSweep())
   const sweep = await arm('sweep', () => enqueueOwedMessages())
   const drain = await arm('drain', () => drainOutbox())
-  const reconcile = await arm('reconcile', () => runReconciliationSweep())
 
   return Response.json({ sweep, drain, reconcile })
 }

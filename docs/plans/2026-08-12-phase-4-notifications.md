@@ -43,7 +43,7 @@
 | `lib/notifications/templates.ts` | **Modified.** `waitlist_seat_offered` and `request_declined` added; two purpose lines corrected. |
 | `lib/notifications/sweep.ts` | **New.** Pure: `messagesOwed(rows, now, launchAt)` → the list of `OutboundMessage`s. No I/O, no clock of its own, no provider. |
 | `lib/notifications/service.ts` | **New.** The only holder of the service role and the only writer of `message_log`: `enqueueOwedMessages()`, `drainOutbox()`. Joins the ESLint fence. |
-| `app/api/cron/route.ts` | **New.** Shared-secret auth, then sweep → drain → reconcile. |
+| `app/api/cron/route.ts` | **New.** Shared-secret auth, then reconcile → sweep → drain. |
 | `supabase/migrations/20260812000001_message_outbox.sql` | **New.** `message_log.attempts`, the status CHECK, the drain's partial index. |
 | `lib/env.ts` | **Modified.** `CRON_SECRET`, `NOTIFICATIONS_LAUNCH_AT`. |
 | `.env.example` | **Modified.** The same two, documented. |
@@ -2219,14 +2219,21 @@ import { runReconciliationSweep } from '@/lib/payments/service'
  * endpoint in an app whose other entry points are all POSTs.
  *
  * Three arms, in order:
- *   1. the notification sweep — decide what is owed and queue it
- *   2. the outbox drain — send what is queued
- *   3. the reconciliation sweep — Phase 3's, hand-run via `npm run reconcile`
+ *   1. the reconciliation sweep — Phase 3's, hand-run via `npm run reconcile`
  *      since it was written, because there was no deploy-target cron until
  *      this file existed
+ *   2. the notification sweep — decide what is owed and queue it
+ *   3. the outbox drain — send what is queued
+ *
+ * Reconcile leads because it writes the state the sweep reads: it is what
+ * flips a booking whose webhook was dropped to `confirmed`, and a sweep that
+ * ran first would read the stale row and defer that confirmation a whole
+ * interval — which, by the schedule note, can be a message lost rather than
+ * late. (This ordering was settled in the branch review; Task 6 shipped
+ * sweep → drain → reconcile.)
  *
  * Each arm is isolated: one throwing must not stop the others, or a database
- * hiccup in the sweep would also mean payments go unreconciled. Failures are
+ * hiccup in reconcile would also mean nothing gets messaged. Failures are
  * reported in the body rather than as a non-2xx, because the run as a whole
  * did happen and a red cron alert per transient error trains you to ignore it.
  */
@@ -2262,11 +2269,12 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ error: 'unauthorized' }, { status: 401 })
   }
 
-  // Enqueue before draining, so a message decided on this tick goes out on
-  // this tick rather than waiting a full interval for the next one.
+  // Sequenced, not raced: each arm reads what the one before it wrote, so a
+  // message this tick makes true is also decided and sent on this tick rather
+  // than waiting a full interval for the next one.
+  const reconcile = await arm('reconcile', () => runReconciliationSweep())
   const sweep = await arm('sweep', () => enqueueOwedMessages())
   const drain = await arm('drain', () => drainOutbox())
-  const reconcile = await arm('reconcile', () => runReconciliationSweep())
 
   return Response.json({ sweep, drain, reconcile })
 }
@@ -2423,9 +2431,22 @@ Keep the branch, matching the repo's convention. Push only when the user confirm
 
 Report to the user, explicitly:
 
-1. The eight template bodies to submit; that `auth_otp` must be created **with** a copy-code OTP button (`{"type":"otp","otp_type":"copy_code"}`) because zero-tap is the only buttonless variant and needs Android identifiers this product lacks; and that the other seven are utility templates created with **no** buttons.
-2. That the authentication send path has never run against Meta, since no WABA existed while this was built — **send one OTP to a test number before pointing real traffic at `WHATSAPP_PROVIDER=meta`.** A failure there would be total rather than partial, and it would be on the login path.
-3. That the WABA must be created with **India as Sold-To country and INR billing** — irreversible, and twenty times the cost if wrong.
-4. That going live afterwards is `WHATSAPP_PROVIDER=meta` plus `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID`, and that `NOTIFICATIONS_LAUNCH_AT` should be set to the moment of that switch rather than left at its default.
-5. Which cron schedule shipped in `vercel.json`, and that Hobby allows only a daily run.
+1. **Do not set `CRON_SECRET` in Vercel Production until `WHATSAPP_PROVIDER=meta` is live.** While the provider is still `log` every send "succeeds" without leaving the machine, and `dedupe_key` then refuses to enqueue that decision ever again — so a tick that runs in the gap between deploy and Meta approval does not delay those messages, it consumes them. An unset `CRON_SECRET` 401s every tick, so leaving it unset holds the door shut by default and costs only lateness.
+
+   The window is recoverable, because nothing was actually sent — only recorded. Run this once, after the provider switch, if any tick ran against `log`:
+
+   ```sql
+   update message_log set status='queued', attempts=0, provider=null,
+          provider_message_id=null, error=null
+   where provider='log' and status='sent';
+   ```
+
+2. The eight template bodies to submit; that all eight must be registered under language code **`en`** — not `en_US`, not `en_GB`, whatever Meta's own worked examples use — because `TEMPLATE_LANGUAGE` in `lib/notifications/providers/meta.ts` pins `en` and a registry mismatch 404s every send, `auth_otp` included, which takes login down with it; that `auth_otp` must be created **with** a copy-code OTP button (`{"type":"otp","otp_type":"copy_code"}`) because zero-tap is the only buttonless variant and needs Android identifiers this product lacks; and that the other seven are utility templates created with **no** buttons.
+3. That the authentication send path has never run against Meta, since no WABA existed while this was built — **send one OTP to a test number before pointing real traffic at `WHATSAPP_PROVIDER=meta`.** A failure there would be total rather than partial, and it would be on the login path.
+4. That the WABA must be created with **India as Sold-To country and INR billing** — irreversible, and twenty times the cost if wrong.
+5. That going live afterwards is `WHATSAPP_PROVIDER=meta` plus `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID`, and that `NOTIFICATIONS_LAUNCH_AT` should be set to the moment of that switch rather than left at its default. Its default fails **open**, unlike `CRON_SECRET`: launch a month late with it unset and the first tick re-confirms every booking made in the interim. The stronger option, deliberately not taken in this phase because it is a wider change than a launch checklist, is to make `NOTIFICATIONS_LAUNCH_AT` required rather than defaulted when `WHATSAPP_PROVIDER=meta`, so a missing value fails the boot instead of the audience.
+6. **Then, and only then, set `CRON_SECRET` in Vercel Production** — per item 1, after the provider switch, not before. The variable must be named exactly `CRON_SECRET`, because Vercel injects that name into the tick as `Authorization: Bearer …` and no other name is presented. Until it is set the route 401s every tick, which is correct closed-door behaviour and is indistinguishable from a healthy deploy unless somebody opens the cron logs — so this step has no symptom to remind you of it.
+7. Which cron schedule shipped in `vercel.json`, and that Hobby allows only a daily run.
+8. As **expected behaviour, not a bug**: a booking made inside the 24-hour reminder window earns both `booking_confirmed` and `event_reminder` on the same tick. The two bodies are visibly different, so it reads as two messages rather than a duplicate, and suppressing the reminder would reintroduce the never-sent hole for exactly the bookings closest to their event.
+9. That a row which reaches `dead` has no revival path in code — five attempts is the end of it. Reviving one is deliberate and by hand: `update message_log set status='queued', attempts=0 where …`, scoped to whatever the operator has decided is worth trying again.
 

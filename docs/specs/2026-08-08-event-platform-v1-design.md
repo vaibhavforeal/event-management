@@ -55,7 +55,7 @@ Verified 2026-08-07 against Meta, Razorpay, RBI and GST Council sources.
 
 ## Architecture
 
-Next.js 15 App Router + TypeScript, Tailwind + shadcn/ui, deployed to Vercel. Supabase for Postgres + Auth + Storage, with **row-level security on every table**. Scheduled work via Supabase `pg_cron`.
+Next.js 15 App Router + TypeScript, Tailwind + shadcn/ui, deployed to Vercel. Supabase for Postgres + Auth + Storage, with **row-level security on every table**. ~~Scheduled work via Supabase `pg_cron`.~~ **Superseded in Phase 4: scheduled work is Vercel Cron**, one hourly `GET /api/cron` that runs the notification sweep, the outbox drain and the reconciliation sweep. Sending needs an outbound HTTP call, which `pg_cron` can only make by adding `pg_net` and calling back into the app; one scheduler, readable in TypeScript, was worth more than keeping the work in the database.
 
 Ten modules, each independently testable, with the risky ones behind interfaces:
 

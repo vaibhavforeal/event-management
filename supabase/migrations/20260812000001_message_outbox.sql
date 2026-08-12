@@ -60,10 +60,18 @@ alter table message_log add constraint message_log_status_known
 -- ---------------------------------------------------------------------------
 -- Partial on the two statuses that still owe work, so it stays small however
 -- many messages have been sent -- the same reasoning as bookings_expiring_idx
--- in the core schema. Ordered by updated_at so the drain takes the longest-
--- waiting first and one hot failure cannot starve the queue behind it: the
--- message_log_set_updated_at trigger moves a row to the back of the queue
--- every time an attempt writes to it.
+-- in the core schema. That is the whole benefit: the drain reads a small index
+-- instead of the accumulated history of everything ever sent.
+--
+-- The updated_at column does NOT make the read pre-sorted, and it would be
+-- comfortable to think it does. The predicate matches two status values, so
+-- Postgres walks both status groups and sorts what it finds; a leading
+-- equality on one status is what an index-ordered scan would need. The
+-- longest-waiting-first behaviour -- which keeps one hot failure from starving
+-- the queue behind it, since the message_log_set_updated_at trigger moves a
+-- row to the back every time an attempt writes to it -- is delivered by the
+-- drain's ORDER BY, and would still hold if this index were on status alone.
+-- Keeping updated_at here costs almost nothing and helps the sort.
 
 create index message_log_pending_idx
   on message_log (status, updated_at)

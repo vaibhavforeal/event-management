@@ -657,10 +657,12 @@ export async function reconcileAfterCheckout(
  * order (a dropped webhook may hide a capture), then a global release of pure
  * abandonments, then refunds owed but not yet sent.
  *
- * Scheduled since Phase 4 — app/api/cron/route.ts runs it as the third arm of
- * the tick Vercel Cron invokes, and `npm run reconcile` remains the by-hand
- * way to run it against a local stack. Still no pg_cron: one scheduler is
- * enough, and the one that already exists can be read in TypeScript.
+ * Scheduled since Phase 4 — app/api/cron/route.ts runs it FIRST on the tick
+ * Vercel Cron invokes, ahead of the notification sweep, because a booking this
+ * confirms is a booking that sweep then owes a message; running it after would
+ * hold that message back a whole interval. `npm run reconcile` remains the
+ * by-hand way to run it against a local stack. Still no pg_cron: one scheduler
+ * is enough, and the one that already exists can be read in TypeScript.
  */
 export async function runReconciliationSweep(): Promise<{
   reconciled: number
