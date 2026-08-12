@@ -377,3 +377,61 @@ catches.
   ceiling, and a pilot that exceeds 1000 ended events has better problems
   — but this is the same silent-tail failure 5b recorded for the waitlist
   query, and it is written down here for the same reason.
+
+## Carried into Phase 6b
+
+Shipped knowingly. Each came out of the task reviews or the whole-phase
+verification, was triaged as non-blocking, and is written down here so the
+next phase inherits a list rather than a surprise. The manual walk itself —
+all seven steps, in a real browser against the local stack — found nothing
+new: the non-admin 404, the settle, the reload, the host's mirror, the
+drift banner and the EH073 refusal all behaved exactly as designed.
+
+**`listHostStatements` reads the whole platform to find one host's
+events.** It lists every ended event on the platform, then calls
+`host_settlement_rows()` once per event and discards the EH076 refusals
+for the ones the caller does not own. Correct — the RPC is the authority
+and refuses what is not theirs — but the work is O(all ended events), one
+RPC round-trip each, on every load of `/host/payouts`. The fix is a
+`host_id` filter on the events query, with the RPC kept as the gate.
+
+**Nothing checks `forfeited_paise <= gross_paise`.** `settle()` cannot
+produce such a statement — forfeits are a subset of counted gross — but
+`record_payout` accepts the two numbers independently and the `payouts`
+table carries no CHECK tying them together, so a hand-crafted admin call
+could record a payout whose forfeit exceeds its gross. The net CHECK has a
+sibling missing.
+
+**The freeze on a paid row guards the money and not the pointers.** The
+trigger refuses changes to the amounts and the status of a `paid` payout,
+but `host_id` and `event_id` stay mutable, and DELETE is stopped only by
+the absence of any policy or grant — service-role sessions can still
+re-point or remove a settled row. The freeze should name the pointer
+columns and a no-DELETE policy should say so explicitly.
+
+**Test debt, named.** The payout-RPC test called "refuses an anonymous
+caller" runs as a signed-in non-admin, so EH071's true anonymous case is
+unexercised under that name; EH072 (no such event) has no test at all;
+the `is_platform_admin` branch of `host_settlement_rows`'s gate — an
+admin reading another host's rows — is untested; and `platform_admins`'s
+invisibility is pinned only in aggregate, not per layer (the absent
+SELECT policy and the revoked grants are two defences, tested as one).
+
+**TS and SQL disagree on a booking with two captured payments.**
+`joinPaymentFacts` takes the *first* captured payment per booking and asks
+whether *that one* has a refund; `host_settlement_rows()` asks whether
+*any* captured payment exists and whether *any* refund exists against the
+booking's payments. The payments flow is built never to produce a second
+captured payment on one booking, so the disagreement is unreachable today
+— but the two surfaces would count that pathological row differently, and
+the arithmetic module should not have two definitions of one fact.
+
+**The suite carries one pre-existing flake, in Phase 3's module.**
+`lib/payments/webhook-processor.test.ts` › "the same capture racing
+itself under two fresh event ids" failed the full run and 1 of 4 re-runs
+(`could not confirm booking …: cannot confirm a booking with status
+expired`). The window is real: two concurrent deliveries, one reads
+`awaiting_payment` before the other's expiry commits, and its
+`confirm_booking` then refuses. In production the failed delivery answers
+non-2xx and the provider's retry self-heals it. Not this phase's code —
+`lib/payments` is untouched on this branch — but 6b inherits the flake.
