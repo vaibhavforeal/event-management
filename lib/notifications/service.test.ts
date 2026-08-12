@@ -1,7 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { adminClient, cleanupEvent, createTestUser, seedEvent, type SeededEvent } from '@/tests/helpers/db'
 import { __setNotificationProvider } from '@/lib/notifications'
+import { LogNotificationProvider } from '@/lib/notifications/providers/log'
 import { renderTemplate } from '@/lib/notifications/templates'
+import { NotificationError } from '@/lib/notifications/types'
 import type { NotificationProvider, OutboundMessage, SendResult } from '@/lib/notifications/types'
 import { drainOutbox, enqueueOwedMessages, MAX_ATTEMPTS } from '@/lib/notifications/service'
 
@@ -12,9 +14,12 @@ class FakeProvider implements NotificationProvider {
   readonly name = 'fake'
   readonly sent: OutboundMessage[] = []
   result: SendResult = { status: 'sent', providerMessageId: 'fake-1' }
+  /** Thrown instead of returned. The interface permits it; log.ts does it. */
+  throws: unknown
 
   async send(message: OutboundMessage): Promise<SendResult> {
     this.sent.push(message)
+    if (this.throws) throw this.throws
     return this.result
   }
 }
@@ -241,6 +246,90 @@ describe('enqueueOwedMessages', () => {
     }
   })
 
+  // The five statuses in INTERESTING are the one filter in the reader where
+  // the SQL is the authority: a status missing from the array is a row the
+  // pure sweep never sees, so Task 4's tests — which are handed rows directly
+  // — cannot notice its absence. One test per status that owes anything, so
+  // deleting any of them from the array turns something red here.
+  it('owes a cancellation to an attendee the host removed', async () => {
+    const bookingId = await confirmedBooking(seed.attendeeId)
+    const { error } = await db.rpc('cancel_booking', {
+      p_booking_id: bookingId,
+      p_reason: 'cancelled by host',
+    })
+    if (error) throw new Error(`setup cancel failed: ${error.message}`)
+
+    await enqueueOwedMessages()
+
+    const row = await messageRow(`booking:${bookingId}:cancelled`)
+    expect(row!.template).toBe('booking_cancelled')
+    expect(row!.recipient_phone).toBe(`+${attendeePhone}`)
+  })
+
+  it('owes a cancellation to an attendee whose money moved, and says so', async () => {
+    const bookingId = await confirmedBooking(seed.attendeeId)
+    await db.rpc('cancel_booking', { p_booking_id: bookingId, p_reason: 'cancelled by host' })
+    // What refundIfOwed does at refund creation: cancelled -> refunded, with
+    // cancellation_reason left alone. Written directly rather than through a
+    // Razorpay order and a refund row, because the only thing under test here
+    // is whether the reader SELECTS a status it will otherwise never judge —
+    // 'refunded' is the case where the attendee most needs telling.
+    await db.from('bookings').update({ status: 'refunded' }).eq('id', bookingId)
+
+    await enqueueOwedMessages()
+
+    const row = await messageRow(`booking:${bookingId}:cancelled`)
+    expect(row!.template).toBe('booking_cancelled')
+    // The refunded arm promises the money back; the plain cancelled arm above
+    // says no payment was taken. Reading the wrong one is the whole risk.
+    expect((row!.variables as Record<string, string>).refundNote).toContain('refunded')
+  })
+
+  it('owes an approved requester the message naming their payment deadline', async () => {
+    await db.from('events').update({ requires_approval: true }).eq('id', seed.eventId)
+    try {
+      const { data: booking, error } = await db.rpc('request_booking', {
+        p_ticket_type_id: seed.ticketTypeId,
+        p_attendee_id: seed.attendeeId,
+        p_quantity: 1,
+        p_attendee_name: 'Asha',
+      })
+      if (error) throw new Error(`setup request failed: ${error.message}`)
+
+      const { error: approveError } = await db.rpc('approve_booking', { p_booking_id: booking!.id })
+      if (approveError) throw new Error(`setup approval failed: ${approveError.message}`)
+
+      await enqueueOwedMessages()
+
+      const row = await messageRow(`booking:${booking!.id}:approved`)
+      expect(row!.template).toBe('approval_granted')
+      expect(row!.recipient_phone).toBe(`+${attendeePhone}`)
+      // Empty would mean the deadline was read from somewhere other than the
+      // hold approve_booking stamped.
+      expect((row!.variables as Record<string, string>).paymentDeadline).toBeTruthy()
+    } finally {
+      await db.from('events').update({ requires_approval: false }).eq('id', seed.eventId)
+    }
+  })
+
+  it('takes its clock from the caller', async () => {
+    const bookingId = await confirmedBooking(seed.attendeeId)
+    const { data: event } = await db.from('events').select('starts_at').eq('id', seed.eventId).single()
+    // Twelve hours out, which real time is not — the seed starts a week from
+    // now, so no reminder is owed at the ambient clock. Threading `now` is the
+    // only way the reminder can exist, which pins the seam Tasks 6 and 7 need
+    // to test a tick at a chosen time, and pins that it reaches the SWEEP and
+    // not merely the SQL filter.
+    const now = new Date(new Date(event!.starts_at).getTime() - 12 * 3_600_000)
+
+    await enqueueOwedMessages({ now })
+
+    expect(await messageRow(`booking:${bookingId}:reminder`)).toMatchObject({
+      template: 'event_reminder',
+    })
+    expect(await messageCount(bookingId)).toBe(2)
+  })
+
   it('addresses the one host-facing message to the host', async () => {
     await db.from('events').update({ requires_approval: true }).eq('id', seed.eventId)
     try {
@@ -378,6 +467,126 @@ describe('drainOutbox', () => {
     const before = provider.sent.length
     await drainOutbox()
     expect(provider.sent).toHaveLength(before)
+  })
+
+  it('costs one row and not the batch when the provider throws', async () => {
+    const second = await newAttendee()
+    const broken = await confirmedBooking(seed.attendeeId)
+    const intact = await confirmedBooking(second)
+    await enqueueOwedMessages()
+
+    // The scenario exactly: a queued row whose stored variables no longer
+    // cover its template's placeholders, which is what happens the moment a
+    // template gains a variable while rows are already queued. The DEFAULT
+    // provider is the one that throws on it — LogNotificationProvider hands
+    // the row straight to renderTemplate — so this is reachable on a stock
+    // install, not only from a hostile fake.
+    await db.from('message_log').update({ variables: {} }).eq('dedupe_key', `booking:${broken}:confirmed`)
+    __setNotificationProvider(new LogNotificationProvider())
+
+    await expect(drainOutbox()).resolves.toBeDefined()
+
+    const brokenRow = await messageRow(`booking:${broken}:confirmed`)
+    // Dead rather than failed: a variable missing from a frozen row is still
+    // missing next tick, so five attempts only delay the same answer.
+    expect(brokenRow).toMatchObject({ status: 'dead', attempts: 1 })
+    expect(brokenRow!.error).toContain('attendeeName')
+
+    // The half that matters most. Before the guard, the throw above took this
+    // row with it — and every row behind it, on every tick, forever.
+    expect(await messageRow(`booking:${intact}:confirmed`)).toMatchObject({
+      status: 'sent',
+      attempts: 1,
+    })
+  })
+
+  it('believes a thrown NotificationError that says it is retryable', async () => {
+    const bookingId = await confirmedBooking(seed.attendeeId)
+    const key = `booking:${bookingId}:confirmed`
+    await enqueueOwedMessages()
+
+    // The one error type this phase owns already classifies itself, so a throw
+    // is not read as automatically permanent. Without this distinction a
+    // transient adapter crash would be killed on its first tick.
+    provider.throws = new NotificationError('rate limited', true)
+    await drainOutbox()
+    expect(await messageRow(key)).toMatchObject({ status: 'failed', attempts: 1, error: 'rate limited' })
+
+    provider.throws = undefined
+    await drainOutbox()
+    expect(await messageRow(key)).toMatchObject({ status: 'sent', attempts: 2 })
+  })
+
+  it('sends no more than the limit it was given', async () => {
+    const second = await newAttendee()
+    await confirmedBooking(seed.attendeeId)
+    await confirmedBooking(second)
+    await enqueueOwedMessages()
+
+    // Two rows are pending; a hardcoded DRAIN_LIMIT would take both.
+    expect(await drainOutbox({ limit: 1 })).toMatchObject({ attempted: 1, sent: 1 })
+    expect(provider.sent).toHaveLength(1)
+
+    expect(await drainOutbox({ limit: 1 })).toMatchObject({ attempted: 1, sent: 1 })
+    expect(provider.sent).toHaveLength(2)
+  })
+
+  it('counts outcomes it recorded, not sends it attempted', async () => {
+    await confirmedBooking(seed.attendeeId)
+    await enqueueOwedMessages()
+
+    const result = await drainOutbox()
+    // The invariant the counters carry: attempted running AHEAD of the other
+    // three is the only trace a caller gets that a row's outcome could not be
+    // written after its message had already gone out. Equal here says nothing
+    // was lost — it is the shape of the claim that is being pinned.
+    expect(result.attempted).toBe(result.sent + result.failed + result.dead)
+    expect(result).toMatchObject({ attempted: 1, sent: 1, failed: 0, dead: 0 })
+  })
+
+  it('does not claim to have sent a message whose outcome it could not record', async () => {
+    const bookingId = await confirmedBooking(seed.attendeeId)
+    const key = `booking:${bookingId}:confirmed`
+    await enqueueOwedMessages()
+
+    // Fault injection through the only seam there is from outside the module.
+    // A NUL byte cannot be converted to text, so Postgres rejects the outcome
+    // UPDATE with 22P05 while the send itself has already succeeded — the same
+    // shape as a statement timeout or a dropped connection arriving at exactly
+    // the wrong moment.
+    provider.result = { status: 'sent', providerMessageId: 'fake\u0000-1' }
+
+    const result = await drainOutbox()
+
+    expect(provider.sent.filter((m) => m.dedupeKey === key)).toHaveLength(1)
+    // Attempted, and counted as nothing else. Reporting sent: 1 for a row that
+    // is still queued is the lie that hides the duplicate on the next line.
+    expect(result).toMatchObject({ attempted: 1, sent: 0, failed: 0, dead: 0 })
+    expect(await messageRow(key)).toMatchObject({ status: 'queued', attempts: 1 })
+
+    // And the consequence, asserted rather than left implicit: the row is
+    // still pending with its attempt spent, so the next drain sends it AGAIN.
+    // The guard cannot prevent that — a send and its record are not one
+    // transaction, and nothing here can make them one — it can only stop the
+    // counters and the log from pretending it did not happen.
+    provider.result = { status: 'sent', providerMessageId: 'fake-2' }
+    await drainOutbox()
+    expect(provider.sent.filter((m) => m.dedupeKey === key)).toHaveLength(2)
+  })
+
+  it('does not count a failure it could not record either', async () => {
+    const bookingId = await confirmedBooking(seed.attendeeId)
+    const key = `booking:${bookingId}:confirmed`
+    await enqueueOwedMessages()
+
+    provider.result = { status: 'failed', retryable: false, error: 'bad template\u0000' }
+    const result = await drainOutbox()
+
+    expect(result).toMatchObject({ attempted: 1, sent: 0, failed: 0, dead: 0 })
+    // Worse than a lost 'sent' in one way: a lost 'dead' leaves the row
+    // pending, so it retries all the way to MAX_ATTEMPTS with no record
+    // anywhere of what kept going wrong.
+    expect(await messageRow(key)).toMatchObject({ status: 'queued', attempts: 1 })
   })
 
   it('caps attempts at the number the migration documents', () => {

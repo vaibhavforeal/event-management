@@ -6,7 +6,8 @@ import { serverEnv } from '@/lib/env'
 // TemplateName lives in templates.ts — types.ts imports it but does not
 // re-export it, so pulling it from there is a compile error.
 import type { TemplateName } from '@/lib/notifications/templates'
-import type { OutboundMessage } from '@/lib/notifications/types'
+import { NotificationError } from '@/lib/notifications/types'
+import type { OutboundMessage, SendResult } from '@/lib/notifications/types'
 import type { Database } from '@/lib/supabase/types'
 
 /**
@@ -47,6 +48,15 @@ const DRAIN_LIMIT = 100
 
 /**
  * The statuses the sweep can possibly owe a message for.
+ *
+ * The one filter in this reader where the SQL is the authority rather than an
+ * optimisation. Dropping the created_at, starts_at or attempts filters is
+ * safe, because the pure sweep re-decides all three — but NARROWING this list
+ * is not, because a status missing from it is a row the sweep never sees and
+ * so never gets to judge. Delete 'cancelled' and every attendee a host removes
+ * is silently never told, with nothing anywhere failing. Add a status to
+ * sweep.ts and it must be added here too, which is what the tests naming each
+ * of these five are for.
  *
  * Typed as the enum and not as strings so that a value the database does not
  * have — a renamed status, a typo — is a compile error rather than a filter
@@ -128,31 +138,49 @@ export async function enqueueOwedMessages(
   // id; pre-validating here would only decide the same thing twice, and in the
   // one place that cannot be unit-tested in milliseconds.
   const owed = messagesOwed(rows, { now, launchAt })
-  let enqueued = 0
+  if (owed.length === 0) return { scanned: rows.length, enqueued: 0 }
 
-  for (const message of owed) {
-    const { error: insertError } = await db.from('message_log').insert({
-      dedupe_key: message.dedupeKey,
-      recipient_phone: message.to,
-      template: message.template,
-      variables: message.variables,
-      booking_id: message.bookingId ?? null,
-      status: 'queued',
-    })
+  // One statement rather than one per message. At SWEEP_LIMIT, with up to two
+  // messages owed per confirmed booking, the row-at-a-time version was a
+  // thousand sequential HTTP round trips a tick.
+  //
+  // ignoreDuplicates is ON CONFLICT (dedupe_key) DO NOTHING, and RETURNING
+  // then names only the rows actually inserted — so `enqueued` counts new
+  // decisions rather than messages considered, and the count is what makes a
+  // second tick's zero meaningful. A conflict is not an error to handle: it is
+  // the unique dedupe_key doing its job, saying this message was already
+  // decided on an earlier tick.
+  const { data: inserted, error: insertError } = await db
+    .from('message_log')
+    .upsert(
+      owed.map((message) => ({
+        dedupe_key: message.dedupeKey,
+        recipient_phone: message.to,
+        template: message.template,
+        variables: message.variables,
+        booking_id: message.bookingId ?? null,
+        status: 'queued',
+      })),
+      { onConflict: 'dedupe_key', ignoreDuplicates: true },
+    )
+    .select('id')
 
-    if (!insertError) {
-      enqueued += 1
-      continue
-    }
-    // 23505 is the unique dedupe_key doing its job: this message was already
-    // decided on an earlier tick. That is the expected case, not an error.
-    if (insertError.code === '23505') continue
-    throw new Error(`could not enqueue ${message.dedupeKey}: ${insertError.message}`)
+  if (insertError) {
+    throw new Error(`the notification sweep could not enqueue ${owed.length} messages: ${insertError.message}`)
   }
 
-  return { scanned: rows.length, enqueued }
+  return { scanned: rows.length, enqueued: inserted?.length ?? 0 }
 }
 
+/**
+ * Sends what was recorded.
+ *
+ * The counters describe outcomes that were RECORDED, not sends that were made:
+ * `attempted` counts rows this drain claimed, and the other three count rows
+ * whose result made it back into the table. They are equal in the ordinary
+ * case, and `attempted > sent + failed + dead` is the one signal that a write
+ * was lost after a message had already gone out.
+ */
 export async function drainOutbox(
   options: { limit?: number } = {},
 ): Promise<{ attempted: number; sent: number; failed: number; dead: number }> {
@@ -206,12 +234,42 @@ export async function drainOutbox(
       bookingId: row.booking_id ?? undefined,
     }
 
-    const result = await provider.send(message)
+    let result: SendResult
+    try {
+      result = await provider.send(message)
+    } catch (cause) {
+      // A throwing provider costs this row, not the batch.
+      //
+      // Nothing in the NotificationProvider interface forbids a throw, and the
+      // DEFAULT provider does not avoid one: LogNotificationProvider calls
+      // renderTemplate straight through, and renderTemplate throws on a
+      // variable the stored row does not carry. That row is not exotic — it is
+      // the ordinary consequence of freezing variables at enqueue time and
+      // then adding a placeholder to a template, so rows queued yesterday no
+      // longer cover it. Unguarded, that single row aborts every tick forever,
+      // and total silence is the worst failure this system has; sweep.ts says
+      // exactly this of a number it cannot dial, and Task 1 wrapped
+      // templateComponents for the same reason.
+      //
+      // A NotificationError has classified itself, so it is believed. Anything
+      // else is a provider breaking its contract rather than an outage, and a
+      // deterministic crash retried five times ends dead anyway — so it dies
+      // now, with its message recorded, where somebody can read it.
+      result = {
+        status: 'failed',
+        retryable: cause instanceof NotificationError ? cause.retryable : false,
+        error: cause instanceof Error ? cause.message : String(cause),
+      }
+      console.error(
+        `[notifications] the provider threw sending ${row.dedupe_key} (booking ${row.booking_id}, message ${row.id})`,
+        cause,
+      )
+    }
+
     const attempts = row.attempts + 1
 
     if (result.status === 'sent' || result.status === 'skipped_duplicate') {
-      counts.sent += 1
-      await db
+      const { error: writeError } = await db
         .from('message_log')
         .update({
           status: 'sent',
@@ -220,6 +278,23 @@ export async function drainOutbox(
           error: null,
         })
         .eq('id', row.id)
+
+      // The message went out and we could not say so. The row is still
+      // pending with its attempt spent, so the NEXT drain sends it again — a
+      // duplicate WhatsApp message produced by the one path this whole module
+      // exists to close. It is loud here because it is invisible everywhere
+      // else, and it is deliberately counted nowhere: `attempted` staying
+      // ahead of sent + failed + dead is the only signal a caller gets that an
+      // outcome was lost, and counting it as sent would erase that.
+      if (writeError) {
+        console.error(
+          `[notifications] SENT ${row.dedupe_key} (booking ${row.booking_id}, message ${row.id}) but could not record it; the next drain will send it again`,
+          writeError,
+        )
+        continue
+      }
+
+      counts.sent += 1
       continue
     }
 
@@ -230,10 +305,8 @@ export async function drainOutbox(
     // error sets none — and `!retryable` would read that as permanent and burn
     // the message on one unclassified blip.
     const dead = result.retryable === false || attempts >= MAX_ATTEMPTS
-    if (dead) counts.dead += 1
-    else counts.failed += 1
 
-    await db
+    const { error: writeError } = await db
       .from('message_log')
       .update({
         status: dead ? 'dead' : 'failed',
@@ -241,6 +314,20 @@ export async function drainOutbox(
         error: result.error ?? 'unknown error',
       })
       .eq('id', row.id)
+
+    // Mirror of the lost `sent` write, and worse in one way: a lost `dead`
+    // write leaves the row pending, so it retries until MAX_ATTEMPTS with no
+    // record anywhere of why it kept failing.
+    if (writeError) {
+      console.error(
+        `[notifications] could not record the failure of ${row.dedupe_key} (booking ${row.booking_id}, message ${row.id}); it keeps its attempt and will be tried again`,
+        writeError,
+      )
+      continue
+    }
+
+    if (dead) counts.dead += 1
+    else counts.failed += 1
   }
 
   return counts
