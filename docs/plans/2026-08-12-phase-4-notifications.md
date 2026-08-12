@@ -1864,8 +1864,8 @@ export async function enqueueOwedMessages(
   const { data, error } = await db
     .from('bookings')
     .select(
-      `id, reference, status, cancellation_reason, approved_at, payment_mode,
-       total_paise, quantity, attendee_name, created_at, hold_expires_at,
+      `id, reference, status, cancellation_reason, approved_at,
+       total_paise, attendee_name, created_at, hold_expires_at,
        profiles!inner(phone),
        events!inner(title, starts_at, venue_name, city, requires_approval,
                     has_waitlist, hosts!inner(display_name, profiles!inner(phone)))`,
@@ -1881,7 +1881,7 @@ export async function enqueueOwedMessages(
   const rows: SweepBooking[] = (data ?? []).map((row) => {
     const r = row as unknown as {
       id: string; reference: string; status: string; cancellation_reason: string | null
-      approved_at: string | null; payment_mode: string; total_paise: number; quantity: number
+      approved_at: string | null; total_paise: number
       attendee_name: string | null; created_at: string; hold_expires_at: string | null
       profiles: { phone: string }
       events: {
@@ -1896,9 +1896,7 @@ export async function enqueueOwedMessages(
       status: r.status,
       cancellation_reason: r.cancellation_reason,
       approved_at: r.approved_at,
-      payment_mode: r.payment_mode,
       total_paise: r.total_paise,
-      quantity: r.quantity,
       attendee_name: r.attendee_name,
       attendee_phone: r.profiles.phone,
       created_at: r.created_at,
