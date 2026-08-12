@@ -17,6 +17,15 @@ export interface SendResult {
   status: 'sent' | 'failed' | 'skipped_duplicate'
   providerMessageId?: string
   error?: string
+  /**
+   * Whether trying again could plausibly succeed. The drain sends a
+   * non-retryable failure straight to `dead` rather than spending five
+   * attempts discovering that a template name is still wrong.
+   *
+   * Optional because `status: 'sent'` has nothing to say about it, and
+   * because the log provider never fails.
+   */
+  retryable?: boolean
 }
 
 /**
