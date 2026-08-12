@@ -201,7 +201,8 @@ Tasks 5, 6 and 7 rely on exactly these names.
 
 | Booking | Into gross? | Why |
 |---|---|---|
-| `confirmed`, online, has a `captured` payment | **yes** | the ordinary case |
+| `confirmed`, online, has a `captured` payment, **no** refund row | **yes** | the ordinary case |
+| `confirmed` but carrying a refund row | **no** | amended after the Task 2 review: `applyRefundEvent` writes the refund row before flipping `payments.status`, so this state is reachable and would over-pay |
 | `cancelled`, has a `captured` payment, **no** refund row against it | **yes**, and into `forfeitedPaise` | cancelled past the cutoff, so the money stayed; it is the host's |
 | `confirmed`, cash | **no** — into `cashPaise` | the host already holds the cash |
 | `refunded` (any refund status) | **no** | the money went back; and where a refund row exists but `failed`, fail toward not paying |
@@ -508,7 +509,7 @@ export function settle(bookings: SettlementBooking[]): Statement {
 
     if (!booking.has_captured_payment) continue
 
-    const isOrdinary = booking.status === 'confirmed'
+    const isOrdinary = booking.status === 'confirmed' && !booking.has_refund
     const isForfeit = booking.status === 'cancelled' && !booking.has_refund
     if (!isOrdinary && !isForfeit) continue
 

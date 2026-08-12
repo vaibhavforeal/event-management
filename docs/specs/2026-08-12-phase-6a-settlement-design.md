@@ -224,12 +224,25 @@ Which bookings count:
 
 | Booking state | Into gross? | Why |
 |---|---|---|
-| `confirmed`, online, payment `captured` | **yes** | the ordinary case |
+| `confirmed`, online, payment `captured`, no refund row | **yes** | the ordinary case |
+| `confirmed` but carrying a refund row | **no** | see below — added after the Task 2 review |
 | `cancelled`, payment `captured`, no refund row | **yes**, and into `forfeited_paise` | past the cutoff, so the money stayed; it is the host's |
 | `confirmed`, cash | **no** | the host already holds the cash; commission on cash is 0 by construction |
 | `refunded` | **no** | the money went back |
 | `refunded`, `refunds.status = 'failed'` | **no** | fail toward not paying — an underpayment is correctable, an overpayment is a conversation |
 | `pending_approval`, `awaiting_payment`, `expired`, `waitlisted` | **no** | no money ever moved |
+
+**A refund disqualifies a booking whatever its status.** The first draft of
+this table let a refund disqualify only a `cancelled` booking, on the
+reasoning that a refunded booking is already excluded by status. The Task 2
+review found the gap: `applyRefundEvent` (`lib/payments/service.ts:565`)
+inserts the refund row *before* flipping `payments.status`, so if that second
+write throws, a processed refund sits against a still-`captured` payment on a
+still-`confirmed` booking until Razorpay redelivers. Settlement inside that
+window would pay out money that had already gone back to the attendee. The
+guard costs nothing at the pilot's ₹0 and moves the way the rest of this
+module argues: an underpayment is a correction, an overpayment is a
+conversation.
 
 Refunds are all-or-nothing — `refund-policy.ts` types the decision as
 `'full' | 'none'` and there is no partial path — so excluding a
