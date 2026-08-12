@@ -1,4 +1,4 @@
-import { formatIst } from '@/lib/events/datetime'
+import { formatIst, hasStarted } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import { normalisePhone } from '@/lib/notifications/types'
 import type { OutboundMessage } from '@/lib/notifications/types'
@@ -28,9 +28,7 @@ export interface SweepBooking {
   status: string
   cancellation_reason: string | null
   approved_at: string | null
-  payment_mode: string
   total_paise: number
-  quantity: number
   attendee_name: string | null
   /** profiles.phone. GoTrue stores it WITHOUT a leading '+'. */
   attendee_phone: string
@@ -70,6 +68,32 @@ function venueOf(booking: SweepBooking): string {
 }
 
 /**
+ * E.164 for a number we can send to, or undefined for one we cannot.
+ *
+ * `attendee_phone: string` is a promise the database cannot keep. profiles.phone
+ * is NOT NULL but nothing constrains its shape, and normalisePhone throws on
+ * anything it cannot map — '', '   ', an eleven-digit number. Thrown from a
+ * sweep, that takes the whole batch with it: one bad row in four hundred and
+ * nobody hears anything, including the rows already appended. Total silence is
+ * the worst failure a notification system has, so the row skips itself.
+ *
+ * Called at the point of use, never before the status switch, so a row that
+ * owes nothing — a waitlisted one, an attendee's own cancellation — cannot log
+ * about a number nothing was going to dial.
+ */
+function sendableNumber(raw: string, bookingId: string, whose: 'attendee' | 'host'): string | undefined {
+  try {
+    return normalisePhone(raw)
+  } catch (cause) {
+    // Not swallowed: the booking id is what makes the row findable, and a
+    // message nobody receives is otherwise indistinguishable from one nobody
+    // was owed.
+    console.error(`[notifications] booking ${bookingId} has an unusable ${whose} number; it gets no messages`, cause)
+    return undefined
+  }
+}
+
+/**
  * What the cancellation did to their money. `refunded` means the refund was
  * created — settlement lag lives in refunds.status, and promising "refunded"
  * at creation is the same claim the booking page already makes.
@@ -96,22 +120,38 @@ export function messagesOwed(
   const owed: OutboundMessage[] = []
 
   for (const booking of bookings) {
-    const startsAt = new Date(booking.event.starts_at)
-
     // Gate one: the event is over, or under way. A WhatsApp link outlives its
     // event, and so does a bookings row; a reminder for last night is worse
     // than silence.
-    if (startsAt.getTime() <= now.getTime()) continue
+    //
+    // hasStarted rather than an inline comparison: it is the tested authority
+    // for this exact question, it is what the event page and book_free_tickets
+    // agree with, and it fails closed on an unreadable time on EITHER side.
+    // Every comparison against NaN is false, so the inline `<=` this replaced
+    // called an unreadable start "not started" — and an unreadable `now`, which
+    // a caller supplies, made the gate never fire at all.
+    if (hasStarted(booking.event.starts_at, now)) continue
 
     // Gate two: the cutoff. Inclusive, so a booking made in the same second
     // the phase went live is not dropped.
-    if (new Date(booking.created_at).getTime() < launchAt.getTime()) continue
+    //
+    // Fails closed the same way, and here it is the whole point of the gate:
+    // Task 6 reads launchAt from configuration, so an unset or misspelled
+    // variable is an Invalid Date, and a gate that never fires messages every
+    // attendee of every event this product has ever run. A row we cannot place
+    // against the cutoff is a row we cannot prove is ours to message.
+    const createdAt = new Date(booking.created_at).getTime()
+    const cutoff = launchAt.getTime()
+    if (Number.isNaN(createdAt) || Number.isNaN(cutoff) || createdAt < cutoff) continue
 
-    const attendee = normalisePhone(booking.attendee_phone)
+    const startsAt = new Date(booking.event.starts_at)
     const base = { bookingId: booking.id }
     const eventDateTime = formatIst(startsAt)
 
     if (booking.status === 'confirmed') {
+      const attendee = sendableNumber(booking.attendee_phone, booking.id, 'attendee')
+      if (!attendee) continue
+
       owed.push({
         ...base,
         to: attendee,
@@ -149,9 +189,12 @@ export function messagesOwed(
 
     if (booking.status === 'pending_approval') {
       // The one message in the product addressed to the host.
+      const host = sendableNumber(booking.event.host_phone, booking.id, 'host')
+      if (!host) continue
+
       owed.push({
         ...base,
-        to: normalisePhone(booking.event.host_phone),
+        to: host,
         template: 'approval_requested',
         dedupeKey: `booking:${booking.id}:requested`,
         variables: {
@@ -171,9 +214,18 @@ export function messagesOwed(
       // No amount or payment_mode check is needed on the approval arm:
       // approve_booking confirms cash and free requests straight from
       // pending_approval, so they never reach awaiting_payment at all.
+      //
+      // The '' fallback is unreachable: both producers stamp hold_expires_at in
+      // the same statement that sets approved_at, which is why the booking page
+      // asserts it non-null. It stays a fallback rather than a skip because a
+      // seat offer with a gap in its sentence still tells someone they have a
+      // seat, and one that is never sent does not.
       const deadline = booking.hold_expires_at ? formatIst(new Date(booking.hold_expires_at)) : ''
 
       if (booking.event.has_waitlist) {
+        const attendee = sendableNumber(booking.attendee_phone, booking.id, 'attendee')
+        if (!attendee) continue
+
         owed.push({
           ...base,
           to: attendee,
@@ -186,6 +238,9 @@ export function messagesOwed(
           },
         })
       } else if (booking.event.requires_approval) {
+        const attendee = sendableNumber(booking.attendee_phone, booking.id, 'attendee')
+        if (!attendee) continue
+
         owed.push({
           ...base,
           to: attendee,
@@ -207,6 +262,9 @@ export function messagesOwed(
     // removal, which is the one case where the attendee most needs telling.
     if (booking.status === 'cancelled' || booking.status === 'refunded') {
       if (booking.cancellation_reason === 'cancelled by host') {
+        const attendee = sendableNumber(booking.attendee_phone, booking.id, 'attendee')
+        if (!attendee) continue
+
         owed.push({
           ...base,
           to: attendee,
@@ -222,6 +280,9 @@ export function messagesOwed(
         // A request never held a payment, so it can never be 'refunded' —
         // and it was never a booking, which is why booking_cancelled's
         // opening sentence would be false for it.
+        const attendee = sendableNumber(booking.attendee_phone, booking.id, 'attendee')
+        if (!attendee) continue
+
         owed.push({
           ...base,
           to: attendee,

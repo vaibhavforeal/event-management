@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { messagesOwed, type SweepBooking } from '@/lib/notifications/sweep'
 import { renderTemplate } from '@/lib/notifications/templates'
 
@@ -21,9 +21,7 @@ function booking(overrides: Partial<SweepBooking> = {}): SweepBooking {
     status: 'confirmed',
     cancellation_reason: null,
     approved_at: null,
-    payment_mode: 'online',
     total_paise: 50_000,
-    quantity: 2,
     attendee_name: 'Asha',
     attendee_phone: '919876543210',
     created_at: '2026-08-10T00:00:00Z',
@@ -77,6 +75,112 @@ describe('the two gates', () => {
     // live is not silently dropped.
     const owed = messagesOwed([booking({ created_at: LAUNCH.toISOString() })], options)
     expect(owed.map((m) => m.template)).toContain('booking_confirmed')
+  })
+})
+
+describe('times it cannot read', () => {
+  // Every comparison against NaN is false, so an unreadable Date does not make
+  // a gate reject — it makes the gate never fire. Both gates therefore fail
+  // CLOSED, the hasStarted and refundDecision precedent: a row we cannot place
+  // against the clock or the cutoff is a row we do not message.
+  const UNREADABLE = new Date('not a timestamp')
+
+  it('sends nothing at all when the launch timestamp is unreadable', () => {
+    // The catastrophe this gate exists to prevent, and the reachable one: Task 6
+    // reads launchAt from configuration, so an unset or misspelled
+    // NOTIFICATIONS_LAUNCH_AT is exactly this — and a gate that never fires
+    // messages every attendee of every event this product has ever run.
+    expect(
+      messagesOwed([booking({ created_at: '2020-03-01T00:00:00Z' }), booking({ id: 'b-2' })], {
+        now: NOW,
+        launchAt: UNREADABLE,
+      }),
+    ).toEqual([])
+  })
+
+  it('sends nothing at all when the clock is unreadable', () => {
+    // An unreadable `now` cannot say an event is still ahead of it either.
+    expect(messagesOwed([booking()], { now: UNREADABLE, launchAt: LAUNCH })).toEqual([])
+  })
+
+  it('skips a row whose start time cannot be read', () => {
+    expect(
+      messagesOwed([booking({ event: { ...booking().event, starts_at: 'not a timestamp' } })], options),
+    ).toEqual([])
+  })
+
+  it('skips a row whose creation time cannot be read', () => {
+    // Not provably after the cutoff, so not ours to message.
+    expect(messagesOwed([booking({ created_at: 'not a timestamp' })], options)).toEqual([])
+  })
+
+  it('costs only the unreadable row, not the batch', () => {
+    const owed = messagesOwed(
+      [booking({ id: 'b-1', created_at: 'not a timestamp' }), booking({ id: 'b-2' })],
+      options,
+    )
+    expect(owed.map((m) => m.dedupeKey)).toEqual(['booking:b-2:confirmed'])
+  })
+})
+
+describe('numbers it cannot dial', () => {
+  // Restored, not just cleared: console.error is a global, and a suite that
+  // leaves it stubbed makes some later file's failure invisible.
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+  afterEach(() => errors.mockClear())
+  afterAll(() => errors.mockRestore())
+
+  it('lets one unusable number cost only its own row', () => {
+    // normalisePhone THROWS on a number it cannot map, and profiles.phone is
+    // NOT NULL with nothing constraining its shape. Uncaught, one bad row in a
+    // batch of four hundred means nobody hears anything — including the rows
+    // already appended above it.
+    const owed = messagesOwed(
+      [
+        booking({ id: 'b-1' }),
+        booking({ id: 'b-2', attendee_phone: '   ' }),
+        booking({ id: 'b-3', attendee_phone: '98765' }),
+        booking({ id: 'b-4' }),
+      ],
+      options,
+    )
+    expect(owed.map((m) => m.dedupeKey)).toEqual(['booking:b-1:confirmed', 'booking:b-4:confirmed'])
+  })
+
+  it('names the booking it could not reach, rather than failing quietly', () => {
+    // A message nobody receives is otherwise indistinguishable from one nobody
+    // was owed, and the sweep is the only place that knows the difference.
+    messagesOwed([booking({ id: 'b-unreachable', attendee_phone: '' })], options)
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(String(errors.mock.calls[0][0])).toContain('b-unreachable')
+  })
+
+  it('skips a request whose host cannot be reached, and only that request', () => {
+    const owed = messagesOwed(
+      [
+        booking({ id: 'b-1', status: 'pending_approval', event: { ...booking().event, host_phone: '' } }),
+        booking({ id: 'b-2', status: 'pending_approval' }),
+      ],
+      options,
+    )
+    expect(owed.map((m) => m.dedupeKey)).toEqual(['booking:b-2:requested'])
+  })
+
+  it('says nothing about rows that were never going to produce a message', () => {
+    // Resolved at the point of use, not once at the top of the loop: a
+    // waitlisted row and an attendee's own cancellation owe nothing, and they
+    // are swept on every tick for as long as the event is ahead — so a number
+    // nothing was going to dial must not throw, and must not log either.
+    const owed = messagesOwed(
+      [
+        booking({ id: 'b-1', status: 'waitlisted', attendee_phone: '' }),
+        booking({ id: 'b-2', status: 'cancelled', cancellation_reason: 'cancelled by attendee', attendee_phone: '' }),
+        booking({ id: 'b-3' }),
+      ],
+      options,
+    )
+    expect(owed.map((m) => m.dedupeKey)).toEqual(['booking:b-3:confirmed'])
+    expect(errors).not.toHaveBeenCalled()
   })
 })
 
