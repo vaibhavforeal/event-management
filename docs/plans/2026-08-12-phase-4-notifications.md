@@ -4,7 +4,7 @@
 
 **Goal:** Every outcome this product produces — a confirmed seat, a request waiting on a host, an approval, a waitlist offer, a removal, a decline, tomorrow's event — arrives as a WhatsApp message, over the channel the login OTP already uses.
 
-**Architecture:** Phase 0 built the seam and stopped, so this phase fills it in rather than inventing it. A Meta Cloud API adapter implements the existing `NotificationProvider` interface, and `notificationProvider()` stops throwing for `'meta'`. `message_log` becomes a real outbox: one migration adds an attempt counter, pins the status vocabulary with a CHECK, and adds the drain's partial index. The decision layer is a **pure** module — given booking rows and a clock, which messages are owed and under which `dedupe_key` — so the phase's logic is testable with no database and no provider. A single fenced service module holds the service role, performs the reads that module judges, and owns every write to `message_log`. A cron-invoked API route runs sweep → drain → the reconciliation sweep that has been hand-run since Phase 3. **There are no send sites**: every non-OTP message is derivable from booking state, so `lib/bookings/`, `lib/payments/` and every SQL function are untouched.
+**Architecture:** Phase 0 built the seam and stopped, so this phase fills it in rather than inventing it. A Meta Cloud API adapter implements the existing `NotificationProvider` interface, and `notificationProvider()` stops throwing for `'meta'`. `message_log` becomes a real outbox: one migration adds an attempt counter, pins the status vocabulary with a CHECK, and adds the drain's partial index. The decision layer is a **pure** module — given booking rows and a clock, which messages are owed and under which `dedupe_key` — so the phase's logic is testable with no database and no provider. A single fenced service module holds the service role, performs the reads that module judges, and owns every write to `message_log`. A cron-invoked API route runs the reconciliation sweep that has been hand-run since Phase 3, then sweep → drain — reconciliation first, because it can flip a booking to confirmed when a webhook was dropped and a message decided after it would otherwise wait a whole tick. **There are no send sites**: every non-OTP message is derivable from booking state, so `lib/bookings/`, `lib/payments/` and every SQL function are untouched.
 
 **Tech Stack:** Next.js 16.3 App Router, React 19.2, TypeScript, Postgres 17 (local Supabase), supabase-js 2.x, Zod 4, Vitest 4, Vercel Cron. **No new runtime dependencies** — the Meta adapter uses `fetch`.
 
@@ -43,7 +43,7 @@
 | `lib/notifications/templates.ts` | **Modified.** `waitlist_seat_offered` and `request_declined` added; two purpose lines corrected. |
 | `lib/notifications/sweep.ts` | **New.** Pure: `messagesOwed(rows, now, launchAt)` → the list of `OutboundMessage`s. No I/O, no clock of its own, no provider. |
 | `lib/notifications/service.ts` | **New.** The only holder of the service role and the only writer of `message_log`: `enqueueOwedMessages()`, `drainOutbox()`. Joins the ESLint fence. |
-| `app/api/cron/route.ts` | **New.** Shared-secret auth, then sweep → drain → reconcile. |
+| `app/api/cron/route.ts` | **New.** Shared-secret auth, then reconcile → sweep → drain. |
 | `supabase/migrations/20260812000001_message_outbox.sql` | **New.** `message_log.attempts`, the status CHECK, the drain's partial index. |
 | `lib/env.ts` | **Modified.** `CRON_SECRET`, `NOTIFICATIONS_LAUNCH_AT`. |
 | `.env.example` | **Modified.** The same two, documented. |
@@ -68,7 +68,7 @@
   - `SendResult` gains `retryable?: boolean` — Task 5's drain uses it to send a permanently-broken message straight to `dead` instead of burning five attempts on it.
   - `notificationProvider()` returns a `MetaNotificationProvider` when `WHATSAPP_PROVIDER=meta`.
 
-**A constraint that feeds back into what gets submitted to Meta.** This adapter sends **body parameters only**. Meta requires that if an authentication template is created with a copy-code or one-tap button, the send payload must also carry a `button` component — a body-only payload is then rejected. So `auth_otp` must be registered as a **plain authentication template with no button**. Write that into the template registry's comment in Task 2 so nobody submits the buttoned variant.
+**A constraint that feeds back into what gets submitted to Meta.** Utility templates send **body parameters only**. Authentication templates do not: Meta's options are "one-tap autofill, copy code, or no button at all **if using zero-tap**", and zero-tap needs an Android `package_name` and `signature_hash` a web app does not have — so `auth_otp` is registered **with a copy-code OTP button**, and its send payload carries the code **twice**, once in the body parameters and once in `{ "type": "button", "sub_type": "url", "index": "0", … }`. The adapter branches on the template's own `category`, never its name. Task 2 records this in the registry's header for whoever submits it.
 
 - [ ] **Step 1: Branch and confirm the baseline**
 
@@ -150,7 +150,7 @@ describe('MetaNotificationProvider', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('https://graph.facebook.com/v21.0/111222333/messages')
+    expect(url).toBe('https://graph.facebook.com/v25.0/111222333/messages')
     expect(init.method).toBe('POST')
     expect(init.headers).toMatchObject({
       Authorization: 'Bearer test-token',
@@ -295,15 +295,25 @@ import type { NotificationProvider, OutboundMessage, SendResult } from '@/lib/no
  * The only module in the repo that knows Meta's wire format. Everything else
  * speaks OutboundMessage.
  *
- * Sends BODY PARAMETERS ONLY. If a template is registered with a copy-code or
- * one-tap button, Meta rejects a payload that omits the matching button
- * component — so auth_otp must be registered as a plain authentication
- * template with no button. See the note in lib/notifications/templates.ts.
+ * Utility templates send BODY PARAMETERS ONLY. Authentication templates also
+ * carry a button component repeating the code, because Meta requires a
+ * BUTTONS component on every authentication template — "no button at all"
+ * applies only to zero-tap, which needs Android identifiers a web app does
+ * not have. The branch keys on the registry's own `category`, never on a
+ * template's name. See the header in lib/notifications/templates.ts.
  */
 
-/** Pinned rather than floating: Meta ships breaking changes between versions,
- *  and a silently-moving URL is a silently-changing payload contract. */
-const GRAPH_VERSION = 'v21.0'
+/**
+ * Pinned rather than floating: Meta ships breaking changes between versions,
+ * and a silently-moving URL is a silently-changing payload contract.
+ *
+ * **Available until 29 July 2028.** The expiry is in this comment because a
+ * pin without one stops pinning on a date nobody wrote down: Meta routes
+ * calls to an expired version onto the next-oldest usable one *silently*, so
+ * the failure is not an error but a different contract than this file claims.
+ * Bump before that date, and move the date with it.
+ */
+const GRAPH_VERSION = 'v25.0'
 
 /** The language a template is registered under. Templates are per-language in
  *  Meta's registry, so this must match what was submitted or the send 404s. */
@@ -638,16 +648,27 @@ Expected: FAIL — eight templates expected, six found; the two new names do not
       'no hold to beat — they get booking_confirmed instead.',
 ```
 
-- [ ] **Step 5: Record the no-button constraint**
+- [ ] **Step 5: Record the button constraint**
 
 In the file's header comment, below the paragraph about India/INR registration:
 
 ```ts
- * Register auth_otp as a PLAIN authentication template with no copy-code and
- * no one-tap button. Meta rejects a send whose payload omits the button
- * component a template was created with, and lib/notifications/providers/meta.ts
- * sends body parameters only. A buttoned template would pass review and then
- * fail every send.
+ * Register auth_otp WITH a copy-code OTP button:
+ *
+ *   { "type": "buttons", "buttons": [{ "type": "otp", "otp_type": "copy_code" }] }
+ *
+ * Not optional, and not a preference. Meta's authentication templates offer a
+ * one-tap autofill button, a copy code button, or no button at all ONLY when
+ * using zero-tap -- and zero-tap still requires both buttons in the creation
+ * payload plus an Android package_name and signature_hash, which a web app
+ * does not have. So copy-code is the one reachable option.
+ *
+ * The send payload therefore carries the code TWICE: once in the body
+ * parameters and once in a button component. lib/notifications/providers/meta.ts
+ * does this, branching on this registry's own `category` field.
+ *
+ * The other seven are utility templates and must be created with NO buttons:
+ * a send that adds a button component to them is rejected just as surely.
 ```
 
 - [ ] **Step 6: Green, then commit**
@@ -668,7 +689,7 @@ node --import=tsx -e "const {TEMPLATES}=require('./lib/notifications/templates.t
   || grep -n "name:\|category:\|body:" lib/notifications/templates.ts
 ```
 
-Say in the task report that this list is ready for submission, and that `auth_otp` must be created **without a button**.
+Say in the task report that this list is ready for submission, and that `auth_otp` must be created **with a copy-code OTP button** while the other seven are created with **no buttons at all**.
 
 ---
 
@@ -1489,6 +1510,31 @@ git commit -m "feat: what the product owes people, derived from state"
 
 **The fence grows by one file, and this is the only place it does.** `eslint.config.mjs:41` lists the three modules allowed to import `lib/supabase/admin`; `lib/notifications/service.ts` becomes the fourth. Update both the `ignores` array and the rule's `message` string, which names the allowed files to whoever trips it — a message that lists three files while four are permitted is worse than no message.
 
+- [ ] **Step 0: Add the cutoff environment variable**
+
+`enqueueOwedMessages` reads it, so it must exist before this task's tests can run. (`CRON_SECRET` is Task 6's, because that is where it is first read.)
+
+`lib/env.ts`, in `serverSchema`:
+
+```ts
+  // Bookings created before this instant are invisible to the notification
+  // sweep. Without it the first run messages every attendee about every event
+  // this product has ever run. ISO 8601; z.iso.datetime() rejects a date-only
+  // value, which would otherwise be read as midnight UTC and silently shift
+  // the cutoff by up to a day.
+  NOTIFICATIONS_LAUNCH_AT: z.iso.datetime().default('2026-08-12T00:00:00Z'),
+```
+
+`.env.example`, after the WhatsApp block:
+
+```bash
+# --- Notifications (Phase 4) ---
+# Bookings created before this instant are invisible to the notification
+# sweep. Set it once, to the moment Phase 4 goes live. Moving it backwards
+# will message people about events they booked long ago.
+NOTIFICATIONS_LAUNCH_AT="2026-08-12T00:00:00Z"
+```
+
 - [ ] **Step 1: Widen the fence**
 
 `eslint.config.mjs`:
@@ -1818,8 +1864,8 @@ export async function enqueueOwedMessages(
   const { data, error } = await db
     .from('bookings')
     .select(
-      `id, reference, status, cancellation_reason, approved_at, payment_mode,
-       total_paise, quantity, attendee_name, created_at, hold_expires_at,
+      `id, reference, status, cancellation_reason, approved_at,
+       total_paise, attendee_name, created_at, hold_expires_at,
        profiles!inner(phone),
        events!inner(title, starts_at, venue_name, city, requires_approval,
                     has_waitlist, hosts!inner(display_name, profiles!inner(phone)))`,
@@ -1835,7 +1881,7 @@ export async function enqueueOwedMessages(
   const rows: SweepBooking[] = (data ?? []).map((row) => {
     const r = row as unknown as {
       id: string; reference: string; status: string; cancellation_reason: string | null
-      approved_at: string | null; payment_mode: string; total_paise: number; quantity: number
+      approved_at: string | null; total_paise: number
       attendee_name: string | null; created_at: string; hold_expires_at: string | null
       profiles: { phone: string }
       events: {
@@ -1850,9 +1896,7 @@ export async function enqueueOwedMessages(
       status: r.status,
       cancellation_reason: r.cancellation_reason,
       approved_at: r.approved_at,
-      payment_mode: r.payment_mode,
       total_paise: r.total_paise,
-      quantity: r.quantity,
       attendee_name: r.attendee_name,
       attendee_phone: r.profiles.phone,
       created_at: r.created_at,
@@ -2027,7 +2071,9 @@ git commit -m "feat: the outbox writes and drains, and the fence grows by one"
 
 **This route also finally schedules Phase 3's reconciliation sweep.** `runReconciliationSweep` has been hand-run via `npm run reconcile` since it was written — its own doc comment says "No pg_cron and no deploy-target cron yet". This phase creates the deploy-target cron, so leaving it hand-run would be leaving a job undone for want of one line.
 
-- [ ] **Step 1: Add the two environment variables**
+- [ ] **Step 1: Add the cron secret**
+
+`NOTIFICATIONS_LAUNCH_AT` already exists — Task 5 added it, because that is where it is first read. This task adds only the secret.
 
 `lib/env.ts`, in `serverSchema`:
 
@@ -2036,27 +2082,15 @@ git commit -m "feat: the outbox writes and drains, and the fence grows by one"
   // Optional so local development and tests run without it; the route refuses
   // every request when it is absent, which is the safe direction.
   CRON_SECRET: z.string().optional(),
-  // Bookings created before this instant are invisible to the notification
-  // sweep. Without it the first run messages every attendee about every event
-  // this product has ever run. ISO 8601; z.iso.datetime() rejects a date-only
-  // value, which would otherwise be read as midnight UTC and silently shift
-  // the cutoff by up to a day.
-  NOTIFICATIONS_LAUNCH_AT: z.iso.datetime().default('2026-08-12T00:00:00Z'),
 ```
 
-`.env.example`, after the WhatsApp block:
+`.env.example`, beside `NOTIFICATIONS_LAUNCH_AT`:
 
 ```bash
-# --- Scheduled work (Phase 4) ---
 # Vercel Cron presents this as `Authorization: Bearer <secret>`. Any request
 # without it is refused, so an unset value means the route is closed.
 # Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 CRON_SECRET=""
-
-# Bookings created before this instant are invisible to the notification
-# sweep. Set it once, to the moment Phase 4 goes live. Moving it backwards
-# will message people about events they booked long ago.
-NOTIFICATIONS_LAUNCH_AT="2026-08-12T00:00:00Z"
 ```
 
 - [ ] **Step 2: Write the failing route tests**
@@ -2139,16 +2173,21 @@ describe('GET /api/cron', () => {
       reconcile: { reconciled: 1, released: 0, refundsRetried: 0 },
     })
 
-    // Enqueue must precede drain, or a message decided this tick waits a full
-    // interval for no reason.
+    // Reconcile must precede the sweep: it can flip a booking to confirmed
+    // when a webhook was dropped, and running it after would make that
+    // confirmation wait a whole tick. Enqueue must then precede drain, or a
+    // message decided this tick waits an interval for no reason.
+    expect(runReconciliationSweep.mock.invocationCallOrder[0]).toBeLessThan(
+      enqueueOwedMessages.mock.invocationCallOrder[0],
+    )
     expect(enqueueOwedMessages.mock.invocationCallOrder[0]).toBeLessThan(
       drainOutbox.mock.invocationCallOrder[0],
     )
   })
 
   it('still runs the later arms when an earlier one throws', async () => {
-    // One broken arm must not silently stop the other two. A failed sweep
-    // should not also mean payments go unreconciled.
+    // One broken arm must not silently stop the other two — a database hiccup
+    // in one must not take the other two down with it.
     enqueueOwedMessages.mockRejectedValue(new Error('database is down'))
 
     const response = await GET(request({ authorization: `Bearer ${SECRET}` }))
@@ -2185,14 +2224,21 @@ import { runReconciliationSweep } from '@/lib/payments/service'
  * endpoint in an app whose other entry points are all POSTs.
  *
  * Three arms, in order:
- *   1. the notification sweep — decide what is owed and queue it
- *   2. the outbox drain — send what is queued
- *   3. the reconciliation sweep — Phase 3's, hand-run via `npm run reconcile`
+ *   1. the reconciliation sweep — Phase 3's, hand-run via `npm run reconcile`
  *      since it was written, because there was no deploy-target cron until
  *      this file existed
+ *   2. the notification sweep — decide what is owed and queue it
+ *   3. the outbox drain — send what is queued
+ *
+ * Reconcile leads because it writes the state the sweep reads: it is what
+ * flips a booking whose webhook was dropped to `confirmed`, and a sweep that
+ * ran first would read the stale row and defer that confirmation a whole
+ * interval — which, by the schedule note, can be a message lost rather than
+ * late. (This ordering was settled in the branch review; Task 6 shipped
+ * sweep → drain → reconcile.)
  *
  * Each arm is isolated: one throwing must not stop the others, or a database
- * hiccup in the sweep would also mean payments go unreconciled. Failures are
+ * hiccup in reconcile would also mean nothing gets messaged. Failures are
  * reported in the body rather than as a non-2xx, because the run as a whole
  * did happen and a red cron alert per transient error trains you to ignore it.
  */
@@ -2228,11 +2274,12 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json({ error: 'unauthorized' }, { status: 401 })
   }
 
-  // Enqueue before draining, so a message decided on this tick goes out on
-  // this tick rather than waiting a full interval for the next one.
+  // Sequenced, not raced: each arm reads what the one before it wrote, so a
+  // message this tick makes true is also decided and sent on this tick rather
+  // than waiting a full interval for the next one.
+  const reconcile = await arm('reconcile', () => runReconciliationSweep())
   const sweep = await arm('sweep', () => enqueueOwedMessages())
   const drain = await arm('drain', () => drainOutbox())
-  const reconcile = await arm('reconcile', () => runReconciliationSweep())
 
   return Response.json({ sweep, drain, reconcile })
 }
@@ -2328,7 +2375,13 @@ SQL
 docker exec -i supabase_db_Event_Hoster psql -U postgres -q -c 'drop database phase4_check;'
 ```
 
-Expect both columns, the constraint, and an index definition whose `WHERE` names `queued` and `failed`.
+Expect both columns and the constraint. **Compare the index definition against the full expected string rather than reading it** — a wrong predicate (dropping `'failed'`, say) passes every test in Task 3 and would silently halve what the drain ever picks up:
+
+```
+CREATE INDEX message_log_pending_idx ON public.message_log
+  USING btree (status, updated_at)
+  WHERE (status = ANY (ARRAY['queued'::text, 'failed'::text]))
+```
 
 - [ ] **Step 3: Rehearse the cutoff against the real dev database**
 
@@ -2383,8 +2436,22 @@ Keep the branch, matching the repo's convention. Push only when the user confirm
 
 Report to the user, explicitly:
 
-1. The eight template bodies to submit, and that `auth_otp` must be created **without** a copy-code or one-tap button.
-2. That the WABA must be created with **India as Sold-To country and INR billing** — irreversible, and twenty times the cost if wrong.
-3. That going live afterwards is `WHATSAPP_PROVIDER=meta` plus `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID`, and that `NOTIFICATIONS_LAUNCH_AT` should be set to the moment of that switch rather than left at its default.
-4. Which cron schedule shipped in `vercel.json`, and that Hobby allows only a daily run.
+1. **Do not set `CRON_SECRET` in Vercel Production until `WHATSAPP_PROVIDER=meta` is live.** While the provider is still `log` every send "succeeds" without leaving the machine, and `dedupe_key` then refuses to enqueue that decision ever again — so a tick that runs in the gap between deploy and Meta approval does not delay those messages, it consumes them. An unset `CRON_SECRET` 401s every tick, so leaving it unset holds the door shut by default and costs only lateness.
+
+   The window is recoverable, because nothing was actually sent — only recorded. Run this once, after the provider switch, if any tick ran against `log`:
+
+   ```sql
+   update message_log set status='queued', attempts=0, provider=null,
+          provider_message_id=null, error=null
+   where provider='log' and status='sent';
+   ```
+
+2. The eight template bodies to submit; that all eight must be registered under language code **`en`** — not `en_US`, not `en_GB`, whatever Meta's own worked examples use — because `TEMPLATE_LANGUAGE` in `lib/notifications/providers/meta.ts` pins `en` and a registry mismatch 404s every send, `auth_otp` included, which takes login down with it; that `auth_otp` must be created **with** a copy-code OTP button (`{"type":"otp","otp_type":"copy_code"}`) because zero-tap is the only buttonless variant and needs Android identifiers this product lacks; and that the other seven are utility templates created with **no** buttons.
+3. That the authentication send path has never run against Meta, since no WABA existed while this was built — **send one OTP to a test number before pointing real traffic at `WHATSAPP_PROVIDER=meta`.** A failure there would be total rather than partial, and it would be on the login path.
+4. That the WABA must be created with **India as Sold-To country and INR billing** — irreversible, and twenty times the cost if wrong.
+5. That going live afterwards is `WHATSAPP_PROVIDER=meta` plus `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID`, and that `NOTIFICATIONS_LAUNCH_AT` should be set to the moment of that switch rather than left at its default. Its default fails **open**, unlike `CRON_SECRET`: launch a month late with it unset and the first tick re-confirms every booking made in the interim. The stronger option, deliberately not taken in this phase because it is a wider change than a launch checklist, is to make `NOTIFICATIONS_LAUNCH_AT` required rather than defaulted when `WHATSAPP_PROVIDER=meta`, so a missing value fails the boot instead of the audience.
+6. **Then, and only then, set `CRON_SECRET` in Vercel Production** — per item 1, after the provider switch, not before. The variable must be named exactly `CRON_SECRET`, because Vercel injects that name into the tick as `Authorization: Bearer …` and no other name is presented. Until it is set the route 401s every tick, which is correct closed-door behaviour and is indistinguishable from a healthy deploy unless somebody opens the cron logs — so this step has no symptom to remind you of it.
+7. Which cron schedule shipped in `vercel.json`, and that Hobby allows only a daily run.
+8. As **expected behaviour, not a bug**: a booking made inside the 24-hour reminder window earns both `booking_confirmed` and `event_reminder` on the same tick. The two bodies are visibly different, so it reads as two messages rather than a duplicate, and suppressing the reminder would reintroduce the never-sent hole for exactly the bookings closest to their event.
+9. That a row which reaches `dead` has no revival path in code — five attempts is the end of it. Reviving one is deliberate and by hand: `update message_log set status='queued', attempts=0 where …`, scoped to whatever the operator has decided is worth trying again.
 

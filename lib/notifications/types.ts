@@ -6,8 +6,10 @@ export interface OutboundMessage {
   template: TemplateName
   variables: Record<string, string>
   /**
-   * Natural key for this send, e.g. `booking:<id>:confirmed`. Persisted with a
-   * unique constraint so a retried job cannot message someone twice.
+   * Natural key for this send, e.g. `booking:<id>:confirmed`. Persisted under a
+   * unique constraint, which makes the DECISION idempotent, not the delivery:
+   * the same decision cannot be enqueued twice, and nothing here stops the
+   * drain re-attempting a row it already has — that is what `attempts` bounds.
    */
   dedupeKey: string
   bookingId?: string
@@ -17,6 +19,15 @@ export interface SendResult {
   status: 'sent' | 'failed' | 'skipped_duplicate'
   providerMessageId?: string
   error?: string
+  /**
+   * Whether trying again could plausibly succeed. The drain sends a
+   * non-retryable failure straight to `dead` rather than spending five
+   * attempts discovering that a template name is still wrong.
+   *
+   * Optional because `status: 'sent'` has nothing to say about it, and
+   * because the log provider never fails.
+   */
+  retryable?: boolean
 }
 
 /**

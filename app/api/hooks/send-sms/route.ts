@@ -56,8 +56,11 @@ export async function POST(request: Request): Promise<Response> {
       template: 'auth_otp',
       variables: { otp },
       // OTPs are intentionally NOT deduped across attempts — a user who did not
-      // receive the first code must be able to request another. The timestamp
-      // keeps each request distinct while still logging every send.
+      // receive the first code must be able to request another, and a stable
+      // key would make the second request a no-op. This path sends straight
+      // through the provider and writes no message_log row, so the key is never
+      // persisted; the timestamp is here to keep it from ever colliding if it
+      // one day is.
       dedupeKey: `otp:${payload.user.id}:${Date.now()}`,
     })
 

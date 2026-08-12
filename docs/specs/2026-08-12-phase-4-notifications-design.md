@@ -79,6 +79,20 @@ Everything else in this phase is built and tested against the log provider
 and a fake, so the code is complete and green before approval lands. Going
 live is then a change of one environment variable.
 
+**The gap between deploy and approval is the dangerous part, and the order
+is: provider first, cron second.** Do not set `CRON_SECRET` in Vercel
+Production until `WHATSAPP_PROVIDER=meta` is live. With the provider still
+`log` the sweep decides real messages for real bookings, the drain marks
+them `sent`, and `dedupe_key` then guarantees they are never enqueued
+again — so a tick that runs in that window does not delay a confirmation,
+approval, waitlist offer or cancellation, it consumes it, and no later tick
+recovers it. This is the same failure `NOTIFICATIONS_LAUNCH_AT` exists to
+prevent, pointed the other way. An unset `CRON_SECRET` 401s every tick, so
+leaving it unset until the switch keeps the door shut by default. If a tick
+does run against `log`, nothing left the machine and the window is
+recoverable in one statement — see the handover in
+[the plan](../plans/2026-08-12-phase-4-notifications.md).
+
 ## Decisions taken in brainstorming
 
 **Meta Cloud API direct, not a BSP.** The per-message economics the whole
@@ -250,10 +264,13 @@ failure returns 502 so the user is told rather than left waiting. The only
 difference after this phase is which provider answers.
 
 **Everything else.** Cron calls `/api/cron`, which authenticates a shared
-secret and runs three things in order: the state sweep (enqueue what is
-owed), the outbox drain (send what is queued or failed and not yet dead),
-and Phase 3's reconciliation sweep, which has been hand-run since it was
-written. Each message is a `message_log` row from the moment it is decided,
+secret and runs three things in order: Phase 3's reconciliation sweep, which
+has been hand-run since it was written; then the state sweep (enqueue what
+is owed); then the outbox drain (send what is queued or failed and not yet
+dead). Reconciliation runs **first** because it can flip a booking to
+`confirmed` when a webhook was dropped — running it last would make that
+confirmation wait a whole tick, and this route's own reasoning is that the
+interval decides *whether*, not merely *when*. Each message is a `message_log` row from the moment it is decided,
 so "what did we send this person" is a query rather than a guess.
 
 **Failure.** The provider returns a `SendResult`; a failure stamps `failed`
@@ -271,7 +288,7 @@ about a failed message affects the booking it describes — the same posture
 | `lib/notifications/templates.ts` | **Modified.** Two new definitions; two corrected purpose lines. |
 | `lib/notifications/sweep.ts` | **New.** Pure decision layer: given booking rows and a clock, which messages are owed and under which `dedupe_key`. No database, no provider, no I/O — the phase's logic lives here so it can be tested exhaustively without either. |
 | `lib/notifications/service.ts` | **New.** The only module holding the service role: the reads `sweep.ts` judges, `enqueue()`, and `drainOutbox()`. The only writer of `message_log`. Named `service.ts` because that is what the three files already inside the ESLint admin-import fence are called, and it joins them — taking the fence from three files to four, the only fence change this phase asks for. |
-| `app/api/cron/route.ts` | **New.** Shared-secret auth, then sweep → drain → reconcile. |
+| `app/api/cron/route.ts` | **New.** Shared-secret auth, then reconcile → sweep → drain, so the sweep reads what reconcile just fixed. |
 | `vercel.json` | **New.** The cron schedule. |
 | `.env.example` | **Modified.** `CRON_SECRET` and `NOTIFICATIONS_LAUNCH_AT`. `WHATSAPP_API_KEY` and `WHATSAPP_PHONE_NUMBER_ID` already exist and are all the Cloud API needs to send. |
 
@@ -306,18 +323,49 @@ Every test runs against the log provider or a fake. No test requires a WABA.
   page", and the 24-hour hold makes an hour immaterial. Rejected: a
   non-blocking nudge at the moment of the state change, which buys seconds
   at the cost of a second delivery path that can disagree with the queue.
-- **The reminder's precision is the cron interval, and on a daily schedule
-  that is poor.** The window is "starts within the next 24 hours", so an
-  hourly cron gives everyone 23–24 hours of notice, while a daily cron gives
-  somewhere between 0 and 24 depending on where the event falls relative to
-  the run — an event starting an hour after the daily tick gets an hour's
-  warning, not a day's. `dedupe_key` guarantees it is sent once, never
-  twice, so the failure mode is lateness rather than spam. Documented rather
-  than solved because the fix is a Vercel plan, not code — and it needs no
-  template change either way: `event_reminder` reads "reminder: {{2}} is on
+- **A booking whose event starts before the next tick is never messaged at
+  all.** This is the sharpest limit in the phase and it is not lateness. The
+  sweep excludes any booking whose event `hasStarted`, and the reader only
+  selects rows with `events.starts_at > now`, so a booking has to be seen by
+  a tick falling between the booking and the event start. If its whole life
+  fits between two ticks, both gates exclude it from then on and no later
+  tick recovers it: no confirmation, no reminder, no cancellation notice.
+  On the daily schedule this phase was first written against, a 10:00
+  booking for a 19:00 event the same evening got nothing — which bites at
+  volume 1, and is why the project moved to Vercel Pro and an hourly cron.
+  **Hourly shrinks the hole to an hour; it does not close it.** What this
+  system guarantees is "every booking with at least an hour of daylight
+  before its event". Closing it properly means a shorter interval, or a
+  sweep that stops excluding started events and decides per template — the
+  cancellation of an event already under way is still worth sending.
+
+- **The reminder's precision is the cron interval.** The window is "starts
+  within the next 24 hours", so an hourly cron gives everyone 23–24 hours of
+  notice. `dedupe_key` guarantees exactly-once, so within that window the
+  failure mode is lateness rather than spam — but note that exactly-once is
+  a statement about duplication only, and the gates above mean the interval
+  still decides *whether* for the bookings that fall through it. No template
+  change is needed either way: `event_reminder` reads "reminder: {{2}} is on
   {{3}}", carrying the event's own date rather than claiming "tomorrow", so
   it stays true whether it arrives a day or an hour ahead. Widening the
   window is a one-constant change, not another approval round.
+
+- **Throughput is `DRAIN_LIMIT` × ticks, and the counts are the instrument.**
+  The drain moves at most 100 messages per tick, so hourly is ~2,400 a day
+  (against ~100 on a daily schedule). The cron response already returns the
+  counts, so the saturation signals need no new plumbing:
+  `drain.attempted === 100` means the drain saturated and a backlog is
+  building, and `sweep.scanned === 500` means `SWEEP_LIMIT` truncated the
+  read. The second is worse than it looks: the read is oldest-first, so the
+  dropped tail is the *newest* bookings, which then age past the start-time
+  gates above and are lost rather than deferred. Task 5 notes the fix is a
+  watermark rather than a bigger constant.
+
+- **The drain has no staleness gate.** A row enqueued while its event was
+  still upcoming is sent whenever the drain reaches it, even if the event
+  has since started — at most an hour late on the hourly schedule. Left
+  alone because the alternative is re-deciding at send time, which is
+  exactly what Task 5 froze the variables to prevent.
 - **No delivery receipts.** `message_log.status` records what we asked Meta
   to do, not what the recipient saw. Reading Meta's status webhooks means a
   second authenticated webhook surface for information nothing currently

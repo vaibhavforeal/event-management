@@ -20,9 +20,18 @@ const eslintConfig = defineConfig([
   ]),
   // The service role bypasses RLS entirely. Phase 2 needs it, because bookings
   // and tickets are deliberately not writable by `authenticated`, and Phase 3
-  // adds payments — but it is needed in exactly three files, the bookings,
-  // check-in and payments services, so that "did we check authorisation here?"
-  // has a named list as its answer rather than a grep.
+  // adds payments — but it is needed in exactly four files, the bookings,
+  // check-in, payments and notifications services, so that "did we check
+  // authorisation here?" has a named list as its answer rather than a grep.
+  //
+  // Notifications joined the list in Phase 4 for two reasons. message_log has
+  // no RLS policy at all — it is service-role only, exactly like fee_rules and
+  // provider_webhook_events — so no session-scoped client can write the outbox.
+  // And the sweep reads across every attendee and host on an event, which is
+  // not a scope any signed-in caller has. The module is reached only from a
+  // cron route, so it has no Caller and exposes nothing that takes an id from
+  // a request; that is what makes the absence of an authorisation check safe
+  // rather than merely absent.
   //
   // Spelled as `patterns` and not `paths` because `paths` compares the
   // specifier string exactly, and this repo writes relative imports as well as
@@ -38,13 +47,13 @@ const eslintConfig = defineConfig([
   // one of the uses admin.ts documents itself for.
   {
     files: ["app/**/*.{ts,tsx}", "lib/**/*.{ts,tsx}", "proxy.ts"],
-    ignores: ["lib/bookings/service.ts", "lib/checkin/service.ts", "lib/payments/service.ts", "lib/supabase/admin.ts"],
+    ignores: ["lib/bookings/service.ts", "lib/checkin/service.ts", "lib/payments/service.ts", "lib/notifications/service.ts", "lib/supabase/admin.ts"],
     rules: {
       "no-restricted-imports": ["error", {
         patterns: [{
           group: ["**/supabase/admin", "./admin"],
           message:
-            "Only lib/bookings/service.ts, lib/checkin/service.ts and lib/payments/service.ts may use the service role. Use @/lib/supabase/server, or add the write to one of those modules.",
+            "Only lib/bookings/service.ts, lib/checkin/service.ts, lib/payments/service.ts and lib/notifications/service.ts may use the service role. Use @/lib/supabase/server, or add the write to one of those modules.",
         }],
       }],
     },
