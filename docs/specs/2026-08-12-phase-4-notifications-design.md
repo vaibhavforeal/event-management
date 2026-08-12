@@ -306,18 +306,49 @@ Every test runs against the log provider or a fake. No test requires a WABA.
   page", and the 24-hour hold makes an hour immaterial. Rejected: a
   non-blocking nudge at the moment of the state change, which buys seconds
   at the cost of a second delivery path that can disagree with the queue.
-- **The reminder's precision is the cron interval, and on a daily schedule
-  that is poor.** The window is "starts within the next 24 hours", so an
-  hourly cron gives everyone 23–24 hours of notice, while a daily cron gives
-  somewhere between 0 and 24 depending on where the event falls relative to
-  the run — an event starting an hour after the daily tick gets an hour's
-  warning, not a day's. `dedupe_key` guarantees it is sent once, never
-  twice, so the failure mode is lateness rather than spam. Documented rather
-  than solved because the fix is a Vercel plan, not code — and it needs no
-  template change either way: `event_reminder` reads "reminder: {{2}} is on
+- **A booking whose event starts before the next tick is never messaged at
+  all.** This is the sharpest limit in the phase and it is not lateness. The
+  sweep excludes any booking whose event `hasStarted`, and the reader only
+  selects rows with `events.starts_at > now`, so a booking has to be seen by
+  a tick falling between the booking and the event start. If its whole life
+  fits between two ticks, both gates exclude it from then on and no later
+  tick recovers it: no confirmation, no reminder, no cancellation notice.
+  On the daily schedule this phase was first written against, a 10:00
+  booking for a 19:00 event the same evening got nothing — which bites at
+  volume 1, and is why the project moved to Vercel Pro and an hourly cron.
+  **Hourly shrinks the hole to an hour; it does not close it.** What this
+  system guarantees is "every booking with at least an hour of daylight
+  before its event". Closing it properly means a shorter interval, or a
+  sweep that stops excluding started events and decides per template — the
+  cancellation of an event already under way is still worth sending.
+
+- **The reminder's precision is the cron interval.** The window is "starts
+  within the next 24 hours", so an hourly cron gives everyone 23–24 hours of
+  notice. `dedupe_key` guarantees exactly-once, so within that window the
+  failure mode is lateness rather than spam — but note that exactly-once is
+  a statement about duplication only, and the gates above mean the interval
+  still decides *whether* for the bookings that fall through it. No template
+  change is needed either way: `event_reminder` reads "reminder: {{2}} is on
   {{3}}", carrying the event's own date rather than claiming "tomorrow", so
   it stays true whether it arrives a day or an hour ahead. Widening the
   window is a one-constant change, not another approval round.
+
+- **Throughput is `DRAIN_LIMIT` × ticks, and the counts are the instrument.**
+  The drain moves at most 100 messages per tick, so hourly is ~2,400 a day
+  (against ~100 on a daily schedule). The cron response already returns the
+  counts, so the saturation signals need no new plumbing:
+  `drain.attempted === 100` means the drain saturated and a backlog is
+  building, and `sweep.scanned === 500` means `SWEEP_LIMIT` truncated the
+  read. The second is worse than it looks: the read is oldest-first, so the
+  dropped tail is the *newest* bookings, which then age past the start-time
+  gates above and are lost rather than deferred. Task 5 notes the fix is a
+  watermark rather than a bigger constant.
+
+- **The drain has no staleness gate.** A row enqueued while its event was
+  still upcoming is sent whenever the drain reaches it, even if the event
+  has since started — at most an hour late on the hourly schedule. Left
+  alone because the alternative is re-deciding at send time, which is
+  exactly what Task 5 froze the variables to prevent.
 - **No delivery receipts.** `message_log.status` records what we asked Meta
   to do, not what the recipient saw. Reading Meta's status webhooks means a
   second authenticated webhook surface for information nothing currently

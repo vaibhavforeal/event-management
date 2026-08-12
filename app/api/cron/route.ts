@@ -24,43 +24,67 @@ import { runReconciliationSweep } from '@/lib/payments/service'
 /**
  * ON THE SCHEDULE, which vercel.json cannot carry a comment about.
  *
- * `0 3 * * *` — once a day, 08:30 IST. Daily is not a preference: Vercel's
- * Hobby plan permits a minimum interval of once per day, and a more frequent
- * expression does not get throttled, it FAILS THE DEPLOYMENT with "Hobby
- * accounts are limited to daily cron jobs. This cron expression would run more
- * than once per day." An hourly `0 * * * *` here does not mean late messages;
- * it means nothing ships.
+ * `0 * * * *` — hourly, which requires Vercel Pro. The interval is not a
+ * tuning knob, because the sweep's own gates make a missed tick permanent
+ * rather than late:
  *
- * On Pro the minimum interval is once per minute and this one string can go
- * back to `0 * * * *`, which gives the 24-hour reminder a tight 23–24 hour
- * window. On Hobby the reminder instead lands somewhere between 0 and 24 hours
- * ahead depending where the event falls, and a confirmation for a booking made
- * just after a tick waits until the next morning. `dedupe_key` makes it
- * exactly-once on either schedule, so what changes is when, never whether.
+ *   1. sweep.ts refuses any booking whose event `hasStarted`, and
+ *   2. service.ts only reads rows with `events.starts_at > now`.
  *
- * Hobby scheduling precision is per-hour, ±59 minutes, so 08:30 IST is really
- * somewhere in 08:30–09:29. That is why the hour is 03:00 UTC and not, say,
- * 23:00 UTC: the slop has to stay inside waking hours in the one timezone this
- * product serves, because the tick is also when the messages actually go out.
+ * A booking therefore has to be SEEN by a tick that falls between the booking
+ * and the event start. If the whole of that life fits between two ticks,
+ * nothing is ever owed for it and no later tick can recover it — the row is
+ * excluded by both gates from then on, forever. Booked at 10:00 for an event
+ * at 19:00 the same evening, on a daily 08:30 tick: no confirmation, no
+ * reminder, no cancellation notice, nothing. Not late — never. That is why an
+ * hourly tick is worth a paid plan: it shrinks the hole from a day to an hour.
+ *
+ * It does NOT close it. An event starting inside the hour after the booking is
+ * still missed, and the honest statement of what this route guarantees is
+ * "every booking with at least an hour of daylight before its event". Widening
+ * that means a shorter interval, or a sweep that stops excluding started
+ * events and decides per template — not a bigger constant here.
+ *
+ * `dedupe_key` still guarantees exactly-once for everything that IS decided.
+ * What it does not do is make the schedule a question of only WHEN: the gates
+ * above mean the interval decides WHETHER, for the bookings that fall through.
+ *
+ * If this ever moves back to Hobby, note that Hobby's minimum interval is once
+ * per day and a more frequent expression does not get throttled, it FAILS THE
+ * DEPLOYMENT with "Hobby accounts are limited to daily cron jobs. This cron
+ * expression would run more than once per day." So a downgrade costs the
+ * deploy first and the same-day bookings second; the daily replacement is
+ * `0 3 * * *` (03:00 UTC, 08:30 IST — Hobby precision is ±59 min, so really
+ * 08:30–09:29, kept inside waking hours because the tick is also when messages
+ * go out).
+ *
+ * ON THROUGHPUT. The drain moves at most DRAIN_LIMIT (100) messages per tick,
+ * so hourly is ~2,400 a day against ~100 on a daily schedule. The response
+ * body is the instrument: `drain.attempted === 100` means the drain saturated
+ * and a backlog is building, and `sweep.scanned === 500` means SWEEP_LIMIT
+ * truncated the read — whose dropped tail is the NEWEST bookings, which then
+ * age past the gates above and are lost rather than deferred.
  */
 
 /**
  * ON DURATION, and why there is deliberately no `maxDuration` export.
  *
  * Under Fluid compute — the default for projects created since April 2025 —
- * Hobby's function duration is 300s both by default and at maximum, so there
- * is nothing here to raise: an export could only equal that ceiling or lower
- * it. (60s was the pre-Fluid Hobby maximum; writing it here would have CUT the
- * budget to a fifth while claiming to protect it.) A number would also be one
- * more thing to go stale, and a wrong one in this file is expensive, because a
- * deployment that fails on config is the one failure this route cannot report.
+ * the function duration default is 300s on every plan; Pro's maximum is 800s
+ * and Hobby's is also 300s. So Pro does have headroom to raise, and this file
+ * still declines to use it, because the budget is not what binds: the drain
+ * sends up to DRAIN_LIMIT messages one at a time and reconcile makes a
+ * Razorpay round trip per stuck refund, and 300s covers roughly 750 sequential
+ * sends against a DRAIN_LIMIT of 100. The wall is nowhere near, and a number
+ * written here would be one more thing to go stale — 60 already did, having
+ * been the PRE-Fluid Hobby maximum, so an export of it would have cut the
+ * budget to a fifth while its comment claimed to protect it.
  *
- * The budget matters because a tick is not cheap: the drain sends up to
- * DRAIN_LIMIT messages one at a time and reconcile makes a Razorpay round trip
- * per stuck refund. 300s covers roughly 750 sequential sends, so DRAIN_LIMIT
- * (100) is not close to the wall. And a tick killed anyway degrades gracefully
- * — a claimed row keeps its spent attempt and is selectable on the next tick,
- * so the cost is lateness, not loss.
+ * If DRAIN_LIMIT is ever raised past a few hundred, revisit this: that is the
+ * change that makes duration bind, and on Pro the fix is an export, not a
+ * plan. A tick killed at the wall still degrades gracefully — a claimed row
+ * keeps its spent attempt and is selectable on the next tick — so the cost is
+ * an hour's lateness, not loss.
  */
 
 /** Constant-time compare, so the secret cannot be recovered a byte at a time. */
