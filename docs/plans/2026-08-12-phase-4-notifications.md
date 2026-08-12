@@ -2364,7 +2364,13 @@ SQL
 docker exec -i supabase_db_Event_Hoster psql -U postgres -q -c 'drop database phase4_check;'
 ```
 
-Expect both columns, the constraint, and an index definition whose `WHERE` names `queued` and `failed`.
+Expect both columns and the constraint. **Compare the index definition against the full expected string rather than reading it** — a wrong predicate (dropping `'failed'`, say) passes every test in Task 3 and would silently halve what the drain ever picks up:
+
+```
+CREATE INDEX message_log_pending_idx ON public.message_log
+  USING btree (status, updated_at)
+  WHERE (status = ANY (ARRAY['queued'::text, 'failed'::text]))
+```
 
 - [ ] **Step 3: Rehearse the cutoff against the real dev database**
 
