@@ -2,12 +2,15 @@ import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { getPublishedEventBySlug } from '@/lib/events/queries'
+import { waitlistLength } from '@/lib/bookings/queries'
+import { lineLengthLine, waitlistPriceLine } from '@/lib/bookings/waitlist-copy'
 import { formatIst, formatIstDateOnly, hasStarted } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import { refundPolicySentence } from '@/lib/payments/refund-policy'
 import { clientEnv } from '@/lib/env'
 import { BookPanel } from './book-panel'
 import { RequestPanel } from './request-panel'
+import { JoinWaitlistPanel } from './join-waitlist-panel'
 
 /** How much of the description WhatsApp gets. Its card shows rather less. */
 const OG_DESCRIPTION_LIMIT = 200
@@ -187,11 +190,36 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
   // For requests the picker caps at max_per_order, not seats remaining:
   // a full room can still be asked.
   const requestMax = ticket ? Math.max(1, Math.min(ticket.quantity, ticket.max_per_order ?? 10)) : 1
+
+  // Only asked for on events that keep a line — one RPC, skipped entirely on
+  // every other event, which is most of them. Signed-out safe by design; see
+  // waitlistLength.
+  const lineLength = ticket && event.has_waitlist ? await waitlistLength(ticket.id) : 0
+
+  // The line holds the door. While anyone is waiting, this page stays in
+  // join-waitlist mode even when a seat is free — because a seat that is free
+  // right now is a seat somebody in the line is owed, and letting a walk-up
+  // take it is the one thing that would make the queue not worth joining.
+  //
+  // SQL enforces the same priority underneath — reserve_tickets promotes
+  // before it sells — but not identically, and the seam is worth naming:
+  // promote_from_waitlist is strict FIFO and exits when the head wants more
+  // seats than are free, so a one-seat walk-up arriving behind a three-seat
+  // head with one seat loose IS sold by reserve_tickets. The SQL calls that
+  // idle seat the accepted cost of a queue nobody can cut; this page simply
+  // does not offer the button, which is the stricter half of the disagreement
+  // and the safe one. What it buys is that no visitor is ever handed a control
+  // the database is about to refuse.
+  const joinable = !!ticket && !started && event.has_waitlist && (soldOut || lineLength > 0)
+  // Capped at max_per_order rather than seats remaining, like the request
+  // panel: there are no seats remaining, which is why this panel exists.
+  const joinMax = ticket ? Math.max(1, Math.min(ticket.quantity, ticket.max_per_order ?? 10)) : 1
+
   // One gate, two doors: everything a booking needs regardless of money, then
   // the price decides which action the panel submits to. The two are mutually
   // exclusive by construction — price_paise is CHECKed non-negative — so the
   // bar renders exactly one of free panel, paid panel, or the inert fallback.
-  const common = !!ticket && !soldOut && !started && !event.requires_approval
+  const common = !!ticket && !soldOut && !started && !event.requires_approval && !joinable
   const bookableFree = common && ticket.price_paise === 0
   const bookablePaid = common && ticket.price_paise > 0
   const maxSeats = ticket ? Math.max(1, Math.min(remaining, ticket.max_per_order ?? 10)) : 1
@@ -361,6 +389,17 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
             slug={slug}
             maxSeats={requestMax}
             priceLabel={ticket.price_paise === 0 ? 'Free' : `${formatPaise(ticket.price_paise)} after approval`}
+            offerCash={event.allows_cash && ticket.price_paise > 0}
+          />
+        ) : joinable && ticket ? (
+          <JoinWaitlistPanel
+            ticketTypeId={ticket.id}
+            slug={slug}
+            maxSeats={joinMax}
+            priceLine={waitlistPriceLine(
+              ticket.price_paise === 0 ? null : formatPaise(ticket.price_paise),
+            )}
+            lineLine={lineLengthLine(lineLength)}
             offerCash={event.allows_cash && ticket.price_paise > 0}
           />
         ) : bookableFree && ticket ? (

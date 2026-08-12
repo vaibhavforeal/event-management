@@ -21,15 +21,23 @@ const CASH_ON_FREE = 'EH057'
 const CASH_NEEDS_APPROVAL = 'EH058'
 const CASH_STARTED = 'EH059'
 
+/** Phase 5b: the waitlist block. */
+const NO_WAITLIST = 'EH060'
+const WAITLIST_STARTED = 'EH061'
+const WAITLIST_CASH_NOT_ALLOWED = 'EH062'
+const WAITLIST_OVER_MAX_PER_ORDER = 'EH063'
+const SEATS_ARE_OPEN = 'EH064'
+const WAITLIST_ALREADY_ACTIVE = 'EH065'
+
 /**
  * Turns a refusal from book_free_tickets into a sentence an attendee can read.
  *
- * Maps fourteen error codes across three phases of booking development:
- * EH010–EH013 (free booking), and EH050–EH059 (Phase 5a request/approve/cash).
- * Everything reserve_tickets raises — "only 3 seats remain", "sales have closed",
- * "cannot book more than 10 per order" — is already written for a person and
- * carries a number the attendee needs, so it passes through rather than being
- * flattened into something generic.
+ * Maps twenty codes across four phases of booking development: EH010–EH013
+ * (free booking), EH050–EH059 (Phase 5a request/approve/cash), and EH060–EH065
+ * (Phase 5b waitlist). Everything reserve_tickets raises — "only 3 seats remain",
+ * "sales have closed", "cannot book more than 10 per order" — is already written
+ * for a person and carries a number the attendee needs, so it passes through
+ * rather than being flattened into something generic.
  */
 export function mapBookingRpcError(error: PostgrestError): string {
   if (error.code === NOT_FREE) return 'This event is not free yet, so booking has not opened.'
@@ -53,5 +61,15 @@ export function mapBookingRpcError(error: PostgrestError): string {
   if (error.code === NOT_PENDING) return 'This request was already handled — refresh to see where it stands.'
   if (error.code === CASH_ON_FREE) return 'This event is free — book it without paying.'
   if (error.code === CASH_NEEDS_APPROVAL) return 'This host approves guests first — send a request instead.'
+  if (error.code === NO_WAITLIST) return "This event doesn't keep a waitlist."
+  if (error.code === WAITLIST_STARTED) return 'This event has already started.'
+  if (error.code === WAITLIST_CASH_NOT_ALLOWED) return "This event doesn't take cash bookings."
+  if (error.code === WAITLIST_OVER_MAX_PER_ORDER) {
+    return "That's more seats than this event allows per booking."
+  }
+  if (error.code === SEATS_ARE_OPEN) return 'Seats are open — book instead of joining the waitlist.'
+  if (error.code === WAITLIST_ALREADY_ACTIVE) {
+    return 'You have already booked this event. Cancel that booking first to change it.'
+  }
   return error.message
 }

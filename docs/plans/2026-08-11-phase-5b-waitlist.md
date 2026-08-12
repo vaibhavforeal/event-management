@@ -41,7 +41,11 @@ All three are deliberate and each is argued again where it lands. Flagged here s
 
 2. **EH064 fires on `available >= p_quantity`, not `available >= 1`.** The spec words the guard as "seats open and the line empty — book instead". Taken literally, someone wanting 3 seats on an event with 1 free seat and an empty line would be told to "book instead" — advice that cannot be followed. The guard is written against the quantity actually asked for, which is the same rule everywhere it matters and never gives impossible advice.
 
-3. **`reserve_tickets` is a third promotion seam, not just `cancel_booking` and `release_expired_holds`.** The spec calls those two "the whole trigger story", and for *freed* seats they are. But seats can appear without being freed — a host raising capacity on an event that already has a line — and neither of those two runs then, so the next walk-up would take a seat the line is owed. The spec also promises that priority is "enforced in SQL, not just the page"; with two seams that promise holds for freed seats and rests on the page for the rest. One extra `perform promote_from_waitlist` beside the `release_expired_holds` call `reserve_tickets` already makes closes it, costs a non-waitlist event an early return, and is what Task 2's walk-up test actually pins.
+3. **There are two more promotion seams than the spec names.** The spec calls `cancel_booking` and `release_expired_holds` "the whole trigger story", and for *freed* seats they are. Seats can also appear without being freed — a host raising capacity on an event that already has a line — and neither of those two runs then.
+
+   Task 1 adds a `perform promote_from_waitlist` beside the `release_expired_holds` call `reserve_tickets` already makes. **This does not close the capacity-raise hole, and the plan originally claimed it did.** Task 2 proved otherwise: PostgREST runs one transaction per RPC, so when the promotion consumes the new seat and `reserve_tickets` then raises "only 0 seats remain", the raise rolls back the promotion that caused it. The call is still worth keeping — it delivers the guarantee the spec actually asks for ("walk-ups don't cut": a walk-up can never *take* a seat the line is owed), and it serves the line productively whenever the reservation itself succeeds — but it is a safety seam, not a liveness one.
+
+   The liveness fix is Task 6, Step 7: `promoteAfterCapacityChange` in `lib/bookings/service.ts`, called by `updateEvent` after the save commits. Two transactions, no grant change, no trigger. The rejected alternatives are argued there.
 
 ## File Structure
 
@@ -55,7 +59,7 @@ All three are deliberate and each is argued again where it lands. Flagged here s
 | `lib/bookings/waitlist-promotion.test.ts` | **New.** The offer engine: FIFO, blocking heads, chaining, lapse, walk-ups, started no-op, repricing. |
 | `lib/bookings/rpc-errors.ts` | **Modified.** EH060–EH065 → sentences. |
 | `lib/bookings/waitlist-copy.ts` | **New.** Every sentence this phase says, pure and tested. Also takes custody of 5a's approved-pay sentence so the two offer copies live together. |
-| `lib/bookings/service.ts` | **Modified.** `joinWaitlist`, `claimOfferedSeat`, `waitlistPosition`. |
+| `lib/bookings/service.ts` | **Modified.** `joinWaitlist`, `claimOfferedSeat`, `waitlistPosition` (Task 4); `promoteAfterCapacityChange` (Task 6). |
 | `lib/bookings/queries.ts` | **Modified.** `BOOKING_COLUMNS` gains `events.has_waitlist`; `listEventWaitlist`; `waitlistLength`. |
 | `lib/events/queries.ts` | **Modified.** `has_waitlist` on `PublicEvent` and `OwnedEvent`. |
 | `lib/events/validation.ts` | **Modified.** `hasWaitlist` in the schema and `EVENT_FORM_FIELDS`. |
@@ -2699,12 +2703,14 @@ git commit -m "feat: the host reads the line, a stranger reads its length"
 - Modify: `app/host/events/actions.ts`
 - Modify: `app/host/events/event-form.tsx`
 - Modify: `app/host/events/[id]/edit/page.tsx`
+- Modify: `lib/bookings/service.ts`
 - Test: extend `lib/events/validation.test.ts`
 - Create: `lib/events/waitlist-toggle.test.ts`
+- Create: `lib/bookings/capacity-promote.test.ts`
 
 **Interfaces:**
-- Consumes: `EVENT_FORM_FIELDS` and `eventDraftSchema` (`lib/events/validation.ts:118-166`), the widened `create_event_with_ticket_type` / `update_event_with_ticket_type` (Task 1), `OwnedEvent.has_waitlist` (Task 5).
-- Produces: `EventDraftInput.hasWaitlist: boolean`; `SubmittedEventValues.hasWaitlist: boolean` (free — it is derived from `EVENT_FORM_FIELDS`); `EventFormValues.hasWaitlist?: boolean`.
+- Consumes: `EVENT_FORM_FIELDS` and `eventDraftSchema` (`lib/events/validation.ts:118-166`), the widened `create_event_with_ticket_type` / `update_event_with_ticket_type` (Task 1), `OwnedEvent.has_waitlist` (Task 5), `mayApprove` (`lib/bookings/authorize.ts:38`), `createAdminClient`, `Caller`.
+- Produces: `EventDraftInput.hasWaitlist: boolean`; `SubmittedEventValues.hasWaitlist: boolean` (free — it is derived from `EVENT_FORM_FIELDS`); `EventFormValues.hasWaitlist?: boolean`; `promoteAfterCapacityChange(caller: Caller, eventId: string): Promise<void>`.
 
 `EVENT_FORM_FIELDS` carries `satisfies Record<keyof EventDraftInput, FieldKind>`, so adding `hasWaitlist` to the schema without adding it to that map is a compile error, and the echo cannot silently drop it. That is the mechanism; do not work around it.
 
@@ -2975,16 +2981,169 @@ The `allowsCash` and `hideVenueUntilApproved` labels below it are untouched, key
           hideVenueUntilApproved: event.hide_venue_until_approved,
 ```
 
-- [ ] **Step 7: Green, then commit**
+- [ ] **Step 7: Serve the line after a capacity raise**
+
+A host who adds seats to a sold-out event that already has a line must have those seats reach the line, and nothing in the phase so far makes that happen. `cancel_booking` needs a booking; `release_expired_holds` promotes only what it itself reclaimed; and the `promote_from_waitlist` call inside `reserve_tickets` cannot do it — PostgREST runs one transaction per RPC, so when the promotion consumes the new seat and `reserve_tickets` then raises "only 0 seats remain", the raise rolls back the promotion that caused it. That call is worth keeping for the guarantee it *does* deliver (a walk-up can never take a seat the line is owed, and the line is served whenever the reservation itself succeeds), but the productive trigger has to live somewhere that commits.
+
+The host's own Server Action is that place. Two transactions: the capacity raise commits first, so the promote sees the new seats; a failed promote leaves the raise standing and the next cancel or expiry serves the line.
+
+Rejected: granting `promote_from_waitlist` to `authenticated` so `update_event_with_ticket_type` could call it — that function is SECURITY INVOKER precisely so RLS still applies to it, and the grant would put a function that writes inventory and bookings within reach of a crafted PostgREST call. Also rejected: an `AFTER UPDATE` trigger on `ticket_types` — tightest of the three, but it hides a booking mutation behind a column write in a codebase whose stated rule is that every `reserved_count` mutation lives in one file.
+
+First the test, `lib/bookings/capacity-promote.test.ts`:
+
+```ts
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { adminClient, cleanupEvent, createTestUser, seedEvent, type SeededEvent } from '@/tests/helpers/db'
+import type { Caller } from '@/lib/bookings/caller'
+import { joinWaitlist, promoteAfterCapacityChange } from '@/lib/bookings/service'
+
+const db = adminClient()
+const asCaller = (id: string) => ({ id }) as unknown as Caller
+
+describe('promoteAfterCapacityChange', () => {
+  let seed: SeededEvent
+  let filler = ''
+  let stranger = ''
+
+  beforeAll(async () => {
+    seed = await seedEvent(db, { quantity: 1, pricePaise: 50_000, hasWaitlist: true })
+    // Sell the only seat, so the room is genuinely full and Asha may join.
+    filler = await createTestUser(db)
+    const booked = await db.rpc('begin_paid_booking', {
+      p_ticket_type_id: seed.ticketTypeId,
+      p_attendee_id: filler,
+      p_quantity: 1,
+      p_attendee_name: 'Filler',
+    })
+    if (booked.error) throw new Error(`setup fill failed: ${booked.error.message}`)
+    await db.rpc('confirm_booking', { p_booking_id: booked.data!.id })
+    await joinWaitlist(asCaller(seed.attendeeId), seed.ticketTypeId, 1, 'Asha', 'online')
+    stranger = await createTestUser(db)
+  })
+
+  afterAll(async () => {
+    await db.from('bookings').delete().eq('event_id', seed.eventId)
+    await cleanupEvent(db, seed)
+    for (const id of [filler, stranger]) await db.auth.admin.deleteUser(id).catch(() => {})
+  })
+
+  async function statusOfAsha(): Promise<string> {
+    const { data } = await db.from('bookings').select('status').eq('attendee_id', seed.attendeeId).single()
+    return data!.status
+  }
+
+  it('does nothing for anyone but the host', async () => {
+    // The seats exist by now only if this refuses — so raise capacity first
+    // and prove a stranger's call leaves the line where it is.
+    await db.from('ticket_types').update({ quantity: 2 }).eq('id', seed.ticketTypeId)
+    await promoteAfterCapacityChange(asCaller(stranger), seed.eventId)
+    expect(await statusOfAsha()).toBe('waitlisted')
+    await promoteAfterCapacityChange(asCaller(seed.attendeeId), seed.eventId)
+    expect(await statusOfAsha()).toBe('waitlisted')
+  })
+
+  it('serves the line when the host adds a seat', async () => {
+    await promoteAfterCapacityChange(asCaller(seed.hostProfileId), seed.eventId)
+    expect(await statusOfAsha()).toBe('awaiting_payment')
+    const { data } = await db.from('ticket_types').select('reserved_count').eq('id', seed.ticketTypeId).single()
+    expect(data!.reserved_count).toBe(2)
+  })
+
+  it('never throws on an event that cannot be found', async () => {
+    // A save must not fail because the promote did. Same reasoning as
+    // refundIfOwed: the seat is the important part, and the sweep catches up.
+    await expect(
+      promoteAfterCapacityChange(asCaller(seed.hostProfileId), '00000000-0000-4000-8000-00000000dead'),
+    ).resolves.toBeUndefined()
+  })
+})
+```
+
+Then the service function, appended to `lib/bookings/service.ts`:
+
+```ts
+/**
+ * Offers newly-added seats to the line, after the host's save has committed.
+ *
+ * The one seat-appearing path the SQL seams cannot cover. cancel_booking needs
+ * a booking and release_expired_holds promotes only what it reclaimed, so a
+ * capacity raise frees seats through neither — and reserve_tickets' own
+ * promote call cannot do it either, because one PostgREST transaction per RPC
+ * means its "only 0 seats remain" raise unwinds the promotion that produced
+ * it. Hence a second, committing call from here.
+ *
+ * Never throws. A failed promote must not turn a successful save into an
+ * error the host has to interpret — the seats are added either way, and the
+ * next cancel or hold expiry serves the line. Same posture as refundIfOwed.
+ *
+ * Host-only, and the check is real rather than ceremonial: this is reached
+ * from a Server Action carrying an eventId out of a form.
+ */
+export async function promoteAfterCapacityChange(caller: Caller, eventId: string): Promise<void> {
+  try {
+    const db = createAdminClient()
+
+    const { data: event, error } = await db
+      .from('events')
+      .select('id, has_waitlist, hosts(profile_id), ticket_types(id)')
+      .eq('id', eventId)
+      .maybeSingle()
+
+    if (error) {
+      console.error('[bookings] could not read the event to serve its waitlist', error)
+      return
+    }
+    // No event, no waitlist, or not this caller's to touch — all silent, all
+    // the same nothing. promote_from_waitlist would refuse the middle one
+    // anyway; checking here saves a round trip per ticket type.
+    if (!event || !event.has_waitlist) return
+    if (!mayApprove(caller, { event_host_profile_id: event.hosts.profile_id })) return
+
+    for (const ticketType of event.ticket_types) {
+      const { error: promoteError } = await db.rpc('promote_from_waitlist', {
+        p_ticket_type_id: ticketType.id,
+      })
+      if (promoteError) {
+        console.error('[bookings] could not serve the waitlist after a capacity change', promoteError)
+      }
+    }
+  } catch (cause) {
+    console.error('[bookings] serving the waitlist after a capacity change threw', cause)
+  }
+}
+```
+
+Finally the call site. `app/host/events/actions.ts`, in `updateEvent`, immediately after the `if (error) return …` guard on the `update_event_with_ticket_type` call and before the host-rename block:
+
+```ts
+  // The save has committed, so any seats it added are real and visible. Only
+  // now can the line be served — see promoteAfterCapacityChange for why this
+  // cannot ride inside the writer's own transaction. Never throws, so a
+  // waitlist problem cannot fail a save that already succeeded.
+  await promoteAfterCapacityChange(caller, eventId)
+```
+
+`updateEvent` works from an RLS-scoped Supabase client rather than a `Caller`, so mint one at the top of the action beside the existing `getCurrentHost()` call:
+
+```ts
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+```
+
+with `currentCaller` imported from `@/lib/bookings/caller`. Do not pass `auth.user.id` or `host.profile_id` in its place — `Caller` is branded so that identity cannot be conjured from a string, and this call site is no exception.
+
+- [ ] **Step 8: Green, then commit**
 
 ```bash
-npx vitest run lib/events/validation.test.ts lib/events/waitlist-toggle.test.ts
+npx vitest run lib/events/validation.test.ts lib/events/waitlist-toggle.test.ts \
+               lib/bookings/capacity-promote.test.ts
 npm test
-npx tsc --noEmit   # EVENT_FORM_FIELDS' `satisfies` is only enforced here
+npm run typecheck   # EVENT_FORM_FIELDS' `satisfies` is only enforced here
 git add lib/events/validation.ts app/host/events/actions.ts app/host/events/event-form.tsx \
-        "app/host/events/[id]/edit/page.tsx" lib/events/validation.test.ts \
-        lib/events/waitlist-toggle.test.ts
-git commit -m "feat: the host opts into a waitlist, and cannot ask for two queues"
+        "app/host/events/[id]/edit/page.tsx" lib/bookings/service.ts \
+        lib/events/validation.test.ts lib/events/waitlist-toggle.test.ts \
+        lib/bookings/capacity-promote.test.ts
+git commit -m "feat: the host opts into a waitlist, and adding seats serves the line"
 ```
 
 ---
@@ -3364,7 +3523,7 @@ In the bottom bar, a branch between `requestable` and `bookableFree`. The two ca
 ```bash
 npx vitest run "app/e/[slug]/join-waitlist.test.ts"
 npm test
-npx tsc --noEmit
+npm run typecheck
 git add "app/e/[slug]/join-waitlist-panel.tsx" "app/e/[slug]/actions.ts" \
         "app/e/[slug]/page.tsx" "app/e/[slug]/join-waitlist.test.ts"
 git commit -m "feat: a sold-out event offers a place in the line instead of a closed door"
@@ -3830,7 +3989,7 @@ The meta line gains the position, and the control gains the third status:
 ```bash
 npx vitest run "app/bookings/[reference]/claim-seat.test.ts" "app/bookings/[reference]/approved-pay.test.ts"
 npm test
-npx tsc --noEmit
+npm run typecheck
 git add "app/bookings/[reference]/page.tsx" "app/bookings/[reference]/approved-pay-panel.tsx" \
         "app/bookings/[reference]/claim-seat-panel.tsx" "app/bookings/[reference]/actions.ts" \
         "app/bookings/[reference]/claim-seat.test.ts" app/bookings/page.tsx
@@ -4017,7 +4176,7 @@ and inside each row's meta line, the verb:
 ```bash
 npx vitest run lib/bookings/waitlist-service.test.ts
 npm test
-npx tsc --noEmit
+npm run typecheck
 git add "app/host/events/[id]/attendees/page.tsx" lib/bookings/waitlist-service.test.ts
 git commit -m "feat: the host sees the line and the offers in flight"
 ```
@@ -4032,8 +4191,10 @@ git commit -m "feat: the host sees the line and the offers in flight"
 
 ```bash
 npm test          # every file; count must be >= Task 1's baseline + this phase's new tests
-npx next lint
-npx tsc --noEmit
+npm run lint      # `eslint`. NOT `npx next lint` — Next 16 removed that subcommand
+                  # and reads the word "lint" as a directory name instead.
+npm run typecheck # `next typegen && tsc --noEmit` — the typegen half is what
+                  # makes the PageProps<'/route'> helpers exist.
 npm run build
 ```
 
@@ -4064,6 +4225,7 @@ Open `docs/specs/2026-08-11-phase-5b-waitlist-design.md` and verify each is true
 - a lapsed offer expires and the same call offers it onward (Task 2)
 - promotion no-ops after `starts_at`; un-promoted entries sit inert and withdrawable (Task 2, Task 8)
 - walk-ups cannot cut, in SQL and on the page (Task 2's concurrency test; Task 7's `joinable` gate)
+- a host adding seats to a sold-out event serves the line rather than the next walk-up (Task 6's `promoteAfterCapacityChange`), **and Task 2's rollback pin — `a refused reservation rolls back the promotion it just made` — is still green and still there.** It is not a defect awaiting repair; it is the documented reason `promoteAfterCapacityChange` exists, and it stays green because that fix adds a committing caller at the service layer without touching `reserve_tickets`, while the pin drives `reserve_tickets` directly. Do not delete it.
 - repricing is at offer time, against a mid-queue price edit (Task 2)
 - every `EH06x` guard, plus unpublished passing through unmapped (Task 1)
 - `has_waitlist` toggle, hidden under `requires_approval`, exclusive by CHECK and by coercion (Task 6)

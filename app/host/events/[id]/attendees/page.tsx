@@ -6,8 +6,10 @@ import {
   listApprovedUnpaid,
   listEventAttendees,
   listEventRequests,
+  listEventWaitlist,
   type EventRequest,
 } from '@/lib/bookings/queries'
+import { REMOVE_FROM_WAITLIST_CONSEQUENCE } from '@/lib/bookings/waitlist-copy'
 import { cancelConsequence } from '@/lib/payments/refund-policy'
 import { formatPaise } from '@/lib/money'
 import { formatIst } from '@/lib/events/datetime'
@@ -69,10 +71,11 @@ export default async function AttendeesPage(
   const event = await getOwnedEvent(id)
   if (!event) notFound()
 
-  const [attendees, requests, unpaid] = await Promise.all([
+  const [attendees, requests, unpaid, waitlist] = await Promise.all([
     listEventAttendees(id),
     listEventRequests(id),
     listApprovedUnpaid(id),
+    listEventWaitlist(id),
   ])
   const seats = attendees.reduce((total, a) => total + a.quantity, 0)
   // The one price this pilot's single ticket type carries — what
@@ -90,10 +93,13 @@ export default async function AttendeesPage(
         {seats} {seats === 1 ? 'seat' : 'seats'} taken by {attendees.length}{' '}
         {attendees.length === 1 ? 'booking' : 'bookings'}
         {/* The host's one-glance answer to "is anything waiting on me?" —
-            confirmed seats stay the headline count, and the queue's two
-            numbers ride beside it only while either is non-zero. */}
-        {(requests.length > 0 || unpaid.length > 0) &&
-          ` · ${requests.length} requested · ${unpaid.length} approved unpaid`}
+            confirmed seats stay the headline count, and the queue's three
+            numbers ride beside it only while any of them is non-zero. An
+            event runs one queue or the other, never both, so in practice two
+            of these three are always zero; printing all three keeps the line
+            one shape to read rather than one per event kind. */}
+        {(requests.length > 0 || unpaid.length > 0 || waitlist.length > 0) &&
+          ` · ${requests.length} requested · ${unpaid.length} approved unpaid · ${waitlist.length} waiting`}
       </p>
       {/* The door's main entrance. The buttons below are its fallback for a
           guest with no QR, no camera, or no Chrome. */}
@@ -156,18 +162,35 @@ export default async function AttendeesPage(
       {/* Approved but not yet paid: seats these guests hold that money has not
           confirmed. The host's move here is chasing (the phone link) or
           freeing the seat — and cancelling costs the guest nothing, because
-          nothing was paid, which is why the consequence is null. */}
+          nothing was paid, which is why the consequence is null.
+
+          One strip, two queues. The rows are identical because a seat offer and
+          an approval genuinely are the same row — awaiting_payment carrying
+          approved_at — so only the two strings below differ. events_one_queue
+          forbids an event running both, which is what makes has_waitlist the
+          whole of the answer to which queue produced these. */}
       {unpaid.length > 0 && (
         <section className="mt-10">
-          <h2 className="text-lg font-semibold">Approved — payment pending</h2>
+          <h2 className="text-lg font-semibold">
+            {event.has_waitlist ? 'Seat offers — waiting on the guest' : 'Approved — payment pending'}
+          </h2>
           <ul className="divide-line mt-4 divide-y">
             {unpaid.map((u) => (
               <li key={u.id} className="flex items-start justify-between gap-4 py-3">
                 <div className="min-w-0">
                   <p className="truncate font-medium">{u.attendee_name ?? 'Guest'}</p>
                   <p className="text-muted font-mono text-[12px]">
+                    {/* "Offer expires" rather than "Pay by", because a waitlist
+                        offer may be a claim rather than a payment: a cash or
+                        free offer is taken with a tap, not a card, and a host
+                        ringing round must not be told to ask for money that
+                        settles at the door. The row does not say which of the
+                        two it is — listApprovedUnpaid does not select
+                        payment_mode and does not need to, because the deadline
+                        is the fact the host needs either way. */}
                     {u.quantity} {u.quantity === 1 ? 'seat' : 'seats'} ·{' '}
-                    {formatPaise(u.total_paise)} · Pay by{' '}
+                    {formatPaise(u.total_paise)} ·{' '}
+                    {event.has_waitlist ? 'Offer expires ' : 'Pay by '}
                     {u.hold_expires_at ? formatIst(new Date(u.hold_expires_at)) : '—'}
                   </p>
                   {u.profiles?.phone && (
@@ -185,6 +208,75 @@ export default async function AttendeesPage(
                     eventId={id}
                     slug={event.slug}
                     consequence={null}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* The line, in the order it will be served — below the strip above and
+          above the guest list below, because the strip is what is waiting on
+          somebody NOW while the line is waiting on a seat that may never come
+          free. Rendered only when there is a line, so a host whose event keeps
+          none never sees the machinery.
+
+          There is deliberately no promote button. Promotion is automatic and
+          strictly FIFO, and a control that fired it by hand would let a host
+          reorder a queue whose entire value is that it cannot be reordered.
+          The one action a host legitimately has here is removing somebody.
+
+          The number in front of each name is the array index, not a stored
+          column: listEventWaitlist orders by the same (created_at, id) that
+          promote_from_waitlist promotes by, so the position on screen cannot
+          disagree with the engine. True per ticket type — see that query. */}
+      {waitlist.length > 0 && (
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold">Waitlist</h2>
+          <p className="text-muted mt-1 font-mono text-[13px]">
+            {waitlist.length} {waitlist.length === 1 ? 'person' : 'people'} waiting. Seats are
+            offered automatically, in this order.
+          </p>
+          <ul className="divide-line mt-4 divide-y">
+            {waitlist.map((entry, index) => (
+              <li key={entry.id} className="flex items-start justify-between gap-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">
+                    <span className="text-muted font-mono text-[12px]">#{index + 1}</span>{' '}
+                    {entry.attendee_name ?? 'Guest'}
+                  </p>
+                  <p className="text-muted font-mono text-[12px]">
+                    {/* No amount on these rows, and none to show: a waitlist
+                        entry stores 0/0/0 and is priced at offer time from
+                        whatever the host charges then. The payment mode is
+                        what they chose for the offer they are waiting for. */}
+                    {entry.quantity} {entry.quantity === 1 ? 'seat' : 'seats'} ·{' '}
+                    {entry.payment_mode === 'cash' ? 'cash' : 'online'} · {entry.reference} ·{' '}
+                    joined {formatIst(new Date(entry.created_at))}
+                  </p>
+                  {entry.profiles?.phone && (
+                    <a
+                      href={`tel:${dialable(entry.profiles.phone)}`}
+                      className="font-mono text-[12px] underline"
+                    >
+                      {dialable(entry.profiles.phone)}
+                    </a>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-start">
+                  {/* The existing host cancel, and the only reason this list is
+                      not read-only: a head whose entry no longer fits the room
+                      blocks everyone behind it, and removing them is what
+                      unblocks the line. Its consequence is not
+                      cancelConsequence's — no money moved and no seat was held,
+                      so that function would return null and leave the control
+                      with nothing beside it. */}
+                  <CancelAttendeeButton
+                    bookingId={entry.id}
+                    eventId={id}
+                    slug={event.slug}
+                    consequence={REMOVE_FROM_WAITLIST_CONSEQUENCE}
                   />
                 </div>
               </li>

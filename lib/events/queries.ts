@@ -279,6 +279,7 @@ export interface PublicEvent extends FeedEvent {
   ends_at: string | null
   requires_approval: boolean
   allows_cash: boolean
+  has_waitlist: boolean
   /** Hours before starts_at until which a cancel refunds in full. 0 = until start. */
   refund_cutoff_hours: number
   hosts: { display_name: string; bio: string | null; avatar_url: string | null } | null
@@ -292,7 +293,8 @@ export async function getPublishedEventBySlug(slug: string): Promise<PublicEvent
     .from('events')
     .select(
       `${FEED_COLUMNS}, description, venue_address, hide_venue_until_approved, ends_at,
-       requires_approval, allows_cash, refund_cutoff_hours, hosts(display_name, bio, avatar_url)`,
+       requires_approval, allows_cash, has_waitlist, refund_cutoff_hours,
+       hosts(display_name, bio, avatar_url)`,
     )
     .eq('slug', slug)
     .eq('status', 'published')
@@ -343,6 +345,7 @@ export interface OwnedEvent extends HostEvent {
   ends_at: string | null
   requires_approval: boolean
   allows_cash: boolean
+  has_waitlist: boolean
   refund_cutoff_hours: number
   hide_venue_until_approved: boolean
   // The edit page keys the publish panel on this so a successful save remounts
@@ -365,7 +368,7 @@ export async function getOwnedEvent(id: string): Promise<OwnedEvent | null> {
     .select(
       `id, slug, title, status, city, starts_at, cover_image_url, published_at, updated_at,
        description, venue_name, venue_address, ends_at, requires_approval, allows_cash,
-       refund_cutoff_hours, hide_venue_until_approved, hosts(display_name),
+       has_waitlist, refund_cutoff_hours, hide_venue_until_approved, hosts(display_name),
        ticket_types(price_paise, quantity, reserved_count)`,
     )
     .eq('id', id)

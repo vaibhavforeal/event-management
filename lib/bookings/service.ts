@@ -245,3 +245,195 @@ export async function declineBooking(caller: Caller, bookingId: string): Promise
   // order is only ever created after approval.
   return { ok: true }
 }
+
+/** One refusal for "not yours", "does not exist" and "the lookup failed" — a
+ *  stranger must not be able to tell an offer that exists from one that does
+ *  not, and an outage must not be distinguishable from a refusal. */
+const NOT_YOURS_TO_CLAIM = 'That seat offer is not yours to claim.'
+const NOTHING_TO_CLAIM = 'There is no seat to claim on this booking right now.'
+
+export async function joinWaitlist(
+  caller: Caller,
+  ticketTypeId: string,
+  quantity: number,
+  attendeeName: string,
+  paymentMode: 'online' | 'cash',
+): Promise<BookingResult> {
+  const db = createAdminClient()
+  const { data, error } = await db.rpc('join_waitlist', {
+    p_ticket_type_id: ticketTypeId,
+    // The caller's own id. There is no parameter through which a request could
+    // supply someone else's, and there must never be one.
+    p_attendee_id: caller.id,
+    p_quantity: quantity,
+    p_attendee_name: attendeeName,
+    p_payment_mode: paymentMode,
+  })
+  if (error) return { ok: false, error: mapBookingRpcError(error) }
+  return { ok: true, reference: data.reference }
+}
+
+/**
+ * Takes a free or cash seat offer.
+ *
+ * The online twin of this is beginApprovedCheckout, which needs no waitlist
+ * branch: an offer is awaiting_payment with approved_at set, which is every
+ * precondition it already checks. This function exists for the two cases that
+ * have no online money to ask for — cash pays at the door, free pays nothing —
+ * where the honest control is "claim", not "pay".
+ *
+ * Deliberately NOT owner-or-host like cancelBooking: a host must not be able
+ * to claim a seat on a guest's behalf. Claiming is an acceptance, and only the
+ * person being offered the seat can accept it.
+ */
+export async function claimOfferedSeat(caller: Caller, bookingId: string): Promise<ApproveResult> {
+  const db = createAdminClient()
+
+  const { data: booking, error: readError } = await db
+    .from('bookings')
+    .select('id, attendee_id, ticket_type_id')
+    .eq('id', bookingId)
+    .maybeSingle()
+
+  if (readError) {
+    console.error('[bookings] could not read the booking for a seat claim', readError)
+    return { ok: false, error: NOT_YOURS_TO_CLAIM }
+  }
+  if (!booking || booking.attendee_id !== caller.id) return { ok: false, error: NOT_YOURS_TO_CLAIM }
+
+  // Settle before judging, so a hold that ran out an hour ago cannot be
+  // claimed by someone who left the tab open. This also hands the seat to the
+  // next person in the same call, which is why it happens even though the
+  // guard below would have refused anyway: refusing without settling would
+  // leave the seat held by a dead offer until something else swept it.
+  const { error: settleError } = await db.rpc('release_expired_holds', {
+    p_ticket_type_id: booking.ticket_type_id,
+  })
+  if (settleError) {
+    console.error('[bookings] could not settle holds before a seat claim', settleError)
+    return { ok: false, error: NOTHING_TO_CLAIM }
+  }
+
+  // Re-read AFTER the settle: the row may have just become 'expired', and the
+  // whole point of settling first is that this read is the truthful one.
+  const { data: fresh, error: freshError } = await db
+    .from('bookings')
+    .select('status, approved_at, payment_mode, total_paise')
+    .eq('id', bookingId)
+    .maybeSingle()
+  if (freshError || !fresh) {
+    console.error('[bookings] could not re-read the booking for a seat claim', freshError)
+    return { ok: false, error: NOTHING_TO_CLAIM }
+  }
+
+  // An offer, and one with nothing to pay online. An online offer belongs to
+  // beginApprovedCheckout, and sending it here would confirm a seat nobody
+  // paid for.
+  const isOffer = fresh.status === 'awaiting_payment' && !!fresh.approved_at
+  const claimable = fresh.payment_mode === 'cash' || fresh.total_paise === 0
+  if (!isOffer || !claimable) return { ok: false, error: NOTHING_TO_CLAIM }
+
+  const { error } = await db.rpc('confirm_booking', { p_booking_id: bookingId })
+  if (error) return { ok: false, error: mapBookingRpcError(error) }
+  return { ok: true }
+}
+
+/**
+ * Where this booking stands in its line, 1-based. Null when there is no
+ * position to show.
+ *
+ * A read in the writes file, which the module comment above forbids in spirit
+ * — but the ESLint fence decides where the service role may be held, and
+ * waitlist_position is service-role only for the reason its own SQL comment
+ * gives. cancelBooking and readForDecision already read here for the same
+ * reason: a service-role read that precedes a decision belongs beside the
+ * decision.
+ *
+ * Owner-or-host, via the same mayCancel that arbitrates withdraw and remove —
+ * the two people entitled to act on this entry are exactly the two entitled to
+ * see where it stands.
+ */
+export async function waitlistPosition(caller: Caller, bookingId: string): Promise<number | null> {
+  const db = createAdminClient()
+
+  const { data: booking, error: readError } = await db
+    .from('bookings')
+    .select('attendee_id, events(hosts(profile_id))')
+    .eq('id', bookingId)
+    .maybeSingle()
+
+  if (readError) {
+    console.error('[bookings] could not read the booking for a waitlist position', readError)
+    return null
+  }
+  if (!booking) return null
+
+  if (
+    !mayCancel(caller, {
+      attendee_id: booking.attendee_id,
+      event_host_profile_id: booking.events.hosts.profile_id,
+    })
+  ) {
+    return null
+  }
+
+  const { data, error } = await db.rpc('waitlist_position', { p_booking_id: bookingId })
+  if (error) {
+    console.error('[bookings] could not read a waitlist position', error)
+    return null
+  }
+  // 0 is the function's way of saying "this row is not in the line" — a
+  // promoted, withdrawn or expired entry. Null is this module's way of saying
+  // the same thing, so no caller has to know about the sentinel.
+  return data && data > 0 ? data : null
+}
+
+/**
+ * Offers newly-added seats to the line, after the host's save has committed.
+ *
+ * The one seat-appearing path the SQL seams cannot cover. cancel_booking needs
+ * a booking and release_expired_holds promotes only what it reclaimed, so a
+ * capacity raise frees seats through neither — and reserve_tickets' own
+ * promote call cannot do it either, because one PostgREST transaction per RPC
+ * means its "only 0 seats remain" raise unwinds the promotion that produced
+ * it. Hence a second, committing call from here.
+ *
+ * Never throws. A failed promote must not turn a successful save into an
+ * error the host has to interpret — the seats are added either way, and the
+ * next cancel or hold expiry serves the line. Same posture as refundIfOwed.
+ *
+ * Host-only, and the check is real rather than ceremonial: this is reached
+ * from a Server Action carrying an eventId out of a form.
+ */
+export async function promoteAfterCapacityChange(caller: Caller, eventId: string): Promise<void> {
+  try {
+    const db = createAdminClient()
+
+    const { data: event, error } = await db
+      .from('events')
+      .select('id, has_waitlist, hosts(profile_id), ticket_types(id)')
+      .eq('id', eventId)
+      .maybeSingle()
+
+    if (error) {
+      console.error('[bookings] could not read the event to serve its waitlist', error)
+      return
+    }
+    // No event, no waitlist, or not this caller's to touch — all silent, all
+    // the same nothing. promote_from_waitlist would refuse the middle one
+    // anyway; checking here saves a round trip per ticket type.
+    if (!event || !event.has_waitlist) return
+    if (!mayApprove(caller, { event_host_profile_id: event.hosts.profile_id })) return
+
+    for (const ticketType of event.ticket_types) {
+      const { error: promoteError } = await db.rpc('promote_from_waitlist', {
+        p_ticket_type_id: ticketType.id,
+      })
+      if (promoteError) {
+        console.error('[bookings] could not serve the waitlist after a capacity change', promoteError)
+      }
+    }
+  } catch (cause) {
+    console.error('[bookings] serving the waitlist after a capacity change threw', cause)
+  }
+}

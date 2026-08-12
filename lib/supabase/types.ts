@@ -137,6 +137,7 @@ export type Database = {
           created_at: string
           description: string | null
           ends_at: string | null
+          has_waitlist: boolean
           hide_venue_until_approved: boolean
           host_id: string
           id: string
@@ -161,6 +162,7 @@ export type Database = {
           created_at?: string
           description?: string | null
           ends_at?: string | null
+          has_waitlist?: boolean
           hide_venue_until_approved?: boolean
           host_id: string
           id?: string
@@ -185,6 +187,7 @@ export type Database = {
           created_at?: string
           description?: string | null
           ends_at?: string | null
+          has_waitlist?: boolean
           hide_venue_until_approved?: boolean
           host_id?: string
           id?: string
@@ -931,6 +934,7 @@ export type Database = {
           p_cover_image_url: string
           p_description: string
           p_ends_at: string
+          p_has_waitlist?: boolean
           p_hide_venue_until_approved: boolean
           p_host_id: string
           p_price_paise: number
@@ -951,6 +955,7 @@ export type Database = {
           created_at: string
           description: string | null
           ends_at: string | null
+          has_waitlist: boolean
           hide_venue_until_approved: boolean
           host_id: string
           id: string
@@ -976,7 +981,49 @@ export type Database = {
       }
       current_host_id: { Args: never; Returns: string }
       generate_booking_reference: { Args: never; Returns: string }
+      join_waitlist: {
+        Args: {
+          p_attendee_id: string
+          p_attendee_name: string
+          p_payment_mode?: Database["public"]["Enums"]["payment_mode"]
+          p_quantity: number
+          p_ticket_type_id: string
+        }
+        Returns: {
+          approved_at: string | null
+          attendee_id: string
+          attendee_name: string | null
+          attendee_note: string | null
+          cancellation_reason: string | null
+          cancelled_at: string | null
+          commission_paise: number
+          confirmed_at: string | null
+          convenience_fee_paise: number
+          created_at: string
+          event_id: string
+          hold_expires_at: string | null
+          id: string
+          payment_mode: Database["public"]["Enums"]["payment_mode"]
+          quantity: number
+          reference: string
+          status: Database["public"]["Enums"]["booking_status"]
+          subtotal_paise: number
+          ticket_type_id: string
+          total_paise: number
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "bookings"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       owns_event: { Args: { p_event_id: string }; Returns: boolean }
+      promote_from_waitlist: {
+        Args: { p_hold_hours?: number; p_ticket_type_id: string }
+        Returns: number
+      }
       release_expired_holds: {
         Args: { p_ticket_type_id?: string }
         Returns: number
@@ -1069,6 +1116,7 @@ export type Database = {
           p_description: string
           p_ends_at: string
           p_event_id: string
+          p_has_waitlist?: boolean
           p_hide_venue_until_approved: boolean
           p_price_paise: number
           p_quantity: number
@@ -1087,6 +1135,7 @@ export type Database = {
           created_at: string
           description: string | null
           ends_at: string | null
+          has_waitlist: boolean
           hide_venue_until_approved: boolean
           host_id: string
           id: string
@@ -1110,10 +1159,13 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      waitlist_length: { Args: { p_ticket_type_id: string }; Returns: number }
+      waitlist_position: { Args: { p_booking_id: string }; Returns: number }
     }
     Enums: {
       booking_status:
         | "pending_approval"
+        | "waitlisted"
         | "awaiting_payment"
         | "confirmed"
         | "cancelled"
@@ -1262,6 +1314,7 @@ export const Constants = {
     Enums: {
       booking_status: [
         "pending_approval",
+        "waitlisted",
         "awaiting_payment",
         "confirmed",
         "cancelled",

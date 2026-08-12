@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseEventForm, validateForPublish } from '@/lib/events/validation'
+import { parseEventForm, readSubmittedValues, validateForPublish } from '@/lib/events/validation'
 
 function form(overrides: Record<string, string> = {}): FormData {
   const fd = new FormData()
@@ -304,5 +304,27 @@ describe('validateForPublish', () => {
       now,
     )
     expect(blockers.length).toBeGreaterThanOrEqual(5)
+  })
+})
+
+describe('the waitlist toggle', () => {
+  it('defaults to false when the box is absent', () => {
+    const result = parseEventForm(form({}))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.hasWaitlist).toBe(false)
+  })
+
+  it('is true when the box is checked', () => {
+    const result = parseEventForm(form({ hasWaitlist: 'on' }))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.hasWaitlist).toBe(true)
+  })
+
+  it('survives a rejected save in the echo', () => {
+    // The echo is what a host gets back when the save is refused; a checkbox
+    // missing from it comes back unticked and the host loses the choice
+    // silently. EVENT_FORM_FIELDS is what stops that, so assert it.
+    const values = readSubmittedValues(form({ hasWaitlist: 'on', title: 'x' }))
+    expect(values.hasWaitlist).toBe(true)
   })
 })

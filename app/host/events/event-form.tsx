@@ -27,6 +27,7 @@ export interface EventFormValues {
   hostDisplayName?: string | null
   requiresApproval?: boolean
   allowsCash?: boolean
+  hasWaitlist?: boolean
   hideVenueUntilApproved?: boolean
 }
 
@@ -60,6 +61,7 @@ interface Draft {
 interface CheckboxState {
   requiresApproval: boolean
   allowsCash: boolean
+  hasWaitlist: boolean
   hideVenueUntilApproved: boolean
 }
 
@@ -97,6 +99,55 @@ function draftFromEcho(echo: SubmittedEventValues): Draft {
 }
 
 const field = 'border-line w-full rounded-lg border px-3 py-2 text-base'
+
+/**
+ * The two queue toggles, together, because they are exclusive: an approval
+ * event's request queue already keeps unlimited demand, so a waitlist beside
+ * it would put two lists on one attendees page. events_one_queue refuses the
+ * combination in the database and the writers coerce it; this is where the
+ * host simply never meets it.
+ *
+ * A component rather than a `useState` in the form body, because the
+ * checkboxes here are uncontrolled on purpose (see the essay on `checkboxes`
+ * below) and the visibility state has to reset exactly when they do. Giving
+ * this one `key={generation}` remounts the state and the two inputs together;
+ * a bare state in the parent would survive the remount and leave the waitlist
+ * row hidden after an echo that unticked approval.
+ *
+ * Unmounting the waitlist input rather than disabling it is the point: an
+ * absent checkbox is absent from FormData, which readSubmittedValues reads as
+ * false — so ticking approval turns the waitlist off through the same path the
+ * SQL coerces, and the two cannot disagree.
+ */
+function QueueOptions({
+  defaultRequiresApproval,
+  defaultHasWaitlist,
+}: {
+  defaultRequiresApproval: boolean
+  defaultHasWaitlist: boolean
+}) {
+  const [approvalOn, setApprovalOn] = useState(defaultRequiresApproval)
+
+  return (
+    <>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          name="requiresApproval"
+          defaultChecked={defaultRequiresApproval}
+          onChange={(event) => setApprovalOn(event.currentTarget.checked)}
+        />
+        I approve each guest before they pay
+      </label>
+      {!approvalOn && (
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" name="hasWaitlist" defaultChecked={defaultHasWaitlist} />
+          Keep a waitlist when it sells out
+        </label>
+      )}
+    </>
+  )
+}
 
 export function EventForm({
   action,
@@ -199,11 +250,13 @@ export function EventForm({
     ? {
         requiresApproval: lastEcho.requiresApproval,
         allowsCash: lastEcho.allowsCash,
+        hasWaitlist: lastEcho.hasWaitlist,
         hideVenueUntilApproved: lastEcho.hideVenueUntilApproved,
       }
     : {
         requiresApproval: values.requiresApproval ?? false,
         allowsCash: values.allowsCash ?? false,
+        hasWaitlist: values.hasWaitlist ?? false,
         hideVenueUntilApproved: values.hideVenueUntilApproved ?? false,
       }
 
@@ -407,15 +460,11 @@ export function EventForm({
 
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium">Options</legend>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            key={`requiresApproval-${generation}`}
-            type="checkbox"
-            name="requiresApproval"
-            defaultChecked={checkboxes.requiresApproval}
-          />
-          I approve each guest before they pay
-        </label>
+        <QueueOptions
+          key={generation}
+          defaultRequiresApproval={checkboxes.requiresApproval}
+          defaultHasWaitlist={checkboxes.hasWaitlist}
+        />
         <label className="flex items-center gap-2 text-sm">
           <input
             key={`allowsCash-${generation}`}

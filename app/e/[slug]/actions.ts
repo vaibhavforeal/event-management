@@ -3,7 +3,7 @@
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { currentCaller } from '@/lib/bookings/caller'
-import { bookCashTickets, bookFreeTickets, requestBooking } from '@/lib/bookings/service'
+import { bookCashTickets, bookFreeTickets, joinWaitlist, requestBooking } from '@/lib/bookings/service'
 import { startPaidCheckout as startPaidCheckoutService } from '@/lib/payments/service'
 import { loginPath } from '@/lib/auth/session'
 
@@ -98,6 +98,49 @@ export async function requestToJoin(_previous: BookState, formData: FormData): P
 
   // No revalidatePath pair here, unlike bookEvent: a request moves no
   // inventory, so neither the event payload nor the feed changed.
+  redirect(`/bookings/${result.reference}`)
+}
+
+/**
+ * Joins the line on a sold-out instant-book event.
+ *
+ * requestToJoin's shape minus the note: the host is not vetting anyone here,
+ * so there is nothing to pitch. The three field reads are that action's,
+ * character for character — the two must refuse the same mistake with the same
+ * sentence — and why each looks the way it does is documented once, over
+ * bookEvent.
+ */
+export async function joinTheWaitlist(
+  _previous: BookState,
+  formData: FormData,
+): Promise<BookState> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const ticketTypeId = String(formData.get('ticketTypeId') ?? '')
+  if (!ticketTypeId) return { error: 'Something went wrong. Reload the page and try again.' }
+
+  const quantity = Number(formData.get('quantity'))
+  if (!Number.isInteger(quantity) || quantity < 1) {
+    return { error: 'Choose how many seats you need.' }
+  }
+
+  const attendeeName = String(formData.get('attendeeName') ?? '').trim().slice(0, 80)
+  if (!attendeeName) return { error: 'Tell the host who to expect.' }
+
+  // A two-value parse: anything that is not the literal 'cash' is online, so a
+  // handcrafted POST cannot invent a third mode.
+  const paymentMode = formData.get('paymentMode') === 'cash' ? ('cash' as const) : ('online' as const)
+
+  const result = await joinWaitlist(caller, ticketTypeId, quantity, attendeeName, paymentMode)
+  if (!result.ok) return { error: result.error }
+
+  // No inventory moved, so the feed's payload is untouched and '/' is not
+  // revalidated — unlike bookEvent. This page is another matter: it prints the
+  // line's length and decides its entire bottom bar on it, so it must not be
+  // served from before this person joined.
+  const slug = String(formData.get('slug') ?? '')
+  if (slug) revalidatePath(`/e/${slug}`)
   redirect(`/bookings/${result.reference}`)
 }
 
