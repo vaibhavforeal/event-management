@@ -653,11 +653,14 @@ export async function reconcileAfterCheckout(
 }
 
 /**
- * The where-nobody-is-looking sweep (npm run reconcile). Three arms:
- * lapsed holds that have an order (a dropped webhook may hide a capture),
- * then a global release of pure abandonments, then refunds owed but not yet
- * sent. No pg_cron and no deploy-target cron yet — that joins the
- * environment-setup note the day a second environment exists.
+ * The where-nobody-is-looking sweep. Three arms: lapsed holds that have an
+ * order (a dropped webhook may hide a capture), then a global release of pure
+ * abandonments, then refunds owed but not yet sent.
+ *
+ * Scheduled since Phase 4 — app/api/cron/route.ts runs it as the third arm of
+ * the tick Vercel Cron invokes, and `npm run reconcile` remains the by-hand
+ * way to run it against a local stack. Still no pg_cron: one scheduler is
+ * enough, and the one that already exists can be read in TypeScript.
  */
 export async function runReconciliationSweep(): Promise<{
   reconciled: number

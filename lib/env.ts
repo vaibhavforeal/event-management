@@ -32,6 +32,10 @@ const serverSchema = z.object({
   // value, which would otherwise be read as midnight UTC and silently shift
   // the cutoff by up to a day.
   NOTIFICATIONS_LAUNCH_AT: z.iso.datetime().default('2026-08-12T00:00:00Z'),
+  // Shared secret Vercel Cron presents as `Authorization: Bearer <secret>`.
+  // Optional so local development and tests run without it; the route refuses
+  // every request when it is absent, which is the safe direction.
+  CRON_SECRET: z.string().optional(),
 })
 
 function fail(scope: string, error: z.ZodError): never {
