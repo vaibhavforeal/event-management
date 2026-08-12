@@ -119,8 +119,8 @@ export async function listSettleableEvents(now: Date = new Date()): Promise<Sett
   })
 }
 
-/** Bookings for many events, with their money facts joined. Admin path only. */
-async function bookingRowsFor(
+/** Bookings for many events, with their money facts joined. Admin path only. Exported for unit-testing. */
+export async function bookingRowsFor(
   supabase: Awaited<ReturnType<typeof createClient>>,
   eventIds: string[],
 ): Promise<Map<string, SettlementBooking[]>> {

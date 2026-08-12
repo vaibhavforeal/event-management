@@ -13,7 +13,7 @@ import { signInAs } from '@/tests/helpers/session'
 
 // After every static import: the mock in session.ts must be installed before
 // this module binds @/lib/supabase/server. See that file's docblock.
-const { isPlatformAdmin, listSettleableEvents, listHostStatements, hostPayoutTarget } =
+const { isPlatformAdmin, listSettleableEvents, listHostStatements, hostPayoutTarget, bookingRowsFor } =
   await import('@/lib/payouts/queries')
 const { recordPayout } = await import('@/lib/payouts/service')
 
@@ -229,6 +229,53 @@ describe('listHostStatements', () => {
   it('shows a host nothing about another host\'s event', async () => {
     signInAs(outsiderId)
     expect(await listHostStatements()).toEqual([])
+  })
+})
+
+describe('bookingRowsFor fail-closed error handling', () => {
+  // Unit-test the error throws without the session mock — bookingRowsFor
+  // takes the client as a parameter, so we can stub it directly.
+  function stubClient(failTable: 'bookings' | 'payments' | 'refunds') {
+    return {
+      from: (table: string) => ({
+        select: () => ({
+          in: () => {
+            if (table === failTable) {
+              return Promise.resolve({
+                data: null,
+                error: { message: 'simulated database failure', code: '42P01' },
+              })
+            }
+            // Minimal valid responses for the other tables
+            if (table === 'bookings') {
+              return Promise.resolve({
+                data: [{ id: 'b1', event_id: 'e1', status: 'confirmed', payment_mode: 'online', subtotal_paise: 100, commission_paise: 0 }],
+                error: null,
+              })
+            }
+            if (table === 'payments') {
+              return Promise.resolve({ data: [{ id: 'p1', booking_id: 'b1', status: 'captured' }], error: null })
+            }
+            if (table === 'refunds') {
+              return Promise.resolve({ data: [], error: null })
+            }
+            return Promise.resolve({ data: [], error: null })
+          },
+        }),
+      }),
+    } as unknown as Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>
+  }
+
+  it('throws on a bookings query error', async () => {
+    await expect(bookingRowsFor(stubClient('bookings'), ['e1'])).rejects.toThrow(/Failed to read bookings/)
+  })
+
+  it('throws on a payments query error', async () => {
+    await expect(bookingRowsFor(stubClient('payments'), ['e1'])).rejects.toThrow(/Failed to read payments/)
+  })
+
+  it('throws on a refunds query error rather than silently understating', async () => {
+    await expect(bookingRowsFor(stubClient('refunds'), ['e1'])).rejects.toThrow(/Failed to read refunds/)
   })
 })
 
