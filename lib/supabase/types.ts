@@ -425,6 +425,7 @@ export type Database = {
           commission_paise: number
           created_at: string
           event_id: string
+          forfeited_paise: number
           gross_paise: number
           host_id: string
           id: string
@@ -439,6 +440,7 @@ export type Database = {
           commission_paise: number
           created_at?: string
           event_id: string
+          forfeited_paise?: number
           gross_paise: number
           host_id: string
           id?: string
@@ -453,6 +455,7 @@ export type Database = {
           commission_paise?: number
           created_at?: string
           event_id?: string
+          forfeited_paise?: number
           gross_paise?: number
           host_id?: string
           id?: string
@@ -719,6 +722,14 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      admin_host_payout_target: {
+        Args: { p_host_id: string }
+        Returns: {
+          bank_account_ref: string
+          kyc_status: Database["public"]["Enums"]["host_kyc_status"]
+          upi_id: string
+        }[]
+      }
       approve_booking: {
         Args: {
           p_booking_id: string
@@ -1013,6 +1024,18 @@ export type Database = {
       }
       current_host_id: { Args: never; Returns: string }
       generate_booking_reference: { Args: never; Returns: string }
+      host_settlement_rows: {
+        Args: { p_event_id: string }
+        Returns: {
+          commission_paise: number
+          has_captured_payment: boolean
+          has_refund: boolean
+          id: string
+          payment_mode: Database["public"]["Enums"]["payment_mode"]
+          status: Database["public"]["Enums"]["booking_status"]
+          subtotal_paise: number
+        }[]
+      }
       is_platform_admin: { Args: never; Returns: boolean }
       join_waitlist: {
         Args: {
@@ -1056,6 +1079,38 @@ export type Database = {
       promote_from_waitlist: {
         Args: { p_hold_hours?: number; p_ticket_type_id: string }
         Returns: number
+      }
+      record_payout: {
+        Args: {
+          p_commission_paise: number
+          p_event_id: string
+          p_forfeited_paise: number
+          p_gross_paise: number
+          p_notes?: string
+          p_status: Database["public"]["Enums"]["payout_status"]
+          p_utr_reference?: string
+        }
+        Returns: {
+          commission_paise: number
+          created_at: string
+          event_id: string
+          forfeited_paise: number
+          gross_paise: number
+          host_id: string
+          id: string
+          net_paise: number
+          notes: string | null
+          paid_at: string | null
+          status: Database["public"]["Enums"]["payout_status"]
+          updated_at: string
+          utr_reference: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "payouts"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       release_expired_holds: {
         Args: { p_ticket_type_id?: string }
