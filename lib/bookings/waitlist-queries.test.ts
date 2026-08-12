@@ -21,8 +21,13 @@ async function phoneOf(userId: string): Promise<string> {
 }
 
 beforeAll(async () => {
+  // Two seats, both sold, so the event is genuinely sold out and Asha's
+  // two-seat entry below is a request the room could one day satisfy. On a
+  // one-seat event join_waitlist now refuses it outright (EH063 against
+  // tt.quantity) — an entry bigger than the whole room can never be promoted
+  // and would block the line behind it forever.
   seed = await seedEvent(db, {
-    quantity: 1,
+    quantity: 2,
     pricePaise: 50_000,
     allowsCash: true,
     hasWaitlist: true,
@@ -33,7 +38,7 @@ beforeAll(async () => {
   const booked = await db.rpc('book_cash_tickets', {
     p_ticket_type_id: seed.ticketTypeId,
     p_attendee_id: filler,
-    p_quantity: 1,
+    p_quantity: 2,
     p_attendee_name: 'Filler',
   })
   if (booked.error) throw new Error(`setup fill failed: ${booked.error.message}`)

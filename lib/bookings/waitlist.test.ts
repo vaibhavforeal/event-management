@@ -34,6 +34,13 @@ async function reservedCount(ticketTypeId: string): Promise<number> {
 describe('join_waitlist', () => {
   let seed: SeededEvent
   let filler = ''
+  /**
+   * Extra attendees a test minted, torn down in afterAll rather than at the
+   * end of the test body. A failing assertion throws before any in-body
+   * cleanup line is reached, so a red run would otherwise leave an auth user
+   * behind on a dev database that is kept, not reset.
+   */
+  const extraUsers: string[] = []
 
   beforeAll(async () => {
     // maxPerOrder 3 so EH063 has something to refuse; allowsCash so the mode
@@ -49,9 +56,13 @@ describe('join_waitlist', () => {
   })
 
   afterAll(async () => {
+    // Guarded: a beforeAll that threw part-way leaves seed unassigned, and an
+    // afterAll that throws on that hides the real failure behind a TypeError.
+    for (const id of extraUsers) await db.auth.admin.deleteUser(id).catch(() => {})
+    if (!seed) return
     await db.from('bookings').delete().eq('event_id', seed.eventId)
     await cleanupEvent(db, seed)
-    await db.auth.admin.deleteUser(filler).catch(() => {})
+    if (filler) await db.auth.admin.deleteUser(filler).catch(() => {})
   })
 
   it('stores the entry without touching inventory and prices nothing', async () => {
@@ -104,6 +115,32 @@ describe('join_waitlist', () => {
     })
     expect(error?.code).toBe('EH063')
     await db.auth.admin.deleteUser(other).catch(() => {})
+  })
+
+  it('refuses more seats than the room holds, also with EH063', async () => {
+    // max_per_order is 3 and capacity is 2, so 3 seats clears the per-order cap
+    // and is still bigger than the whole event. Without this guard the entry is
+    // accepted, and because promotion is strict FIFO and exits when the head
+    // does not fit, that one row blocks every person behind it forever.
+    //
+    // Pinned on the message as well as the code, because both guards raise
+    // EH063: without this, a mutation deleting the capacity check would still
+    // be caught by max_per_order on some other input and this test would pass
+    // for the wrong reason.
+    const other = await createTestUser(db)
+    extraUsers.push(other)
+    const { error } = await db.rpc('join_waitlist', {
+      p_ticket_type_id: seed.ticketTypeId,
+      p_attendee_id: other,
+      p_quantity: 3,
+      p_attendee_name: 'Chandra',
+    })
+    expect(error?.code).toBe('EH063')
+    expect(error?.message).toContain('this event only seats 2')
+
+    // Nothing was written — an entry that got in would be the whole bug.
+    const { data: rows } = await db.from('bookings').select('id').eq('attendee_id', other)
+    expect(rows ?? []).toHaveLength(0)
   })
 
   it('takes a cash entry where the event allows it', async () => {

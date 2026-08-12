@@ -253,6 +253,17 @@ action tests with mocked navigation.
 - **Strict FIFO can idle a seat** behind a big group. Rejected:
   skip-to-fit (starvation) and a head-timeout hybrid (a third timer for a
   pilot-scale problem).
+- **A capacity cut can strand the entry it undercuts, and the line
+  behind it.** `join_waitlist` refuses an entry bigger than the room
+  (EH063), so the only way into this state is the host lowering capacity
+  under a line that has already formed — a three-seat entry on an event
+  cut to two. That entry can never be served, and under strict FIFO
+  nobody behind it is served either until the host removes it from the
+  strip, which they can do in one tap. Rejected: skip-to-fit (the
+  starvation rule FIFO was chosen over, and the reason the entry ahead
+  is waiting at all) and auto-withdrawing oversized entries on a
+  capacity cut (cancels someone's place silently, on the host's behalf,
+  for a number the host may be about to put back).
 - **Repricing is offer-time** — the 5a approval rule, one story
   product-wide; the price is always shown before anything is charged.
   Rejected: join-time price lock (honours stale prices against the host's

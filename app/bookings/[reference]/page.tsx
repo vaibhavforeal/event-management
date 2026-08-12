@@ -31,12 +31,20 @@ export const metadata = { title: 'Booking' }
  * One ending, one sentence. Every booking status the schema can produce has an
  * entry, so the fallback below it is for a status this page has never heard of
  * — a migration ahead of a deploy — not for anything routine.
+ *
+ * Typographic apostrophes (U+2019), the way every other typographic character
+ * in this map is. These are `.tsx` string literals rendered as text content,
+ * not JSX text, so the character itself is what belongs here — `&rsquo;` would
+ * reach the screen as five literal characters. The rule matters on this
+ * particular screen because `waitlisted` renders three lines above
+ * `waitlistPositionLine`'s “You’re #N in line”, and one ASCII apostrophe
+ * beside a typographic one reads as a bug in the product.
  */
 const STATUS_LINE: Record<string, string> = {
-  confirmed: "You're going",
+  confirmed: 'You’re going',
   awaiting_payment: 'Complete your payment',
   pending_approval: 'Request sent — the host will review it',
-  waitlisted: "You're in line",
+  waitlisted: 'You’re in line',
   expired: 'This booking expired — nothing was charged',
   cancelled: 'Booking cancelled',
   refunded: 'Booking cancelled — refund on its way',
@@ -115,6 +123,24 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
   // the booking rather than the event, so it stays right if that ever changes.
   const claimable = booking.payment_mode === 'cash' || booking.total_paise === 0
 
+  // The control, derived from the booking row alone — no event flag in it.
+  //
+  // `isOffer` above is right for WORDING and wrong for a button. has_waitlist
+  // is a mutable host setting: the host unticks "Keep a waitlist" (or ticks
+  // approval, which coerces it off the same way) while a free-or-cash offer is
+  // live, and every gate keyed on it flips underneath an attendee who is
+  // holding a real 24-hour offer. They would then see neither this panel
+  // (isOffer false) nor the pay panel (which requires !claimable), and the
+  // offer would lapse with no control on the page at all. The booking row
+  // outlives the toggle, so the control has to be keyed on the row.
+  //
+  // Safe without the flag, and provably so: approve_booking confirms straight
+  // from pending_approval whenever payment_mode = 'cash' or subtotal + fee = 0,
+  // so the approval path cannot produce an awaiting_payment + approved_at +
+  // claimable row at all. On this shape, "offer" is the only reading.
+  const claimableOffer =
+    booking.status === 'awaiting_payment' && !!booking.approved_at && claimable
+
   // Where they stand in the line. currentCaller() rather than the `user`
   // above because waitlistPosition takes a Caller, which only that module can
   // mint; requireUser() has already established there is one.
@@ -126,7 +152,7 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
   // prose-as-fact pattern the initiator uses in cancel_booking.
   const statusLine =
     booking.status === 'cancelled' && booking.cancellation_reason === 'declined by host'
-      ? "The host couldn't fit you in this time"
+      ? 'The host couldn’t fit you in this time'
       : isOffer
         ? 'A seat opened up for you'
         : lapsedOffer
@@ -241,8 +267,10 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
         )}
 
       {/* No keyId in this gate — there is no payment provider in this path at
-          all, which is the whole reason it exists. */}
-      {isOffer && isAttendee && claimable && holdLive && (
+          all, which is the whole reason it exists. And `claimableOffer` rather
+          than `isOffer && claimable`: see its definition above — the wording
+          may follow the host's flag, the control never may. */}
+      {claimableOffer && isAttendee && holdLive && (
         <ClaimSeatPanel
           reference={booking.reference}
           sentence={offerClaimSentence(

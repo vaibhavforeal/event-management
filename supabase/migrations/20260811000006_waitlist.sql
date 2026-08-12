@@ -126,7 +126,7 @@ $$;
 --   EH060  this event keeps no waitlist (toggle off, or it uses approvals)
 --   EH061  the event has already started
 --   EH062  cash was chosen but the event does not allow it
---   EH063  more seats than max_per_order allows
+--   EH063  more seats than max_per_order allows, or than the room holds
 --   EH064  seats are open and the line is empty -- book instead
 --   EH065  this attendee already has an active booking or entry on this event
 --
@@ -205,6 +205,23 @@ begin
   -- as request_booking's EH053.
   if p_quantity > tt.max_per_order then
     raise exception 'cannot join for more than % per order', tt.max_per_order
+      using errcode = 'EH063';
+  end if;
+
+  -- And no bigger than the room. max_per_order is a per-booking courtesy limit
+  -- and a host may set it above capacity; this one is physics. Without it a
+  -- single crafted call parks an entry the event can never satisfy at the head
+  -- of a strict-FIFO line, and promote_from_waitlist exits on that head
+  -- forever -- one request, and nobody behind them is ever served again.
+  -- joinTheWaitlist checks only `integer >= 1`, and the panel's cap is client
+  -- side, so this holds here or nowhere.
+  --
+  -- EH063 again, deliberately: mapBookingRpcError already says "That's more
+  -- seats than this event allows per booking", which is exactly true of this
+  -- case too. A fourth code for one more way of asking for too many seats
+  -- would buy the attendee nothing and cost every layer a branch.
+  if p_quantity > tt.quantity then
+    raise exception 'this event only seats %', tt.quantity
       using errcode = 'EH063';
   end if;
 
@@ -298,11 +315,15 @@ $$;
 --
 -- Strict FIFO. A three-seat head waits while one seat sits free, and nobody
 -- passes them. The seat idles; that is the accepted cost of a queue nobody can
--- cut, and it is what makes the queue worth joining. The one pathology is an
--- entry larger than the ticket type's whole capacity -- after a capacity cut,
--- say -- which blocks the line until the host removes it. Documented in the
--- spec's limitations; deliberately not special-cased, because "skip the ones
--- that don't fit" is exactly the starvation rule FIFO was chosen over.
+-- cut, and it is what makes the queue worth joining. The one pathology is a
+-- head larger than the ticket type's whole capacity, which this loop can never
+-- serve and therefore never gets past, blocking the line until the host removes
+-- that entry. join_waitlist closes the front door on it (EH063 against
+-- tt.quantity), so the only remaining route in is a host cutting capacity under
+-- a line that already formed -- and that is documented under "a capacity cut
+-- can strand the entry it undercuts" in the spec's limitations. Deliberately
+-- not special-cased here either way, because "skip the ones that don't fit" is
+-- exactly the starvation rule FIFO was chosen over.
 --
 -- search_path is plain `public`: nothing here calls confirm_booking, so
 -- pgcrypto is not needed.
@@ -1000,10 +1021,16 @@ $$;
 -- first, naming the CURRENT signatures -- the ones from 20260811000002 that
 -- carry p_refund_cutoff_hours, not the 20260809000001 originals.
 --
--- The bodies are otherwise verbatim from 20260811000002. Posture (SECURITY
--- INVOKER, so events_insert_own / events_update_own still evaluate), ownership
--- scoping, the oversell check and the reasoning in those comments all still
--- hold and are not restated here.
+-- The bodies are otherwise verbatim from 20260811000002, comments included --
+-- this file is now those two functions' definition of record, so a reader who
+-- opens it must not have to open 20260811000002 as well to learn why the
+-- ticket type is ordered the way it is, why `ticket.id is not null` is used
+-- instead of FOUND, or why a missing ticket type is inserted rather than
+-- ignored. The one deliberate departure is update's ownership comment, kept in
+-- the shortened form 5b gave it, which states the conclusion and points at
+-- 20260809000001 for the essay behind it. Posture (SECURITY INVOKER, so
+-- events_insert_own / events_update_own still evaluate), ownership scoping and
+-- the oversell check are all unchanged.
 --
 -- `p_has_waitlist and not p_requires_approval` rather than the raw parameter:
 -- the two queues are exclusive, and a host who ticks approval on an event that
@@ -1107,6 +1134,12 @@ begin
       using errcode = 'EH002';
   end if;
 
+  -- The one the form is editing, not every one the event has. Ordered the way
+  -- every read orders embedded ticket types -- see TICKET_TYPE_ORDER in
+  -- lib/events/queries.ts -- so this is the row the edit form printed from.
+  --
+  -- `for update` serialises against a concurrent booking, which is what makes
+  -- the check below still true at commit rather than merely true when read.
   select * into ticket
     from ticket_types
    where event_id = p_event_id
@@ -1114,6 +1147,12 @@ begin
    limit 1
    for update;
 
+  -- `ticket.id is not null` rather than `found`. FOUND would in fact be correct
+  -- at both use sites here -- IF and RAISE do not touch it, so it still belongs
+  -- to the select above. It is avoided because it reads correctly only for
+  -- someone who has tracked which statement last set it, and there are two
+  -- separate branches below asking the same question. The row variable says
+  -- what it means at the point of use.
   if ticket.id is not null and p_quantity < ticket.reserved_count then
     raise exception 'capacity % is below the % seats already reserved',
       p_quantity, ticket.reserved_count
@@ -1126,6 +1165,10 @@ begin
            quantity    = p_quantity
      where id = ticket.id;
   else
+    -- An event with no ticket type is no longer reachable through this app, but
+    -- rows predating this migration can be in that state. Inserting rather than
+    -- writing nothing, because the alternative is accepting the host's seats and
+    -- price, reporting "Saved." and discarding both.
     insert into ticket_types (event_id, name, price_paise, quantity)
     values (p_event_id, 'General', p_price_paise, p_quantity);
   end if;
