@@ -48,9 +48,9 @@ beforeAll(async () => {
   })
   future = await seedEvent(db, { startsAt: new Date(Date.now() + 24 * HOUR).toISOString() })
 
-  for (let i = 0; i < 5; i += 1) extraAttendees.push(await createTestUser(db))
+  for (let i = 0; i < 6; i += 1) extraAttendees.push(await createTestUser(db))
 
-  // ₹500 confirmed, ₹300 forfeited, ₹400 refunded, ₹250 cash.
+  // ₹500 confirmed, ₹300 forfeited, ₹400 refunded, ₹250 cash, ₹150 uncaptured.
   await seedCapturedBooking(db, ended, { subtotalPaise: 50_000 })
   await seedCapturedBooking(db, ended, {
     status: 'cancelled', subtotalPaise: 30_000, attendeeId: extraAttendees[0],
@@ -61,12 +61,16 @@ beforeAll(async () => {
   await seedCapturedBooking(db, ended, {
     paymentMode: 'cash', captured: false, subtotalPaise: 25_000, attendeeId: extraAttendees[2],
   })
+  // Uncaptured online booking - payment exists but not captured, so contributes nothing
+  await seedCapturedBooking(db, ended, {
+    status: 'confirmed', paymentMode: 'online', captured: false, subtotalPaise: 15_000, attendeeId: extraAttendees[3],
+  })
 
   // Second event with one booking to ensure grouping works
-  await seedCapturedBooking(db, ended2, { subtotalPaise: 100_000, attendeeId: extraAttendees[3] })
+  await seedCapturedBooking(db, ended2, { subtotalPaise: 100_000, attendeeId: extraAttendees[4] })
 
   // Ongoing event with one booking - should not be settleable
-  await seedCapturedBooking(db, ongoing, { subtotalPaise: 75_000, attendeeId: extraAttendees[4] })
+  await seedCapturedBooking(db, ongoing, { subtotalPaise: 75_000, attendeeId: extraAttendees[5] })
 
   await db.from('hosts').update({ upi_id: 'host@upi' }).eq('id', ended.hostId)
 })
@@ -115,8 +119,10 @@ describe('listSettleableEvents', () => {
   })
 
   it('returns nothing to a signed-in non-admin', async () => {
-    // The RLS policies are the guard; this asserts the query relies on them
-    // rather than on a filter the caller could be missing.
+    // The gate (is_platform_admin RPC) refuses a non-admin, answered by the
+    // database. The money rows underneath (bookings/payments/payouts) are
+    // RLS-guarded regardless — a non-admin can't read them even if they
+    // somehow bypassed the gate.
     signInAs(outsiderId)
     expect(await listSettleableEvents()).toEqual([])
   })
