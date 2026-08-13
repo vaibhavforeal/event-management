@@ -149,6 +149,12 @@ describe('payment.captured', () => {
     // holds, and stale awaiting_payment reads abound. This is the regression
     // net for isLostConfirmRace: without it, a loser's confirm_booking
     // refusal throws instead of falling through to the refund.
+    //
+    // A probabilistic net, not a deterministic proof — deliveries that happen
+    // to serialise all pass either way. Verified live 2026-08-13: the
+    // reverted-fix mutant died on run 5 of 6 of this file; the fixed code ran
+    // it 8x green. If this test ever flakes, that is the window firing and
+    // the fix regressing — do not quarantine it, re-verify the mutant.
     const seeded = []
     for (let round = 0; round < 5; round += 1) {
       const { booking, orderId } = await freshPaidBooking(1)
