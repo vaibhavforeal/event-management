@@ -367,16 +367,21 @@ describe('platform admins', () => {
     await db.auth.admin.deleteUser(adminProfileId).catch(() => {})
   })
 
-  it('hides platform_admins from a signed-in non-admin', async () => {
+  it('hides platform_admins from a signed-in non-admin, at the grant layer', async () => {
     // The same posture as fee_rules and provider_webhook_events: RLS on, no
     // policy, no grant. Knowing WHO can settle is itself worth withholding.
+    // Pinned to 42501 — the revoked grant refuses before RLS is ever asked.
+    // If this test starts failing with empty rows instead of the error, a
+    // grant was added and the absent SELECT policy became the only defence:
+    // decide that on purpose, not by accident.
     const { data, error } = await userClient(outsiderId).from('platform_admins').select('profile_id')
+    expect(error?.code).toBe('42501')
     expect(data ?? []).toHaveLength(0)
-    if (error) expect(error.code).toBeTruthy()
   })
 
   it('hides platform_admins from an admin too — nothing grants it', async () => {
-    const { data } = await userClient(adminProfileId).from('platform_admins').select('profile_id')
+    const { data, error } = await userClient(adminProfileId).from('platform_admins').select('profile_id')
+    expect(error?.code).toBe('42501')
     expect(data ?? []).toHaveLength(0)
   })
 

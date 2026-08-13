@@ -87,9 +87,12 @@ export async function listSettleableEvents(now: Date = new Date()): Promise<Sett
   // starts_at < now is a necessary condition for hasEnded — events_end_after_start
   // guarantees ends_at > starts_at — so this narrows in SQL and hasEnded decides.
   // Doing the whole thing in SQL would need the coalesce duplicated there.
+  // Published only: a cancelled or unpublished event settles by refunding its
+  // attendees, not by a payout (EH077 is the SQL backstop for the same rule).
   const { data: events, error } = await supabase
     .from('events')
     .select('id, title, slug, starts_at, ends_at, host_id, hosts(display_name, kyc_status)')
+    .eq('status', 'published')
     .lt('starts_at', now.toISOString())
     .order('starts_at', { ascending: false })
   if (error || !events) return []
@@ -209,10 +212,13 @@ export async function listHostStatements(now: Date = new Date()): Promise<HostSt
   const hostId = await getCurrentHostId()
   if (!hostId) return []
 
+  // Published only, same rule as the admin list: no payout for a cancelled
+  // or unpublished event, so no statement row promising one.
   const { data: events, error } = await supabase
     .from('events')
     .select('id, title, slug, starts_at, ends_at')
     .eq('host_id', hostId)
+    .eq('status', 'published')
     .lt('starts_at', now.toISOString())
     .order('starts_at', { ascending: false })
   if (error || !events) return []

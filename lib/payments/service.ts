@@ -387,21 +387,58 @@ async function applyPayment(db: AdminDb, p: ProviderPayment, raw: Json): Promise
 
   const { data: fresh, error: freshError } = await db.from('bookings').select('status').eq('id', booking.id).single()
   if (freshError) throw new Error(`could not re-read the booking: ${freshError.message}`)
+  let outcome = fresh.status
 
-  if (fresh.status === 'awaiting_payment') {
+  if (outcome === 'awaiting_payment') {
     const { error: confirmError } = await db.rpc('confirm_booking', { p_booking_id: booking.id })
-    if (confirmError) throw new Error(`could not confirm booking ${booking.id}: ${confirmError.message}`)
-    return
+    if (!confirmError) return
+    if (!isLostConfirmRace(confirmError)) {
+      throw new Error(`could not confirm booking ${booking.id}: ${confirmError.message}`)
+    }
+    // TOCTOU, closed: between the status read above and confirm_booking's
+    // FOR UPDATE, a concurrent delivery or the sweeper ended the booking —
+    // release_expired_holds SKIP-LOCKs past a row its winner already holds,
+    // so our "force the expiry" call can decide nothing and our read stays
+    // stale. The refusal is the lock telling us we lost. Read the settled
+    // outcome and handle it exactly as if we had seen it first, instead of
+    // answering 500 and leaving the window to the provider's retry.
+    const { data: after, error: afterError } = await db
+      .from('bookings')
+      .select('status')
+      .eq('id', booking.id)
+      .single()
+    if (afterError) {
+      throw new Error(`could not re-read booking ${booking.id} after a lost confirm race: ${afterError.message}`)
+    }
+    outcome = after.status
+    if (outcome === 'awaiting_payment') {
+      // The refusal proves it was not awaiting_payment under the lock;
+      // reading it again means a third transition mid-flight. Let the
+      // provider retry find it settled.
+      throw new Error(`booking ${booking.id} kept changing during confirmation; leaving it to the retry`)
+    }
   }
-  if (fresh.status === 'confirmed') return // replay of a done deal
 
-  // expired or cancelled: money never sits against a seat that does not
+  if (outcome === 'confirmed') return // replay of a done deal, or the race's winner confirmed it
+
+  // expired or cancelled (or already refunded — ensureRefund's pre-read makes
+  // that replay a no-op): money never sits against a seat that does not
   // exist. The booking's ending stands; the refund makes the dawdle harmless.
   await ensureRefund(
     db,
     { id: payment.id, provider_payment_id: p.paymentId, amount_paise: payment.amount_paise },
     'capture after the booking ended',
   )
+}
+
+/**
+ * confirm_booking's own refusal, and only that: check_violation carrying the
+ * function's sentence means the booking's status moved between our read and
+ * its FOR UPDATE. Anything else — connection failures, missing rows, a real
+ * constraint violation — keeps throwing and keeps the 500-retry contract.
+ */
+function isLostConfirmRace(error: { code?: string; message?: string }): boolean {
+  return error.code === '23514' && (error.message ?? '').includes('cannot confirm a booking with status')
 }
 
 /**

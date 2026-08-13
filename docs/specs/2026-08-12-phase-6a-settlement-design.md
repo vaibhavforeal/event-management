@@ -413,6 +413,8 @@ produce such a statement — forfeits are a subset of counted gross — but
 table carries no CHECK tying them together, so a hand-crafted admin call
 could record a payout whose forfeit exceeds its gross. The net CHECK has a
 sibling missing.
+**Landed 2026-08-13 (6b):** `payouts_forfeit_within_gross`, in
+`20260813000001_settlement_hardening.sql`.
 
 **The freeze on a paid row guards the money and not the pointers.** The
 trigger refuses changes to the amounts and the status of a `paid` payout,
@@ -420,6 +422,13 @@ but `host_id` and `event_id` stay mutable, and DELETE is stopped only by
 the absence of any policy or grant — service-role sessions can still
 re-point or remove a settled row. The freeze should name the pointer
 columns and a no-DELETE policy should say so explicitly.
+**Landed 2026-08-13 (6b), with one deliberate trade:** the freeze now names
+`host_id` and `event_id`, and `revoke delete` states the browser-role
+posture in the schema. Service-role DELETEs remain possible BY DESIGN — a
+delete-blocking trigger was rejected because test cleanup legitimately
+deletes paid fixtures and the freeze prevents un-paying them first; the
+four fenced modules never delete a payout, and the pilot's audit trail is
+the bank statement.
 
 **Test debt, named.** The payout-RPC test called "refuses an anonymous
 caller" runs as a signed-in non-admin, so EH071's true anonymous case is
@@ -428,6 +437,11 @@ the `is_platform_admin` branch of `host_settlement_rows`'s gate — an
 admin reading another host's rows — is untested; and `platform_admins`'s
 invisibility is pinned only in aggregate, not per layer (the absent
 SELECT policy and the revoked grants are two defences, tested as one).
+**Landed 2026-08-13 (6b), all four:** the mislabeled test is renamed and a
+true-anonymous test pins the revoked grant (42501); EH072 has its test;
+the admin branch of `host_settlement_rows` is exercised positively; and
+the `platform_admins` tests now pin 42501, so adding a grant fails loudly
+instead of silently shifting the defence to the absent policy.
 
 **TS and SQL disagree on a booking with two captured payments.**
 `joinPaymentFacts` takes the *first* captured payment per booking and asks
@@ -437,6 +451,11 @@ booking's payments. The payments flow is built never to produce a second
 captured payment on one booking, so the disagreement is unreachable today
 — but the two surfaces would count that pathological row differently, and
 the arithmetic module should not have two definitions of one fact.
+**Landed 2026-08-13 (6b):** `joinPaymentFacts` now carries
+`host_settlement_rows()`'s semantics exactly — any captured payment, any
+captured payment with a refund — with the pathological row pinned in
+`settlement.test.ts` and mutation-verified against the old first-captured
+reading.
 
 **The suite carries one pre-existing flake, in Phase 3's module.**
 `lib/payments/webhook-processor.test.ts` › "the same capture racing
@@ -447,6 +466,13 @@ expired`). The window is real: two concurrent deliveries, one reads
 `confirm_booking` then refuses. In production the failed delivery answers
 non-2xx and the provider's retry self-heals it. Not this phase's code —
 `lib/payments` is untouched on this branch — but 6b inherits the flake.
+**Fixed 2026-08-13 (6b):** `applyPayment` now treats `confirm_booking`'s
+check_violation refusal as the lock reporting a lost race — it re-reads the
+settled outcome and falls through to the refund (or returns on confirmed)
+instead of answering 500 and leaving the window to the provider's retry.
+An amplified test (five expired bookings on one ticket type, ten concurrent
+deliveries) reaches the window reliably enough to kill the reverted-fix
+mutant, observed live.
 
 **The money sub-queries in `bookingRowsFor` fetch across ALL ended events
 in single `.in()` calls, so PostgREST's `max_rows = 1000` truncates at
@@ -466,6 +492,16 @@ not a leak; needs a decision about cancelled-event settlement in 6b.
 **Partially landed 2026-08-13 (early 6b):** the admin-copy clause is gone
 with the `host_id` filter above. The draft/cancelled ₹0-row question stays
 open on the cancelled-event-settlement ruling.
+**Ruled and landed 2026-08-13 (6b): only a published event settles.** Both
+lists filter `status = 'published'`, and `record_payout` refuses anything
+else with **EH077** (`20260813000001`) — existence, then status, then time.
+The reasoning: bookings only ever attach to published events, but
+`unpublishEvent` means a draft can hold captured money, and for a
+host-cancelled event the forfeit rule would pay the host forfeits for an
+event they cancelled themselves. Money held on a cancelled or unpublished
+event settles by refunding its attendees; fail toward not paying until a
+real event-cancellation flow (with its refund sweep) exists — that flow is
+where this ruling gets revisited. EH077 joins the taken codes.
 
 **`payoutRowsFor` still swallows its read error** — the sibling of the
 `bookingRowsFor` fix the final review landed. A failed `payouts` read

@@ -57,7 +57,15 @@ export interface Statement {
   countedBookingIds: string[]
 }
 
-/** Attaches the two money facts to bookings, for callers that may read payments. */
+/**
+ * Attaches the two money facts to bookings, for callers that may read payments.
+ *
+ * The semantics are host_settlement_rows()'s, exactly — ANY captured payment,
+ * and ANY captured payment with a refund row — so the two routes into settle()
+ * cannot count a booking differently. The payments flow never produces a
+ * second captured payment on one booking, but the arithmetic module does not
+ * get two definitions of one fact on the strength of "never happens".
+ */
 export function joinPaymentFacts(
   bookings: Array<Omit<SettlementBooking, 'has_captured_payment' | 'has_refund'>>,
   payments: RawPayment[],
@@ -67,21 +75,19 @@ export function joinPaymentFacts(
   // refund may mean the money is still ours, and we still decline to pay it.
   const refundedPaymentIds = new Set(refunds.map((refund) => refund.payment_id))
 
-  const capturedByBooking = new Map<string, RawPayment>()
+  const capturedBookingIds = new Set<string>()
+  const refundedBookingIds = new Set<string>()
   for (const payment of payments) {
-    if (payment.status === 'captured' && !capturedByBooking.has(payment.booking_id)) {
-      capturedByBooking.set(payment.booking_id, payment)
-    }
+    if (payment.status !== 'captured') continue
+    capturedBookingIds.add(payment.booking_id)
+    if (refundedPaymentIds.has(payment.id)) refundedBookingIds.add(payment.booking_id)
   }
 
-  return bookings.map((booking) => {
-    const payment = capturedByBooking.get(booking.id)
-    return {
-      ...booking,
-      has_captured_payment: payment !== undefined,
-      has_refund: payment !== undefined && refundedPaymentIds.has(payment.id),
-    }
-  })
+  return bookings.map((booking) => ({
+    ...booking,
+    has_captured_payment: capturedBookingIds.has(booking.id),
+    has_refund: refundedBookingIds.has(booking.id),
+  }))
 }
 
 /**

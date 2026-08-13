@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   adminClient,
+  anonClient,
   cleanupEvent,
   createTestUser,
   seedCapturedBooking,
@@ -27,6 +28,8 @@ let ended: SeededEvent
 let future: SeededEvent
 let noEndTime: SeededEvent
 let held: SeededEvent
+let bare: SeededEvent
+let cancelledEnded: SeededEvent
 
 beforeAll(async () => {
   adminId = await seedPlatformAdmin(db)
@@ -46,6 +49,18 @@ beforeAll(async () => {
     startsAt: new Date(Date.now() - 72 * HOUR).toISOString(),
     endsAt: new Date(Date.now() - 71 * HOUR).toISOString(),
   })
+  // Ended, never settled — the target for refusals that must not meet a
+  // frozen row first.
+  bare = await seedEvent(db, {
+    startsAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+    endsAt: new Date(Date.now() - 29 * HOUR).toISOString(),
+  })
+  // Ended but cancelled after the fact — settles by refunds, not payouts.
+  cancelledEnded = await seedEvent(db, {
+    startsAt: new Date(Date.now() - 96 * HOUR).toISOString(),
+    endsAt: new Date(Date.now() - 95 * HOUR).toISOString(),
+  })
+  await db.from('events').update({ status: 'cancelled' }).eq('id', cancelledEnded.eventId)
   await db.from('hosts').update({ upi_id: 'host@upi' }).eq('id', ended.hostId)
 })
 
@@ -54,6 +69,8 @@ afterAll(async () => {
   await cleanupEvent(db, future)
   await cleanupEvent(db, noEndTime)
   await cleanupEvent(db, held)
+  await cleanupEvent(db, bare)
+  await cleanupEvent(db, cancelledEnded)
   await db.auth.admin.deleteUser(adminId).catch(() => {})
   await db.auth.admin.deleteUser(outsiderId).catch(() => {})
 })
@@ -77,10 +94,38 @@ describe('record_payout', () => {
     expect(error?.code).toBe('EH071')
   })
 
-  it('refuses an anonymous caller', async () => {
+  it('refuses a signed-in non-admin, even the event\'s own host', async () => {
     const { error } = await userClient(ended.hostProfileId).rpc('record_payout', paid(ended.eventId))
     // The host of the event is still not an admin. Hosting is not settling.
     expect(error?.code).toBe('EH071')
+  })
+
+  it('refuses a truly anonymous caller at the grant, before the gate', async () => {
+    // EH071 is unreachable for anon: EXECUTE is revoked, so PostgREST answers
+    // permission-denied before the function body ever runs. Pinned to the
+    // exact code — if this ever changes, a grant was added and the gate
+    // became the only defence.
+    const { error } = await anonClient().rpc('record_payout', paid(ended.eventId))
+    expect(error?.code).toBe('42501')
+  })
+
+  it('refuses an event that does not exist', async () => {
+    const { error } = await userClient(adminId).rpc('record_payout', paid(crypto.randomUUID()))
+    expect(error?.code).toBe('EH072')
+  })
+
+  it('refuses an event that is not published', async () => {
+    const { error } = await userClient(adminId).rpc('record_payout', paid(cancelledEnded.eventId))
+    expect(error?.code).toBe('EH077')
+  })
+
+  it('refuses a forfeit exceeding gross — the table CHECK, not an app check', async () => {
+    const { error } = await userClient(adminId).rpc(
+      'record_payout',
+      paid(bare.eventId, { p_gross_paise: 1_000, p_forfeited_paise: 2_000 }),
+    )
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('payouts_forfeit_within_gross')
   })
 
   it('refuses an event that has not ended', async () => {
@@ -151,6 +196,20 @@ describe('record_payout', () => {
       .update({ gross_paise: 1 })
       .eq('event_id', ended.eventId)
     expect(error?.code).toBe('EH070')
+  })
+
+  it('freezes the pointers too — a settled row cannot be re-pointed', async () => {
+    const repointEvent = await db
+      .from('payouts')
+      .update({ event_id: future.eventId })
+      .eq('event_id', ended.eventId)
+    expect(repointEvent.error?.code).toBe('EH070')
+
+    const repointHost = await db
+      .from('payouts')
+      .update({ host_id: future.hostId })
+      .eq('event_id', ended.eventId)
+    expect(repointHost.error?.code).toBe('EH070')
   })
 
   it('updates an unsettled row rather than duplicating it, and holds are not frozen', async () => {
@@ -247,6 +306,16 @@ describe('host_settlement_rows', () => {
       p_event_id: withMoney.eventId,
     })
     expect(error?.code).toBe('EH076')
+  })
+
+  it('gives an admin another host\'s rows — the gate\'s other branch', async () => {
+    // The is_platform_admin() escape in the EH076 gate, exercised positively:
+    // the console reads statements through the same function the host does.
+    const { data, error } = await userClient(adminId).rpc('host_settlement_rows', {
+      p_event_id: withMoney.eventId,
+    })
+    expect(error).toBeNull()
+    expect(data).toHaveLength(2)
   })
 
   it('still refuses the host a direct read of payments', async () => {
