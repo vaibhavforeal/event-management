@@ -477,3 +477,13 @@ must not read as "no payout".
 **Landed 2026-08-13 (early 6b):** throws like its sibling, exported for
 unit-testing like its sibling, stub-tested and mutation-verified the same
 way.
+
+**Availability under the fail-closed throws, triaged 2026-08-13.** The
+early-6b review observed that one event's failed money read now takes the
+whole of `/admin` or `/host/payouts` down rather than rendering the other
+events. Considered and kept as-is: rendering a failed read as an empty
+statement is the exact fail-open bug these fixes closed, and partial
+rendering ("N events, one failed to load") is a per-event error-state UI,
+not an error-handling tweak. Revisit only if transient read failures are
+actually observed taking pages down; the blast radius is unchanged from
+6a, which made the same trade knowingly.
