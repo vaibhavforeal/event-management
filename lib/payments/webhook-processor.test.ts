@@ -140,6 +140,51 @@ describe('payment.captured', () => {
     expect(provider.createRefund).toHaveBeenCalledTimes(1)
   })
 
+  it('the race amplified: five expired bookings, ten concurrent deliveries, none may throw', async () => {
+    // The pair above hits the TOCTOU window only when the two transactions
+    // happen to interleave; solo it almost never does. This batch attacks the
+    // window directly: five expired bookings on ONE ticket type, all ten
+    // deliveries in flight at once — so every delivery's release_expired_holds
+    // fights over the same five rows, SKIP LOCKED skips whatever a winner
+    // holds, and stale awaiting_payment reads abound. This is the regression
+    // net for isLostConfirmRace: without it, a loser's confirm_booking
+    // refusal throws instead of falling through to the refund.
+    const seeded = []
+    for (let round = 0; round < 5; round += 1) {
+      const { booking, orderId } = await freshPaidBooking(1)
+      seeded.push({ booking, orderId, paymentId: `pay_race_${round}` })
+    }
+    await db
+      .from('bookings')
+      .update({ hold_expires_at: new Date(Date.now() - 60_000).toISOString() })
+      .in('id', seeded.map((s) => s.booking.id))
+
+    // Fresh provider ids per refund: pay_test_1 / rfnd_test_1 are UNIQUE
+    // across the whole table and this test holds five payments at once.
+    let refundCounter = 0
+    const provider = fakeProvider({
+      createRefund: vi.fn(async () => {
+        refundCounter += 1
+        return { refundId: `rfnd_race_${refundCounter}`, status: 'pending' as const }
+      }),
+    })
+    razorpayProvider.mockReturnValue(provider)
+
+    const outcomes = await Promise.all(
+      seeded.flatMap((s) => [
+        apply(capturedEvent({ orderId: s.orderId, paymentId: s.paymentId, amountPaise: s.booking.total_paise })),
+        apply(capturedEvent({ orderId: s.orderId, paymentId: s.paymentId, amountPaise: s.booking.total_paise })),
+      ]),
+    )
+    expect(outcomes).toEqual(Array(10).fill('processed'))
+
+    for (const s of seeded) {
+      const paymentRowId = await paymentIdFor(s.booking.id)
+      const { data: refunds } = await db.from('refunds').select('id').eq('payment_id', paymentRowId!)
+      expect(refunds).toHaveLength(1)
+    }
+  })
+
   it('capture after a cancel: auto-refund, booking stays cancelled', async () => {
     const { booking, orderId } = await freshPaidBooking(1)
     await db.rpc('cancel_booking', { p_booking_id: booking.id, p_reason: 'changed my mind' })
