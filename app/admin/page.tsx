@@ -4,6 +4,8 @@ import { formatPaise } from '@/lib/money'
 import { requirePlatformAdmin } from '@/lib/payouts/admin'
 import { hostPayoutTarget, listSettleableEvents } from '@/lib/payouts/queries'
 import { RecordPayoutForm } from '@/app/admin/record-payout-form'
+import { businessSnapshot } from '@/lib/analytics/queries'
+import { BusinessStrip } from '@/app/admin/business-strip'
 
 export const metadata = { title: 'Settlements' }
 
@@ -18,6 +20,7 @@ export default async function AdminConsole() {
   await requirePlatformAdmin()
 
   const events = await listSettleableEvents()
+  const snapshot = await businessSnapshot()
 
   // Resolved BEFORE the JSX, not inside the map. `events.map(async …)` yields an
   // array of promises as children, which is not a thing a Server Component may
@@ -33,6 +36,7 @@ export default async function AdminConsole() {
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
       <h1 className="mb-6 text-2xl font-semibold">Settlements</h1>
+      <BusinessStrip snapshot={snapshot} events={events} />
 
       {events.length === 0 ? (
         <p className="border-line text-muted rounded-xl border border-dashed p-8 text-center">
