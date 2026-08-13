@@ -38,6 +38,8 @@ function refusal(error: PostgrestError): string {
       return 'A payout is recorded as paid or on hold.'
     case 'EH075':
       return 'A settled payout needs its bank reference.'
+    case 'EH077':
+      return 'Only a published event can be settled. A cancelled or unpublished event settles by refunding its attendees, not by a payout.'
     default:
       return error.message
   }

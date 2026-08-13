@@ -34,6 +34,8 @@ let ended2: SeededEvent
 let ongoing: SeededEvent
 let future: SeededEvent
 let adminHosted: SeededEvent
+let cancelledEnded: SeededEvent
+let draftEnded: SeededEvent
 const extraAttendees: string[] = []
 
 beforeAll(async () => {
@@ -67,6 +69,24 @@ beforeAll(async () => {
     .from('platform_admins')
     .insert({ profile_id: adminHosted.hostProfileId, note: 'test admin-host' })
   if (adminHostError) throw new Error(`admin-host seed failed: ${adminHostError.message}`)
+
+  // Ended events that are no longer published, with money captured while they
+  // were live (booked first, status flipped after — the order reality takes).
+  // The 6b ruling: these settle by refunds, not payouts, so neither list
+  // shows them and record_payout refuses them with EH077.
+  cancelledEnded = await seedEvent(db, {
+    startsAt: new Date(Date.now() - 50 * HOUR).toISOString(),
+    endsAt: new Date(Date.now() - 49 * HOUR).toISOString(),
+  })
+  await seedCapturedBooking(db, cancelledEnded, { subtotalPaise: 20_000 })
+  await db.from('events').update({ status: 'cancelled' }).eq('id', cancelledEnded.eventId)
+
+  draftEnded = await seedEvent(db, {
+    startsAt: new Date(Date.now() - 52 * HOUR).toISOString(),
+    endsAt: new Date(Date.now() - 51 * HOUR).toISOString(),
+  })
+  await seedCapturedBooking(db, draftEnded, { subtotalPaise: 10_000 })
+  await db.from('events').update({ status: 'draft' }).eq('id', draftEnded.eventId)
 
   for (let i = 0; i < 6; i += 1) extraAttendees.push(await createTestUser(db))
 
@@ -103,6 +123,8 @@ afterAll(async () => {
   await cleanupEvent(db, future)
   // Deleting the host profile cascades away its platform_admins row.
   await cleanupEvent(db, adminHosted)
+  await cleanupEvent(db, cancelledEnded)
+  await cleanupEvent(db, draftEnded)
   await db.auth.admin.deleteUser(adminId).catch(() => {})
   await db.auth.admin.deleteUser(outsiderId).catch(() => {})
   for (const id of extraAttendees) await db.auth.admin.deleteUser(id).catch(() => {})
@@ -138,6 +160,13 @@ describe('listSettleableEvents', () => {
     const rows = await listSettleableEvents()
     expect(rows.map((r) => r.eventId)).not.toContain(future.eventId)
     expect(rows.map((r) => r.eventId)).not.toContain(ongoing.eventId)
+  })
+
+  it('leaves out ended events that are no longer published', async () => {
+    signInAs(adminId)
+    const ids = (await listSettleableEvents()).map((r) => r.eventId)
+    expect(ids).not.toContain(cancelledEnded.eventId)
+    expect(ids).not.toContain(draftEnded.eventId)
   })
 
   it('returns nothing to a signed-in non-admin', async () => {
@@ -198,6 +227,21 @@ describe('recordPayout', () => {
     expect(result.ok).toBe(false)
     // Check for the exact mapped sentence, not just keywords that appear in raw Postgres message
     expect(result.ok === false && result.error).toBe('You are not a platform admin.')
+  })
+
+  it('refuses a cancelled event with the published-only sentence', async () => {
+    signInAs(adminId)
+    const result = await recordPayout({
+      eventId: cancelledEnded.eventId,
+      grossPaise: 20_000,
+      commissionPaise: 0,
+      forfeitedPaise: 0,
+      status: 'paid',
+      utrReference: 'UTR900077',
+      notes: null,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.error).toContain('Only a published event can be settled')
   })
 
   it('refuses to rewrite a settled payout', async () => {
@@ -267,6 +311,13 @@ describe('listHostStatements', () => {
     expect(ids).toContain(adminHosted.eventId)
     expect(ids).not.toContain(ended.eventId)
     expect(ids).not.toContain(ended2.eventId)
+  })
+
+  it('leaves out the host\'s own ended event once it is cancelled or unpublished', async () => {
+    signInAs(cancelledEnded.hostProfileId)
+    expect((await listHostStatements()).map((r) => r.eventId)).not.toContain(cancelledEnded.eventId)
+    signInAs(draftEnded.hostProfileId)
+    expect((await listHostStatements()).map((r) => r.eventId)).not.toContain(draftEnded.eventId)
   })
 })
 
