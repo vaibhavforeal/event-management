@@ -241,6 +241,38 @@ describe('joinPaymentFacts', () => {
     expect(row.has_refund).toBe(false)
   })
 
+  it('sees a refund on ANY captured payment, matching host_settlement_rows', () => {
+    // The pathological row the payments flow never produces: two captured
+    // payments, the refund against the second. First-captured semantics
+    // would count this booking; SQL's any-captured semantics disqualify it.
+    // One fact, one definition.
+    const [row] = joinPaymentFacts(
+      [raw],
+      [
+        { id: 'p1', booking_id: 'b1', status: 'captured' },
+        { id: 'p2', booking_id: 'b1', status: 'captured' },
+      ],
+      [{ payment_id: 'p2' }],
+    )
+    expect(row.has_captured_payment).toBe(true)
+    expect(row.has_refund).toBe(true)
+  })
+
+  it('ignores a refund whose payment never captured, matching host_settlement_rows', () => {
+    // SQL joins refunds through payments WHERE status = 'captured' — a refund
+    // row against an uncaptured payment is not a refund of held money.
+    const [row] = joinPaymentFacts(
+      [raw],
+      [
+        { id: 'p1', booking_id: 'b1', status: 'captured' },
+        { id: 'p2', booking_id: 'b1', status: 'created' },
+      ],
+      [{ payment_id: 'p2' }],
+    )
+    expect(row.has_captured_payment).toBe(true)
+    expect(row.has_refund).toBe(false)
+  })
+
   it('joins payment facts to the correct booking when multiple bookings exist', () => {
     const raw1 = { id: 'b1', status: 'confirmed', payment_mode: 'online' as const, subtotal_paise: 100, commission_paise: 0 }
     const raw2 = { id: 'b2', status: 'confirmed', payment_mode: 'online' as const, subtotal_paise: 200, commission_paise: 0 }
