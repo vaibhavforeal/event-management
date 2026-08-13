@@ -17,6 +17,11 @@ function pct(r: number | null): string {
   return r === null ? '—' : `${Math.round(r * 100)}%`
 }
 
+/** Like pct, but floors — the cash label must not read "30%" before the flag fires. */
+function pctFloor(r: number | null): string {
+  return r === null ? '—' : `${Math.floor(r * 100)}%`
+}
+
 export function BusinessStrip({
   snapshot,
   events,
@@ -45,7 +50,7 @@ export function BusinessStrip({
     },
     {
       label: 'Cash share',
-      value: pct(cashCountRatio(snapshot)),
+      value: pctFloor(cashCountRatio(snapshot)),
       detail: `${pct(cashValueRatio(snapshot))} by value · ${formatPaise(snapshot.cash_confirmed_paise)} the hosts hold — watch at 30%`,
       alert: flagged,
     },

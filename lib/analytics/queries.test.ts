@@ -8,8 +8,9 @@ const { businessSnapshot } = await import('@/lib/analytics/queries')
 
 describe('businessSnapshot', () => {
   it('throws for a non-admin rather than rendering zeros', async () => {
-    // EH071 from the RPC must surface as a throw — a failed read must not
-    // read as "an empty business".
+    // Anonymous hits the revoked EXECUTE grant (42501); either way the read
+    // must surface as a throw — a failed read must not read as "an empty
+    // business". EH071 itself is pinned in snapshot-rpc.test.ts.
     signInAs(null)
     await expect(businessSnapshot()).rejects.toThrow(/Failed to read the business snapshot/)
   })

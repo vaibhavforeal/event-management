@@ -90,17 +90,18 @@ beforeAll(async () => {
   await db.from('payments').update({ status: 'refunded' }).eq('id', b2.paymentId!)
   await db.from('refunds').update({ status: 'pending' }).eq('payment_id', b5.paymentId!)
 
-  // Attendance: two tickets on the ended event (one scanned), one on the
-  // live event that must not be counted.
+  // Attendance: two tickets on the ended event (one scanned), two on the
+  // live event (one scanned) — neither live ticket may count.
   const { data: tickets, error: ticketsError } = await db
     .from('tickets')
     .insert([
       { booking_id: b1.bookingId, code: ticketCode(), checked_in_at: new Date().toISOString() },
       { booking_id: b3.bookingId, code: ticketCode() },
       { booking_id: b6.bookingId, code: ticketCode() },
+      { booking_id: b6.bookingId, code: ticketCode(), checked_in_at: new Date().toISOString() },
     ])
     .select('id')
-  if (ticketsError || (tickets ?? []).length !== 3) {
+  if (ticketsError || (tickets ?? []).length !== 4) {
     throw new Error(`ticket seed failed: ${ticketsError?.message}`)
   }
 })

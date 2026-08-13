@@ -22,10 +22,10 @@
 --  * The waitlist is a booking status, not a table.
 --
 -- p_event_ids scopes every aggregate to those events, joined through
--- bookings.event_id. It exists for the tests: the suite runs files in
--- parallel against one database, so platform-wide totals are moving
--- targets, but numbers scoped to a test's own events are exact.
--- Production always calls this with no argument.
+-- bookings.event_id (money facts) or events.id directly (event-scoped facts).
+-- It exists for the tests: the suite runs files in parallel against one
+-- database, so platform-wide totals are moving targets, but numbers scoped
+-- to a test's own events are exact. Production always calls this with no argument.
 
 create or replace function admin_business_snapshot(p_event_ids uuid[] default null)
 returns table (
