@@ -67,6 +67,13 @@ minus the two settlement lines, which never enter SQL. House-style
 revoke/grant tail (`revoke from public, anon; grant to authenticated,
 service_role`). No new tables, no triggers.
 
+**Execution amendment (2026-08-13):** the function takes
+`p_event_ids uuid[] default null` — null means the whole platform
+(production always passes nothing); an array scopes every aggregate to
+those events. The parameter exists for the tests: the suite runs files in
+parallel against one database, so platform-wide totals are moving targets,
+while a test's own events' numbers are exact.
+
 **Module `lib/analytics/`.**
 - `queries.ts` — `businessSnapshot()`: session client, calls the RPC, and a
   failed read **throws** (`Failed to read the business snapshot: …`). The
