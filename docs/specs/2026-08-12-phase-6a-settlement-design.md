@@ -400,6 +400,12 @@ for the ones the caller does not own. Correct — the RPC is the authority
 and refuses what is not theirs — but the work is O(all ended events), one
 RPC round-trip each, on every load of `/host/payouts`. The fix is a
 `host_id` filter on the events query, with the RPC kept as the gate.
+**Landed 2026-08-13 (early 6b):** `getCurrentHostId()` gates the list and
+the events query filters on `host_id`. Two consequences: an admin visiting
+`/host/payouts` no longer sees every host's events (they see their own, or
+nothing if they host nothing); and with only the caller's own events left
+in the loop, an RPC failure now throws instead of being skipped — the skip
+had become a silently dropped statement of the caller's own money.
 
 **Nothing checks `forfeited_paise <= gross_paise`.** `settle()` cannot
 produce such a statement — forfeits are a subset of counted gross — but
@@ -448,12 +454,18 @@ roughly 20–50 events' worth of bookings** — far earlier than the
 1000-ended-events posture the limitations section states. Truncation
 understates statements (phantom drift); the 6b fix for
 `listHostStatements`' O(platform) shape should cover this sibling.
+**Landed 2026-08-13 (early 6b):** `bookingRowsFor` runs its three-query
+chain once per event, so every response is bounded by one event's rows and
+the limitations section's 1000-per-event posture holds again.
 
 **Neither list filters `events.status`, so ended drafts (and cancelled
 events) render ₹0 statement rows on both pages, and `record_payout` would
 freeze a ₹0 paid row for a draft;** and an admin visiting `/host/payouts`
 sees every host's events labelled "Owed to you". Clutter and wrong copy,
 not a leak; needs a decision about cancelled-event settlement in 6b.
+**Partially landed 2026-08-13 (early 6b):** the admin-copy clause is gone
+with the `host_id` filter above. The draft/cancelled ₹0-row question stays
+open on the cancelled-event-settlement ruling.
 
 **`payoutRowsFor` still swallows its read error** — the sibling of the
 `bookingRowsFor` fix the final review landed. A failed `payouts` read
@@ -462,3 +474,6 @@ of a frozen row. Harmless in the write path — `record_payout`'s upsert
 meets the freeze trigger and EH070 refuses — but the page lies until the
 next successful read. Same three-line fix, same direction: a failed read
 must not read as "no payout".
+**Landed 2026-08-13 (early 6b):** throws like its sibling, exported for
+unit-testing like its sibling, stub-tested and mutation-verified the same
+way.
