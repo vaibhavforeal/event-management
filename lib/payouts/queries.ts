@@ -1,5 +1,6 @@
 import 'server-only'
 import { hasEnded } from '@/lib/events/datetime'
+import { getCurrentHostId } from '@/lib/events/queries'
 import { joinPaymentFacts, settle, type SettlementBooking, type Statement } from '@/lib/payouts/settlement'
 import { createClient } from '@/lib/supabase/server'
 
@@ -124,15 +125,30 @@ export async function bookingRowsFor(
   supabase: Awaited<ReturnType<typeof createClient>>,
   eventIds: string[],
 ): Promise<Map<string, SettlementBooking[]>> {
+  // One three-query chain per event, never one `.in()` across all of them:
+  // PostgREST caps every response at max_rows = 1000, and a cross-event read
+  // hits that ceiling at a few dozen events' worth of bookings — silently,
+  // which understates statements. Scoped per event, each response is bounded
+  // by one event's rows, which is the posture the spec states.
+  const perEvent = await Promise.all(
+    eventIds.map((eventId) => bookingRowsForOneEvent(supabase, eventId)),
+  )
+  return new Map(eventIds.map((eventId, index) => [eventId, perEvent[index]] as const))
+}
+
+async function bookingRowsForOneEvent(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  eventId: string,
+): Promise<SettlementBooking[]> {
   // A failed read must not read as "no refunds" — that direction over-pays.
   // Throw on any query error so the statement page fails to render rather than
   // silently understating what is owed.
   const { data: bookings, error: bookingsError } = await supabase
     .from('bookings')
     .select('id, event_id, status, payment_mode, subtotal_paise, commission_paise')
-    .in('event_id', eventIds)
+    .eq('event_id', eventId)
   if (bookingsError) throw new Error(`Failed to read bookings: ${bookingsError.message}`)
-  if (!bookings || bookings.length === 0) return new Map()
+  if (!bookings || bookings.length === 0) return []
 
   const bookingIds = bookings.map((booking) => booking.id)
   const { data: payments, error: paymentsError } = await supabase
@@ -147,20 +163,19 @@ export async function bookingRowsFor(
     : { data: [], error: null }
   if (refundsError) throw new Error(`Failed to read refunds: ${refundsError.message}`)
 
-  const joined = joinPaymentFacts(bookings, payments ?? [], refunds ?? [])
-  const byEvent = new Map<string, SettlementBooking[]>()
-  joined.forEach((row, index) => {
-    const eventId = bookings[index].event_id
-    byEvent.set(eventId, [...(byEvent.get(eventId) ?? []), row])
-  })
-  return byEvent
+  return joinPaymentFacts(bookings, payments ?? [], refunds ?? [])
 }
 
-async function payoutRowsFor(
+/** Settled rows for many events. Exported for unit-testing. */
+export async function payoutRowsFor(
   supabase: Awaited<ReturnType<typeof createClient>>,
   eventIds: string[],
 ): Promise<Map<string, PayoutRow>> {
-  const { data } = await supabase.from('payouts').select(PAYOUT_COLUMNS).in('event_id', eventIds)
+  // A failed read must not read as "no payout" — that direction renders a
+  // settled event as unsettled: a record form where the frozen row should be,
+  // "Not settled yet" about money already sent.
+  const { data, error } = await supabase.from('payouts').select(PAYOUT_COLUMNS).in('event_id', eventIds)
+  if (error) throw new Error(`Failed to read payouts: ${error.message}`)
   return new Map((data ?? []).map((row) => [row.event_id as string, row as unknown as PayoutRow]))
 }
 
@@ -177,6 +192,13 @@ export async function hostPayoutTarget(
 /**
  * The host's own statements.
  *
+ * "Own" is a host_id filter, not RLS: published events are world-readable, so
+ * an unfiltered list walks every ended event on the platform and leans on
+ * host_settlement_rows() to refuse the foreign ones, one RPC round-trip each —
+ * and for a platform admin it refuses nothing, so they would see every host's
+ * events labelled "Owed to you". Same rule as lib/events/queries.ts: anything
+ * that means "mine" filters on host_id explicitly.
+ *
  * The per-booking money facts come from host_settlement_rows() because a host
  * may not read `payments` — rls_policies.sql:157 — so the same settle() runs
  * over rows that carry no instrument detail at all.
@@ -184,9 +206,13 @@ export async function hostPayoutTarget(
 export async function listHostStatements(now: Date = new Date()): Promise<HostStatement[]> {
   const supabase = await createClient()
 
+  const hostId = await getCurrentHostId()
+  if (!hostId) return []
+
   const { data: events, error } = await supabase
     .from('events')
     .select('id, title, slug, starts_at, ends_at')
+    .eq('host_id', hostId)
     .lt('starts_at', now.toISOString())
     .order('starts_at', { ascending: false })
   if (error || !events) return []
@@ -198,19 +224,29 @@ export async function listHostStatements(now: Date = new Date()): Promise<HostSt
 
   const statements: HostStatement[] = []
   for (const event of ended) {
-    const { data: rows, error } = await supabase.rpc('host_settlement_rows', { p_event_id: event.id })
-    // RPC raises EH076 if the caller doesn't own this event and isn't admin.
-    // Skip events we're not authorized to see.
-    if (error || !rows) continue
     statements.push({
       eventId: event.id,
       title: event.title,
       slug: event.slug,
       startsAt: event.starts_at,
       endsAt: event.ends_at,
-      statement: settle(rows as SettlementBooking[]),
+      statement: settle(await hostStatementRowsFor(supabase, event.id)),
       payout: payouts.get(event.id) ?? null,
     })
   }
   return statements
+}
+
+/** Money rows for one of the caller's own events, via the RPC. Exported for unit-testing. */
+export async function hostStatementRowsFor(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  eventId: string,
+): Promise<SettlementBooking[]> {
+  const { data: rows, error } = await supabase.rpc('host_settlement_rows', { p_event_id: eventId })
+  // The list above only asks about the caller's own events, so an RPC failure
+  // here is no longer "someone else's event, skip it" — it is a failed money
+  // read, and a failed money read must not read as "no statement". EH076
+  // remains the authority on ownership; we just no longer expect to meet it.
+  if (error) throw new Error(`Failed to read settlement rows for event ${eventId}: ${error.message}`)
+  return (rows ?? []) as SettlementBooking[]
 }

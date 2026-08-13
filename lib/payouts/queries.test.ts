@@ -13,8 +13,15 @@ import { signInAs } from '@/tests/helpers/session'
 
 // After every static import: the mock in session.ts must be installed before
 // this module binds @/lib/supabase/server. See that file's docblock.
-const { isPlatformAdmin, listSettleableEvents, listHostStatements, hostPayoutTarget, bookingRowsFor } =
-  await import('@/lib/payouts/queries')
+const {
+  isPlatformAdmin,
+  listSettleableEvents,
+  listHostStatements,
+  hostPayoutTarget,
+  bookingRowsFor,
+  payoutRowsFor,
+  hostStatementRowsFor,
+} = await import('@/lib/payouts/queries')
 const { recordPayout } = await import('@/lib/payouts/service')
 
 const db: SupabaseClient = adminClient()
@@ -26,6 +33,7 @@ let ended: SeededEvent
 let ended2: SeededEvent
 let ongoing: SeededEvent
 let future: SeededEvent
+let adminHosted: SeededEvent
 const extraAttendees: string[] = []
 
 beforeAll(async () => {
@@ -47,6 +55,18 @@ beforeAll(async () => {
     endsAt: new Date(Date.now() + 22 * HOUR).toISOString(),
   })
   future = await seedEvent(db, { startsAt: new Date(Date.now() + 24 * HOUR).toISOString() })
+
+  // A host whose profile is ALSO a platform admin — the caller for whom the
+  // host_id filter in listHostStatements is load-bearing, because
+  // host_settlement_rows() refuses an admin nothing.
+  adminHosted = await seedEvent(db, {
+    startsAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+    endsAt: new Date(Date.now() - 26 * HOUR).toISOString(),
+  })
+  const { error: adminHostError } = await db
+    .from('platform_admins')
+    .insert({ profile_id: adminHosted.hostProfileId, note: 'test admin-host' })
+  if (adminHostError) throw new Error(`admin-host seed failed: ${adminHostError.message}`)
 
   for (let i = 0; i < 6; i += 1) extraAttendees.push(await createTestUser(db))
 
@@ -81,6 +101,8 @@ afterAll(async () => {
   await cleanupEvent(db, ended2)
   await cleanupEvent(db, ongoing)
   await cleanupEvent(db, future)
+  // Deleting the host profile cascades away its platform_admins row.
+  await cleanupEvent(db, adminHosted)
   await db.auth.admin.deleteUser(adminId).catch(() => {})
   await db.auth.admin.deleteUser(outsiderId).catch(() => {})
   for (const id of extraAttendees) await db.auth.admin.deleteUser(id).catch(() => {})
@@ -230,38 +252,51 @@ describe('listHostStatements', () => {
     signInAs(outsiderId)
     expect(await listHostStatements()).toEqual([])
   })
+
+  it('shows an admin with no hosts row nothing, not the whole platform', async () => {
+    // Before the host_id filter, this walked every ended event and leaned on
+    // host_settlement_rows() to refuse the foreign ones — which refuses an
+    // admin nothing, so /host/payouts read "Owed to you" about everyone.
+    signInAs(adminId)
+    expect(await listHostStatements()).toEqual([])
+  })
+
+  it('shows an admin who is also a host only their own events', async () => {
+    signInAs(adminHosted.hostProfileId)
+    const ids = (await listHostStatements()).map((r) => r.eventId)
+    expect(ids).toContain(adminHosted.eventId)
+    expect(ids).not.toContain(ended.eventId)
+    expect(ids).not.toContain(ended2.eventId)
+  })
 })
 
 describe('bookingRowsFor fail-closed error handling', () => {
   // Unit-test the error throws without the session mock — bookingRowsFor
   // takes the client as a parameter, so we can stub it directly.
   function stubClient(failTable: 'bookings' | 'payments' | 'refunds') {
+    const resultFor = (table: string) => {
+      if (table === failTable) {
+        return Promise.resolve({
+          data: null,
+          error: { message: 'simulated database failure', code: '42P01' },
+        })
+      }
+      // Minimal valid responses for the other tables
+      if (table === 'bookings') {
+        return Promise.resolve({
+          data: [{ id: 'b1', event_id: 'e1', status: 'confirmed', payment_mode: 'online', subtotal_paise: 100, commission_paise: 0 }],
+          error: null,
+        })
+      }
+      if (table === 'payments') {
+        return Promise.resolve({ data: [{ id: 'p1', booking_id: 'b1', status: 'captured' }], error: null })
+      }
+      return Promise.resolve({ data: [], error: null })
+    }
     return {
+      // bookings are read per event with .eq; payments and refunds with .in.
       from: (table: string) => ({
-        select: () => ({
-          in: () => {
-            if (table === failTable) {
-              return Promise.resolve({
-                data: null,
-                error: { message: 'simulated database failure', code: '42P01' },
-              })
-            }
-            // Minimal valid responses for the other tables
-            if (table === 'bookings') {
-              return Promise.resolve({
-                data: [{ id: 'b1', event_id: 'e1', status: 'confirmed', payment_mode: 'online', subtotal_paise: 100, commission_paise: 0 }],
-                error: null,
-              })
-            }
-            if (table === 'payments') {
-              return Promise.resolve({ data: [{ id: 'p1', booking_id: 'b1', status: 'captured' }], error: null })
-            }
-            if (table === 'refunds') {
-              return Promise.resolve({ data: [], error: null })
-            }
-            return Promise.resolve({ data: [], error: null })
-          },
-        }),
+        select: () => ({ eq: () => resultFor(table), in: () => resultFor(table) }),
       }),
     } as unknown as Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>
   }
@@ -276,6 +311,37 @@ describe('bookingRowsFor fail-closed error handling', () => {
 
   it('throws on a refunds query error rather than silently understating', async () => {
     await expect(bookingRowsFor(stubClient('refunds'), ['e1'])).rejects.toThrow(/Failed to read refunds/)
+  })
+})
+
+describe('payoutRowsFor fail-closed error handling', () => {
+  it('throws on a payouts query error rather than rendering settled as unsettled', async () => {
+    const stub = {
+      from: () => ({
+        select: () => ({
+          in: () =>
+            Promise.resolve({ data: null, error: { message: 'simulated database failure', code: '42P01' } }),
+        }),
+      }),
+    } as unknown as Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>
+    await expect(payoutRowsFor(stub, ['e1'])).rejects.toThrow(/Failed to read payouts/)
+  })
+})
+
+describe('hostStatementRowsFor fail-closed error handling', () => {
+  it('throws on an RPC error rather than silently dropping the statement', async () => {
+    const stub = {
+      rpc: () =>
+        Promise.resolve({ data: null, error: { message: 'simulated database failure', code: '57014' } }),
+    } as unknown as Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>
+    await expect(hostStatementRowsFor(stub, 'e1')).rejects.toThrow(/Failed to read settlement rows/)
+  })
+
+  it('reads an event with no money rows as an empty statement, not an error', async () => {
+    const stub = {
+      rpc: () => Promise.resolve({ data: [], error: null }),
+    } as unknown as Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>
+    expect(await hostStatementRowsFor(stub, 'e1')).toEqual([])
   })
 })
 
