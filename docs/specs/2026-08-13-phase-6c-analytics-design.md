@@ -41,7 +41,7 @@ All money in paise, all derived on read, nothing stored.
 |---|---|---|
 | GMV | Σ `payments.amount_paise` where status ∈ (`captured`,`refunded`) | A refunded payment was captured first (a capture never un-refunds — `lib/payments/service.ts`). GMV records what passed through the platform. |
 | Refunds returned | Σ `refunds.amount_paise` where status = `processed` | `pending`/`failed` refunds have not returned money yet. Net = GMV − this, shown alongside. |
-| Take rate | Σ `bookings.commission_paise` on captured bookings ÷ GMV | ₹0/0% across the pilot, by design. |
+| Take rate | Σ `bookings.commission_paise` on captured-or-refunded bookings (parallel to GMV's arms, so numerator and denominator stay aligned) ÷ GMV | ₹0/0% across the pilot, by design. |
 | Owed to hosts | Σ unpaid statements' `netPaise` from `listSettleableEvents` | **Never a second SQL definition** — `settle()` is the only interpreter of owed money. The page already holds these rows. |
 | Settled to date | Σ `payout.net_paise` of `paid` rows in the same page data | The frozen ledger fact, not a recomputation. |
 | Cash ratio (count) | confirmed cash bookings ÷ all confirmed bookings | The ratio the v1 design doc says to watch, with its **~30% rethink-threshold** marked on the tile. |
@@ -66,6 +66,13 @@ single row of raw counts and paise sums — the table above's left column
 minus the two settlement lines, which never enter SQL. House-style
 revoke/grant tail (`revoke from public, anon; grant to authenticated,
 service_role`). No new tables, no triggers.
+
+**Execution amendment (2026-08-13):** the function takes
+`p_event_ids uuid[] default null` — null means the whole platform
+(production always passes nothing); an array scopes every aggregate to
+those events. The parameter exists for the tests: the suite runs files in
+parallel against one database, so platform-wide totals are moving targets,
+while a test's own events' numbers are exact.
 
 **Module `lib/analytics/`.**
 - `queries.ts` — `businessSnapshot()`: session client, calls the RPC, and a

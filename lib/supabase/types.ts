@@ -722,6 +722,25 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      admin_business_snapshot: {
+        Args: { p_event_ids?: string[] }
+        Returns: {
+          capacity_seats: number
+          cash_confirmed_count: number
+          cash_confirmed_paise: number
+          commission_paise: number
+          confirmed_count: number
+          confirmed_seats: number
+          events_ended: number
+          events_live: number
+          gmv_paise: number
+          online_confirmed_paise: number
+          refunds_processed_paise: number
+          tickets_checked_in: number
+          tickets_issued: number
+          waitlisted_count: number
+        }[]
+      }
       admin_host_payout_target: {
         Args: { p_host_id: string }
         Returns: {
