@@ -2,6 +2,9 @@ import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { mayCheckIn } from '@/lib/checkin/authorize'
 import { mapCheckinRpcError } from '@/lib/checkin/rpc-errors'
+import { sha256Hex } from '@/lib/checkin/offline/hash'
+import type { DoorPack, PackTicket } from '@/lib/checkin/offline/pack'
+import type { DoorPackResult } from '@/lib/checkin/offline/contract'
 import type { Caller } from '@/lib/bookings/caller'
 
 /**
@@ -118,4 +121,56 @@ export async function checkInNextTicket(
     ticketsTotal: data.tickets_total,
     ticketsIn: data.tickets_in,
   }
+}
+
+/** Fail-closed, like every read that feeds a decision (the 6b lesson). */
+const PACK_UNAVAILABLE = 'Could not load the door list. Refresh to try again.'
+
+/**
+ * The door pack: this event's roster for the scanner to cache before doors.
+ * Codes are HASHED here, on the server — the raw bearer codes never reach
+ * IndexedDB. Only confirmed bookings ship: that is every ticket the real
+ * paths create today, and the status filter is the same safety net EH021 is.
+ */
+export async function buildDoorPack(caller: Caller, eventId: string): Promise<DoorPackResult> {
+  if (!(await authorizedEventHost(caller, eventId))) {
+    return { ok: false, error: NOT_YOUR_DOOR }
+  }
+
+  const db = createAdminClient()
+  const { data, error } = await db
+    .from('tickets')
+    .select('code, checked_in_at, booking_id, bookings!inner(attendee_name, reference, status, event_id)')
+    .eq('bookings.event_id', eventId)
+    .eq('bookings.status', 'confirmed')
+
+  if (error) {
+    console.error('[checkin] door pack read failed', error)
+    return { ok: false, error: PACK_UNAVAILABLE }
+  }
+
+  // Per-booking totals from the rows themselves: every confirmed ticket of
+  // the event is in `data`, so counting here matches what the RPC would say.
+  const totals = new Map<string, { total: number; checkedIn: number }>()
+  for (const row of data) {
+    const t = totals.get(row.booking_id) ?? { total: 0, checkedIn: 0 }
+    t.total += 1
+    if (row.checked_in_at !== null) t.checkedIn += 1
+    totals.set(row.booking_id, t)
+  }
+
+  const tickets: PackTicket[] = await Promise.all(
+    data.map(async (row) => ({
+      codeHash: await sha256Hex(row.code),
+      attendeeName: row.bookings.attendee_name,
+      reference: row.bookings.reference,
+      bookingId: row.booking_id,
+      checkedInAt: row.checked_in_at,
+      ticketsTotal: totals.get(row.booking_id)!.total,
+      ticketsIn: totals.get(row.booking_id)!.checkedIn,
+    })),
+  )
+
+  const pack: DoorPack = { eventId, generatedAt: new Date().toISOString(), tickets }
+  return { ok: true, pack }
 }
