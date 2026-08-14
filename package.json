@@ -39,6 +39,7 @@
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
+    "fake-indexeddb": "^6.2.5",
     "supabase": "^2.112.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.11",
