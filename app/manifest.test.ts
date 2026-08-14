@@ -26,4 +26,11 @@ describe('the web app manifest', () => {
     expect(bySize('512x512')).toHaveLength(2)
     expect(m.icons!.some((i) => i.purpose === 'maskable')).toBe(true)
   })
+
+  it('has correct icon src paths', () => {
+    const srcs = m.icons!.map((i) => i.src)
+    expect(srcs).toContain('/icon-192.png')
+    expect(srcs).toContain('/icon-512.png')
+    expect(srcs).toContain('/icon-512-maskable.png')
+  })
 })
