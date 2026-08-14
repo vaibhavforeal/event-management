@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@/tests/helpers/db'
 import type { Caller } from '@/lib/bookings/caller'
 import type { CheckInResult } from '@/lib/checkin/service'
-import type { DoorPackResult, OfflineScanEntry, SyncResult } from '@/lib/checkin/offline/contract'
 
 // Next's redirect() signals by throwing. Reproduce that so a test can assert a
 // redirect happened without depending on Next's internal error shape.
