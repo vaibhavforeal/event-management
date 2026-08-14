@@ -104,4 +104,18 @@ describe('decideOffline', () => {
       enqueue: 'not_on_roster',
     })
   })
+
+  it('pack-checked-in wins over a stale local queue entry (DB truth beats device memory)', () => {
+    const queued: QueuedScanFacts[] = [{ codeHash: HASH, scannedAt: '2026-08-14T13:35:00Z' }]
+    const decision = decideOffline(
+      VALID,
+      HASH,
+      pack(ticket({ checkedInAt: '2026-08-14T13:40:00Z' })),
+      queued,
+    )
+    expect(decision).toEqual({
+      verdict: { kind: 'already', name: 'Asha', checkedInAt: '2026-08-14T13:40:00Z' },
+      enqueue: null,
+    })
+  })
 })
