@@ -63,20 +63,23 @@ describe('drainQueue', () => {
       return { ok: true, outcomes: sent.map((s) => checkedIn(s.id)) }
     }
 
-    const { lines, remaining } = await drainQueue({ store, eventId: 'e1', post, batchSize: 2 })
+    const { lines, remaining, stopReason } = await drainQueue({ store, eventId: 'e1', post, batchSize: 2 })
     expect(batches.map((b) => b.length)).toEqual([2, 1])
     expect(lines).toHaveLength(3)
     expect(remaining).toBe(0)
+    expect(stopReason).toBeNull()
     expect(await store.queueFor('e1')).toEqual([])
   })
 
-  it('a transport failure keeps everything queued and stops the drain', async () => {
+  it('a transport failure keeps everything queued, stops the drain, and says why', async () => {
     const store = await storeWith(entry('a'), entry('b'))
     const post = async (): Promise<SyncResult> => ({ ok: false, error: 'Sync failed partway.' })
 
-    const { lines, remaining } = await drainQueue({ store, eventId: 'e1', post })
+    const { lines, remaining, stopReason } = await drainQueue({ store, eventId: 'e1', post })
     expect(lines).toEqual([])
     expect(remaining).toBe(2)
+    // The failed post's error, verbatim — the scanner surfaces this beside the badge.
+    expect(stopReason).toBe('Sync failed partway.')
     expect(await store.queueFor('e1')).toHaveLength(2)
   })
 
@@ -100,9 +103,10 @@ describe('drainQueue', () => {
       called += 1
       return { ok: true, outcomes: [] }
     }
-    const { lines, remaining } = await drainQueue({ store, eventId: 'e1', post })
+    const { lines, remaining, stopReason } = await drainQueue({ store, eventId: 'e1', post })
     expect(called).toBe(0)
     expect(lines).toEqual([])
     expect(remaining).toBe(0)
+    expect(stopReason).toBeNull()
   })
 })

@@ -35,3 +35,12 @@ export const NOT_ON_ROSTER_SENTENCE =
  */
 export const ARMING_UNAVAILABLE_SENTENCE =
   'Offline mode unavailable on this browser. Scanning needs signal.'
+
+/**
+ * Session died while the door was working. Said by the scanner's queue badge
+ * area when a background sync bounces off auth — the local queue holds, and
+ * signing in again is the whole remedy. The two arming/sync actions RETURN
+ * this instead of redirecting: they are called from timers, and a redirect
+ * fired by a heartbeat would yank the scanner to /login mid-door.
+ */
+export const SIGN_IN_TO_SYNC_SENTENCE = 'Session expired. Sign in again to sync queued check-ins.'

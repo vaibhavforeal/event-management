@@ -109,11 +109,15 @@ describe('checkInByCode', () => {
 })
 
 describe('loadDoorPack', () => {
-  it('redirects a signed-out caller to login carrying the scanner path', async () => {
+  // Returned, not redirected: this action runs from the scanner's timers, and
+  // a heartbeat's redirect would yank the door to /login. See actions.ts.
+  it('returns the sign-in sentence to a signed-out caller instead of redirecting', async () => {
     caller = null
-    expect(await captureRedirect(() => loadDoorPack(EVENT_ID))).toBe(
-      `/login?next=${encodeURIComponent(`/host/events/${EVENT_ID}/scan`)}`,
-    )
+    expect(await loadDoorPack(EVENT_ID)).toEqual({
+      ok: false,
+      error: 'Session expired. Sign in again to sync queued check-ins.',
+    })
+    expect(buildDoorPack).not.toHaveBeenCalled()
   })
 
   it('refuses a junk event id before the service sees it', async () => {
@@ -136,11 +140,14 @@ describe('syncOfflineCheckins', () => {
     scannedAt: '2026-08-14T13:05:00.000Z',
   }
 
-  it('redirects a signed-out caller', async () => {
+  // Same posture as loadDoorPack: the queue must hold, not bounce the page.
+  it('returns the sign-in sentence to a signed-out caller instead of redirecting', async () => {
     caller = null
-    expect(await captureRedirect(() => syncOfflineCheckins(EVENT_ID, [ENTRY]))).toBe(
-      `/login?next=${encodeURIComponent(`/host/events/${EVENT_ID}/scan`)}`,
-    )
+    expect(await syncOfflineCheckins(EVENT_ID, [ENTRY])).toEqual({
+      ok: false,
+      error: 'Session expired. Sign in again to sync queued check-ins.',
+    })
+    expect(syncOfflineCheckIns).not.toHaveBeenCalled()
   })
 
   it('refuses junk shapes before the service sees them', async () => {

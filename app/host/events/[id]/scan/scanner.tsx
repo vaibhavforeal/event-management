@@ -8,6 +8,7 @@ import { sha256Hex } from '@/lib/checkin/offline/hash'
 import { decideOffline } from '@/lib/checkin/offline/verdict'
 import { openDoorStore, type DoorStore } from '@/lib/checkin/offline/store'
 import { drainQueue, type SyncReportLine } from '@/lib/checkin/offline/sync'
+import type { DoorPackResult } from '@/lib/checkin/offline/contract'
 import type { DoorPack } from '@/lib/checkin/offline/pack'
 import {
   ARMING_UNAVAILABLE_SENTENCE,
@@ -57,11 +58,16 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
   const [pack, setPack] = useState<DoorPack | null>(null)
   const [storeUnavailable, setStoreUnavailable] = useState(false)
   const [queueCount, setQueueCount] = useState(0)
+  // Why the last drain held the queue (expired session, transport) — null
+  // after a drain that ran dry or clean. Shown under the queue badge, so a
+  // queue that is holding also says why it holds.
+  const [stopReason, setStopReason] = useState<string | null>(null)
   const [report, setReport] = useState<SyncReportLine[]>([])
   const syncingRef = useRef(false)
 
   /** Arms the door: fresh pack from the server (online), cached pack for the
-   *  header regardless. Any store rejection downgrades to online-only. */
+   *  header regardless. A store rejection downgrades to online-only; a failed
+   *  server fetch just leaves the roster stale. */
   const arm = useCallback(async () => {
     try {
       if (storeRef.current === 'opening') {
@@ -76,8 +82,19 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
       if (cached) setPack(cached)
       setQueueCount((await store.queueFor(eventId)).length)
       if (navigator.onLine) {
-        const result = await loadDoorPack(eventId)
-        if (result.ok) {
+        // The action gets its own net because its failure means something
+        // else entirely: an action failure must never null the store — the
+        // store dies only when IndexedDB itself does. A thrown fetch (network
+        // flake behind a lying navigator.onLine, a 500) or an { ok: false }
+        // refusal both just leave the roster stale, which the spec calls a
+        // visible state, not an error. Queueing and draining stay armed.
+        let result: DoorPackResult | null = null
+        try {
+          result = await loadDoorPack(eventId)
+        } catch {
+          // Stale roster; the next arm (Refresh, post-drain) tries again.
+        }
+        if (result?.ok) {
           await store.savePack(result.pack)
           setPack(result.pack)
         }
@@ -96,11 +113,13 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
     if (!store || store === 'opening' || syncingRef.current || !navigator.onLine) return
     syncingRef.current = true
     try {
-      const { lines, remaining } = await drainQueue({
+      const { lines, remaining, stopReason: reason } = await drainQueue({
         store,
         eventId,
-        // A thrown action (network died again, or a stale session's redirect)
-        // reads as transport failure: keep the queue, retry on the next trigger.
+        // A thrown action (the network dying again mid-post) reads as
+        // transport failure: keep the queue, retry on the next trigger. An
+        // expired session does NOT throw — the action returns the sign-in
+        // sentence, which arrives below as the drain's stopReason.
         post: (entries) => syncOfflineCheckins(eventId, entries).catch(() => ({
           ok: false as const,
           error: RESCAN_SENTENCE,
@@ -111,6 +130,7 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
         void arm() // counts moved server-side; refresh the roster if online
       }
       setQueueCount(remaining)
+      setStopReason(reason) // null on a clean drain clears the last one
     } finally {
       syncingRef.current = false
     }
@@ -319,6 +339,7 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
             {queueCount} scan{queueCount === 1 ? '' : 's'} pending sync
           </p>
         )}
+        {stopReason && <p className="text-muted mt-1">{stopReason}</p>}
       </div>
       <video ref={videoRef} autoPlay muted playsInline className="bg-ink w-full" />
       {/* Rendered whether or not there is a verdict, because aria-live is only

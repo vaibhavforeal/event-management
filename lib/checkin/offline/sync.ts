@@ -11,6 +11,11 @@ import type { DoorStore, QueueEntry } from './store'
  * test-and-set turns those into 'already_checked_in' — idempotent by
  * construction. Refusals DO leave the queue: they are answers (cancelled
  * ticket, wrong event), and retrying them forever would wedge the drain.
+ *
+ * A drain that stops on a failed post also carries WHY: stopReason is that
+ * post's error verbatim (an expired session says "sign in to sync"; a flake
+ * says its flake), null when the queue ran dry or was empty to begin with.
+ * The scanner shows it next to the queue badge, so a held queue is never mute.
  */
 
 export interface SyncReportLine {
@@ -44,19 +49,20 @@ export async function drainQueue(args: {
   eventId: string
   post: (entries: OfflineScanEntry[]) => Promise<SyncResult>
   batchSize?: number
-}): Promise<{ lines: SyncReportLine[]; remaining: number }> {
+}): Promise<{ lines: SyncReportLine[]; remaining: number; stopReason: string | null }> {
   const { store, eventId, post, batchSize = DEFAULT_BATCH_SIZE } = args
   const lines: SyncReportLine[] = []
 
   for (;;) {
     const queue = await store.queueFor(eventId)
-    if (queue.length === 0) return { lines, remaining: 0 }
+    if (queue.length === 0) return { lines, remaining: 0, stopReason: null }
 
     const batch = queue.slice(0, batchSize)
     const result = await post(batch.map(({ id, code, scannedAt }) => ({ id, code, scannedAt })))
     if (!result.ok) {
-      // Transport/auth failure: stop, keep everything, let the next trigger retry.
-      return { lines, remaining: queue.length }
+      // Transport/auth failure: stop, keep everything, let the next trigger
+      // retry — and hand the post's own words up as the reason the queue held.
+      return { lines, remaining: queue.length, stopReason: result.error }
     }
 
     const applied = applyOutcomes(batch, result.outcomes)
@@ -64,8 +70,9 @@ export async function drainQueue(args: {
     lines.push(...applied.lines)
 
     // A response that resolved nothing would loop forever on the same batch.
+    // The post itself succeeded, so there is no reason to report — just stop.
     if (applied.resolvedIds.length === 0) {
-      return { lines, remaining: queue.length }
+      return { lines, remaining: queue.length, stopReason: null }
     }
   }
 }

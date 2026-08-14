@@ -18,6 +18,7 @@ const admin = adminClient()
 
 let seed: SeededEvent
 let codes: string[]
+let pendingAttendee: string
 
 function caller(id: string): Caller {
   return { id } as Caller
@@ -55,7 +56,7 @@ beforeAll(async () => {
   // direct-insert exception that proves the pack's status filter.)
   // pending_approval, not awaiting_payment: bookings_hold_has_expiry requires
   // a hold_expires_at on awaiting_payment rows and the seed helper sets none.
-  const pendingAttendee = await createTestUser(admin)
+  pendingAttendee = await createTestUser(admin)
   const pending = await seedCapturedBooking(admin, seed, {
     status: 'pending_approval',
     captured: false,
@@ -72,6 +73,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await cleanupEvent(admin, seed)
+  await admin.auth.admin.deleteUser(pendingAttendee).catch(() => {})
 })
 
 describe('buildDoorPack', () => {

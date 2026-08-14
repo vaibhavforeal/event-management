@@ -9,7 +9,7 @@ import {
   type CheckInResult,
 } from '@/lib/checkin/service'
 import type { DoorPackResult, OfflineScanEntry, SyncResult } from '@/lib/checkin/offline/contract'
-import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
+import { RESCAN_SENTENCE, SIGN_IN_TO_SYNC_SENTENCE } from '@/lib/checkin/sentences'
 import { loginPath } from '@/lib/auth/session'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -50,10 +50,16 @@ function isIsoInstant(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value))
 }
 
-/** The scanner's arming read. Same junk-shape posture as checkInByCode. */
+/**
+ * The scanner's arming read. Same junk-shape posture as checkInByCode — but a
+ * signed-out caller gets a returned refusal, not a redirect: arming runs from
+ * timers and re-arms after every drain, and a redirect fired by a background
+ * refresh would yank the scanner to /login mid-door. The roster just stays
+ * stale, which the header already shows as a state.
+ */
 export async function loadDoorPack(eventId: string): Promise<DoorPackResult> {
   const caller = await currentCaller()
-  if (!caller) redirect(await loginPath())
+  if (!caller) return { ok: false, error: SIGN_IN_TO_SYNC_SENTENCE }
 
   if (!UUID_PATTERN.test(eventId)) {
     return { ok: false, error: RESCAN_SENTENCE }
@@ -65,14 +71,16 @@ export async function loadDoorPack(eventId: string): Promise<DoorPackResult> {
  * The queue drain. Entries are re-built field by field rather than passed
  * through, so a handcrafted POST cannot smuggle extra properties toward the
  * service. The verdict on each entry is the service's; this action only
- * refuses shapes.
+ * refuses shapes. A signed-out caller gets the sign-in sentence returned, not
+ * a redirect — the 30s heartbeat calls this, and the queue must hold where it
+ * is until the host signs in again.
  */
 export async function syncOfflineCheckins(
   eventId: string,
   entries: OfflineScanEntry[],
 ): Promise<SyncResult> {
   const caller = await currentCaller()
-  if (!caller) redirect(await loginPath())
+  if (!caller) return { ok: false, error: SIGN_IN_TO_SYNC_SENTENCE }
 
   const wellShaped =
     UUID_PATTERN.test(eventId) &&
