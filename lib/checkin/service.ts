@@ -2,6 +2,7 @@ import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { mayCheckIn } from '@/lib/checkin/authorize'
 import { mapCheckinRpcError } from '@/lib/checkin/rpc-errors'
+import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
 import { sha256Hex } from '@/lib/checkin/offline/hash'
 import type { DoorPack, PackTicket } from '@/lib/checkin/offline/pack'
 import type { DoorPackResult, OfflineScanEntry, SyncEntryOutcome, SyncResult } from '@/lib/checkin/offline/contract'
@@ -36,6 +37,16 @@ export type CheckInResult =
       ticketsIn: number
     }
   | { ok: false; error: string }
+
+/**
+ * The generated RPC types say `outcome: string`; the SQL can only ever say
+ * these two words. Narrowed here instead of cast, so a broken contract —
+ * a bad migration, a renamed literal — refuses at the door rather than
+ * painting a made-up verdict. Exported for its unit test only.
+ */
+export function asCheckInOutcome(value: string): 'checked_in' | 'already_checked_in' | null {
+  return value === 'checked_in' || value === 'already_checked_in' ? value : null
+}
 
 /**
  * One sentence for "not your event", "no such event" and "the lookup failed",
@@ -82,9 +93,14 @@ export async function checkInTicket(
     .single()
 
   if (error) return { ok: false, error: mapCheckinRpcError(error) }
+  const outcome = asCheckInOutcome(data.outcome)
+  if (outcome === null) {
+    console.error('[checkin] check_in_ticket returned an unknown outcome', data.outcome)
+    return { ok: false, error: RESCAN_SENTENCE }
+  }
   return {
     ok: true,
-    outcome: data.outcome as 'checked_in' | 'already_checked_in',
+    outcome,
     attendeeName: data.attendee_name,
     checkedInAt: data.checked_in_at,
     reference: data.reference,
@@ -112,9 +128,14 @@ export async function checkInNextTicket(
     .single()
 
   if (error) return { ok: false, error: mapCheckinRpcError(error) }
+  const outcome = asCheckInOutcome(data.outcome)
+  if (outcome === null) {
+    console.error('[checkin] check_in_next_ticket returned an unknown outcome', data.outcome)
+    return { ok: false, error: RESCAN_SENTENCE }
+  }
   return {
     ok: true,
-    outcome: data.outcome as 'checked_in' | 'already_checked_in',
+    outcome,
     attendeeName: data.attendee_name,
     checkedInAt: data.checked_in_at,
     reference: data.reference,
@@ -226,9 +247,17 @@ export async function syncOfflineCheckIns(
       return { ok: false, error: SYNC_FAILED }
     }
 
+    const status = asCheckInOutcome(data.outcome)
+    if (status === null) {
+      // A broken contract is a failure, not an answer: abort the batch so the
+      // queue holds and nothing is marked resolved on a verdict nobody gave.
+      console.error('[checkin] offline sync returned an unknown outcome', data.outcome)
+      return { ok: false, error: SYNC_FAILED }
+    }
+
     outcomes.push({
       id: entry.id,
-      status: data.outcome as 'checked_in' | 'already_checked_in',
+      status,
       attendeeName: data.attendee_name,
       checkedInAt: data.checked_in_at,
       reference: data.reference,

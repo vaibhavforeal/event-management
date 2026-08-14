@@ -46,8 +46,29 @@ export async function checkInByCode(eventId: string, code: string): Promise<Chec
  */
 const MAX_SYNC_BATCH = 200
 
+/**
+ * The sync action's junk-shape refusal. Not RESCAN_SENTENCE: this string
+ * travels up drainQueue as stopReason and sits beside the queue badge, where
+ * "rescan the ticket" is an instruction pointing at nothing.
+ */
+const SYNC_REJECTED_SENTENCE = 'Could not sync queued scans. They are kept on this device.'
+
+/**
+ * A full ISO 8601 instant — date, time to the second, explicit zone — the only
+ * shape the scanner ever mints (Date#toISOString). Date.parse alone would wave
+ * through date-only and locale strings, whose implied midnights and zones the
+ * SQL clamp would then treat as real scan times.
+ */
+const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/
+
 function isIsoInstant(value: unknown): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value))
+  return (
+    typeof value === 'string' &&
+    ISO_INSTANT_PATTERN.test(value) &&
+    // The pattern cannot see that month 13 or day 32 do not exist; Date.parse
+    // can. (A Feb 31st still rolls over — the SQL clamp owns real bounds.)
+    Number.isFinite(Date.parse(value))
+  )
 }
 
 /**
@@ -91,7 +112,7 @@ export async function syncOfflineCheckins(
       (e) => UUID_PATTERN.test(e.id) && CODE_PATTERN.test(e.code) && isIsoInstant(e.scannedAt),
     )
   if (!wellShaped) {
-    return { ok: false, error: RESCAN_SENTENCE }
+    return { ok: false, error: SYNC_REJECTED_SENTENCE }
   }
 
   return syncOfflineCheckIns(
