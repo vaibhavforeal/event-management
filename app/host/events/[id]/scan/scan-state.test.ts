@@ -44,4 +44,16 @@ describe('reduceScan', () => {
     expect(s).toEqual(IDLE)
     expect(reduceScan(s, { type: 'detected', payload: 'EH1.a.b' }).current?.verdict).toBe('pending')
   })
+
+  it('lands an offline verdict exactly like an online one', () => {
+    const detected = reduceScan(IDLE, { type: 'detected', payload: 'EH1.x.y' })
+    const verdict = {
+      kind: 'queued',
+      name: 'Asha',
+      ticketsIn: 2,
+      ticketsTotal: 3,
+    } as const
+    const landed = reduceScan(detected, { type: 'verdict', payload: 'EH1.x.y', verdict })
+    expect(landed.current).toEqual({ payload: 'EH1.x.y', verdict })
+  })
 })

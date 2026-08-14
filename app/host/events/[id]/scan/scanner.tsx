@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { eventKeyFromHex, verifyQrPayload } from '@/lib/tickets/signing'
 import { formatIst } from '@/lib/events/datetime'
-import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
+import { RESCAN_SENTENCE, NOT_ON_ROSTER_SENTENCE } from '@/lib/checkin/sentences'
 import { checkInByCode } from './actions'
 import {
   IDLE,
@@ -232,6 +232,35 @@ function VerdictCard({ verdict }: { verdict: ScanVerdict | 'pending' }) {
       return (
         <div className="rounded-md bg-red-50 p-4 text-red-700">
           <p className="text-lg font-medium">Not a ticket for this event.</p>
+        </div>
+      )
+    case 'queued':
+      return (
+        <div className="rounded-md bg-green-100 p-4 text-green-800">
+          <p className="text-2xl font-semibold">{verdict.name ?? 'Guest'}</p>
+          <p className="mt-1 text-[15px]">
+            {verdict.ticketsIn} of {verdict.ticketsTotal} in · offline, will sync
+          </p>
+        </div>
+      )
+    case 'queued_unlisted':
+      return (
+        <div className="rounded-md bg-amber-50 p-4 text-amber-800">
+          <p className="text-lg font-medium">{NOT_ON_ROSTER_SENTENCE}</p>
+          {verdict.rosterAsOf && (
+            <p className="mt-1 text-[13px]">
+              Roster as of {formatIst(new Date(verdict.rosterAsOf))}
+            </p>
+          )}
+        </div>
+      )
+    case 'already_queued':
+      return (
+        <div className="rounded-md bg-amber-50 p-4 text-amber-800">
+          <p className="text-2xl font-semibold">{verdict.name ?? 'Guest'}</p>
+          <p className="mt-1 text-[15px]">
+            Already scanned here · {formatIst(new Date(verdict.scannedAt))} · pending sync
+          </p>
         </div>
       )
   }
