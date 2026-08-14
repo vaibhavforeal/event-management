@@ -118,7 +118,7 @@ These get disproportionate design attention because they are where ticketing sys
 
 **2. Payment webhooks.** The attendee's browser can die right after they pay. The client redirect is a UX nicety; **the Razorpay webhook is the only source of truth.** The handler verifies the signature, is idempotent via a unique constraint on `razorpay_payment_id`, and stores the raw payload. A reconciliation cron polls Razorpay for orders stuck in `awaiting_payment` past their hold — because webhooks do get dropped.
 
-**3. Offline check-in.** Venue wifi in a tier-2 city basement is not a thing. Before doors open, the host's PWA caches the event's signed ticket list. Scans verify the HMAC **locally**, queue check-ins in IndexedDB, and sync on reconnect. Double check-ins resolve last-write-wins with both timestamps retained so the host can see it happened.
+**3. Offline check-in.** Venue wifi in a tier-2 city basement is not a thing. Before doors open, the host's PWA caches the event's signed ticket list. Scans verify the HMAC **locally**, queue check-ins in IndexedDB, and sync on reconnect. ~~Double check-ins resolve last-write-wins with both timestamps retained so the host can see it happened.~~ **Amended in Phase 7:** the database stays first-write-wins (the existing atomic test-and-set decides); a losing offline scan syncs as `already_checked_in`, and "both timestamps" live in the device's sync report — see `2026-08-14-phase-7-pwa-offline-checkin-design.md`.
 
 **4. QR forgery.** Ticket codes are 128-bit random plus an HMAC signature under a **per-event key**. The scanner holds only the current event's key, so a compromised host device cannot forge tickets for anyone else's event.
 

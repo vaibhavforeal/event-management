@@ -36,6 +36,11 @@ const serverSchema = z.object({
   // Optional so local development and tests run without it; the route refuses
   // every request when it is absent, which is the safe direction.
   CRON_SECRET: z.string().optional(),
+  // Digital Asset Links for the Play Store TWA. Both unset until the person
+  // steps in docs/runbooks/play-store-twa.md produce a signing key; the
+  // /.well-known/assetlinks.json route 404s meanwhile — nothing fake served.
+  TWA_PACKAGE_NAME: z.string().optional(),
+  TWA_CERT_SHA256: z.string().optional(),
 })
 
 function fail(scope: string, error: z.ZodError): never {
