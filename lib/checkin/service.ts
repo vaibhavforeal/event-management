@@ -4,7 +4,7 @@ import { mayCheckIn } from '@/lib/checkin/authorize'
 import { mapCheckinRpcError } from '@/lib/checkin/rpc-errors'
 import { sha256Hex } from '@/lib/checkin/offline/hash'
 import type { DoorPack, PackTicket } from '@/lib/checkin/offline/pack'
-import type { DoorPackResult } from '@/lib/checkin/offline/contract'
+import type { DoorPackResult, OfflineScanEntry, SyncEntryOutcome, SyncResult } from '@/lib/checkin/offline/contract'
 import type { Caller } from '@/lib/bookings/caller'
 
 /**
@@ -173,4 +173,69 @@ export async function buildDoorPack(caller: Caller, eventId: string): Promise<Do
 
   const pack: DoorPack = { eventId, generatedAt: new Date().toISOString(), tickets }
   return { ok: true, pack }
+}
+
+/**
+ * Whole-batch failure: something other than a door refusal broke mid-sync.
+ * The client keeps EVERYTHING queued and retries — including entries already
+ * applied this round, which the RPC's test-and-set turns into harmless
+ * 'already_checked_in' rows. Idempotence is why discarding partial outcomes
+ * here is safe.
+ */
+const SYNC_FAILED = 'Sync failed partway. Queued scans are kept and will retry.'
+
+/** The SQLSTATEs that are answers, not failures. Anything else aborts the batch. */
+const DOOR_REFUSALS = new Set(['EH020', 'EH021', 'EH022'])
+
+/**
+ * Drains one device's offline queue for one event. Authorizes ONCE, then
+ * applies entries sequentially through the same RPC as online check-in, with
+ * p_offline = true and the device's clamped scan time. Refusals resolve
+ * per-entry; they are outcomes the host reads in the sync report, and they
+ * must never poison the batch.
+ */
+export async function syncOfflineCheckIns(
+  caller: Caller,
+  eventId: string,
+  entries: OfflineScanEntry[],
+): Promise<SyncResult> {
+  if (!(await authorizedEventHost(caller, eventId))) {
+    return { ok: false, error: NOT_YOUR_DOOR }
+  }
+
+  const db = createAdminClient()
+  const outcomes: SyncEntryOutcome[] = []
+
+  for (const entry of entries) {
+    const { data, error } = await db
+      .rpc('check_in_ticket', {
+        p_event_id: eventId,
+        p_code: entry.code,
+        p_checked_in_by: caller.id,
+        p_scanned_at: entry.scannedAt,
+        p_offline: true,
+      })
+      .single()
+
+    if (error) {
+      if (DOOR_REFUSALS.has(error.code)) {
+        outcomes.push({ id: entry.id, status: 'refused', message: mapCheckinRpcError(error) })
+        continue
+      }
+      console.error('[checkin] offline sync write failed', error)
+      return { ok: false, error: SYNC_FAILED }
+    }
+
+    outcomes.push({
+      id: entry.id,
+      status: data.outcome as 'checked_in' | 'already_checked_in',
+      attendeeName: data.attendee_name,
+      checkedInAt: data.checked_in_at,
+      reference: data.reference,
+      ticketsTotal: data.tickets_total,
+      ticketsIn: data.tickets_in,
+    })
+  }
+
+  return { ok: true, outcomes }
 }
