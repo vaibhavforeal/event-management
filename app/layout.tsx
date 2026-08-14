@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
+import { SwRegister } from './sw-register'
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -60,7 +61,10 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
         `flex` does, which is what this is. A block-level body makes main
         full-width by default and `mx-auto` goes back to meaning "centre me".
       */}
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full">
+        <SwRegister />
+        {children}
+      </body>
     </html>
   )
 }

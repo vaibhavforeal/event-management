@@ -100,6 +100,15 @@ const nextConfig: NextConfig = {
     // Only ever true against the local Supabase stack; see above.
     dangerouslyAllowLocalIP: isLocalHostname(supabasePattern.hostname),
   },
+  async headers() {
+    // The SW files must never be served stale: a cached sw.js is how a bad
+    // deploy becomes permanent. Everything else keeps Next's defaults.
+    const noCache = [{ key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' }]
+    return [
+      { source: '/sw.js', headers: noCache },
+      { source: '/sw-strategy.mjs', headers: noCache },
+    ]
+  },
 }
 
 export default nextConfig
