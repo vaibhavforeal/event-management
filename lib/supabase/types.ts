@@ -947,7 +947,13 @@ export type Database = {
         }[]
       }
       check_in_ticket: {
-        Args: { p_checked_in_by: string; p_code: string; p_event_id: string }
+        Args: {
+          p_checked_in_by: string
+          p_code: string
+          p_event_id: string
+          p_offline?: boolean
+          p_scanned_at?: string | null
+        }
         Returns: {
           attendee_name: string
           checked_in_at: string

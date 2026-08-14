@@ -1,0 +1,22 @@
+{
+  "packageId": "com.happenly.app",
+  "host": "happenly.example.com",
+  "name": "Happenly",
+  "launcherName": "Happenly",
+  "display": "standalone",
+  "themeColor": "#0f5e52",
+  "navigationColor": "#0f5e52",
+  "backgroundColor": "#fbfaf7",
+  "startUrl": "/",
+  "iconUrl": "https://happenly.example.com/icon-512.png",
+  "maskableIconUrl": "https://happenly.example.com/icon-512-maskable.png",
+  "orientation": "portrait",
+  "fallbackType": "customtabs",
+  "enableNotifications": false,
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "happenly"
+  }
+}

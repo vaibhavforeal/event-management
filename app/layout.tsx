@@ -1,6 +1,7 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
+import { SwRegister } from './sw-register'
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -24,12 +25,17 @@ const geistMono = Geist_Mono({
  */
 export const metadata: Metadata = {
   title: {
-    default: 'Event Hoster — curated offline experiences near you',
-    template: '%s · Event Hoster',
+    default: 'Happenly — curated offline experiences near you',
+    template: '%s · Happenly',
   },
   description:
     'Supper clubs, board-game nights, workshops and pop-ups in tier-2 and tier-3 Indian cities. ' +
     'Hosts publish in under three minutes and get one link to forward on WhatsApp.',
+}
+
+/** The PWA's toolbar/status-bar color; pairs with the manifest's theme_color. */
+export const viewport: Viewport = {
+  themeColor: '#0f5e52',
 }
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {
@@ -55,7 +61,10 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
         `flex` does, which is what this is. A block-level body makes main
         full-width by default and `mx-auto` goes back to meaning "centre me".
       */}
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full">
+        <SwRegister />
+        {children}
+      </body>
     </html>
   )
 }

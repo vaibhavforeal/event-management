@@ -4,8 +4,18 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { eventKeyFromHex, verifyQrPayload } from '@/lib/tickets/signing'
 import { formatIst } from '@/lib/events/datetime'
-import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
-import { checkInByCode } from './actions'
+import { sha256Hex } from '@/lib/checkin/offline/hash'
+import { decideOffline } from '@/lib/checkin/offline/verdict'
+import { openDoorStore, type DoorStore } from '@/lib/checkin/offline/store'
+import { drainQueue, type SyncReportLine } from '@/lib/checkin/offline/sync'
+import type { DoorPackResult } from '@/lib/checkin/offline/contract'
+import type { DoorPack } from '@/lib/checkin/offline/pack'
+import {
+  ARMING_UNAVAILABLE_SENTENCE,
+  NOT_ON_ROSTER_SENTENCE,
+  RESCAN_SENTENCE,
+} from '@/lib/checkin/sentences'
+import { checkInByCode, loadDoorPack, syncOfflineCheckins } from './actions'
 import {
   IDLE,
   reduceScan,
@@ -42,6 +52,138 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
   const [session, setSession] = useState<ScanSession>(IDLE)
   const [camera, setCamera] = useState<'starting' | 'on' | 'unsupported' | 'denied'>('starting')
 
+  // The door's offline half. storeRef holds the ONE store handle; null after
+  // a failed open means IndexedDB is unavailable and the banner says so.
+  const storeRef = useRef<DoorStore | null | 'opening'>('opening')
+  const [pack, setPack] = useState<DoorPack | null>(null)
+  const [storeUnavailable, setStoreUnavailable] = useState(false)
+  const [queueCount, setQueueCount] = useState(0)
+  // Why the last drain held the queue (expired session, transport) — null
+  // after a drain that ran dry or clean. Shown under the queue badge, so a
+  // queue that is holding also says why it holds.
+  const [stopReason, setStopReason] = useState<string | null>(null)
+  const [report, setReport] = useState<SyncReportLine[]>([])
+  const syncingRef = useRef(false)
+
+  /** Arms the door: fresh pack from the server (online), cached pack for the
+   *  header regardless. A store rejection downgrades to online-only; a failed
+   *  server fetch just leaves the roster stale. */
+  const arm = useCallback(async () => {
+    try {
+      if (storeRef.current === 'opening') {
+        storeRef.current = await openDoorStore()
+        if (storeRef.current === null) setStoreUnavailable(true)
+      }
+      // No 'opening' check here: the branch above just replaced it, and TS
+      // knows — only null (unavailable) or a live store can remain.
+      const store = storeRef.current
+      if (!store) return
+      const cached = await store.loadPack(eventId)
+      if (cached) setPack(cached)
+      setQueueCount((await store.queueFor(eventId)).length)
+      if (navigator.onLine) {
+        // The action gets its own net because its failure means something
+        // else entirely: an action failure must never null the store — the
+        // store dies only when IndexedDB itself does. A thrown fetch (network
+        // flake behind a lying navigator.onLine, a 500) or an { ok: false }
+        // refusal both just leave the roster stale, which the spec calls a
+        // visible state, not an error. Queueing and draining stay armed.
+        let result: DoorPackResult | null = null
+        try {
+          result = await loadDoorPack(eventId)
+        } catch {
+          // Stale roster; the next arm (Refresh, post-drain) tries again.
+        }
+        if (result?.ok) {
+          await store.savePack(result.pack)
+          setPack(result.pack)
+        }
+      }
+    } catch {
+      // Store died mid-session (eviction, private mode): same downgrade as
+      // never having opened. Online scanning is untouched.
+      storeRef.current = null
+      setStoreUnavailable(true)
+    }
+  }, [eventId])
+
+  /** Drains the queue through the sync action. Never concurrent with itself. */
+  const runSync = useCallback(async () => {
+    const store = storeRef.current
+    if (!store || store === 'opening' || syncingRef.current || !navigator.onLine) return
+    syncingRef.current = true
+    try {
+      const { lines, remaining, stopReason: reason } = await drainQueue({
+        store,
+        eventId,
+        // A thrown action (the network dying again mid-post) reads as
+        // transport failure: keep the queue, retry on the next trigger. An
+        // expired session does NOT throw — the action returns the sign-in
+        // sentence, which arrives below as the drain's stopReason.
+        post: (entries) => syncOfflineCheckins(eventId, entries).catch(() => ({
+          ok: false as const,
+          error: RESCAN_SENTENCE,
+        })),
+      })
+      if (lines.length > 0) {
+        setReport((prev) => [...prev, ...lines])
+        void arm() // counts moved server-side; refresh the roster if online
+      }
+      setQueueCount(remaining)
+      setStopReason(reason) // null on a clean drain clears the last one
+    } finally {
+      syncingRef.current = false
+    }
+  }, [eventId, arm])
+
+  useEffect(() => {
+    void arm().then(() => runSync())
+    const onOnline = () => void runSync()
+    window.addEventListener('online', onOnline)
+    // 30s heartbeat: only drains when a queue exists and the network is back.
+    const interval = window.setInterval(() => void runSync(), 30_000)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      window.clearInterval(interval)
+    }
+  }, [arm, runSync])
+
+  /** The offline path: pack + queue → decideOffline → maybe enqueue. */
+  const offlineVerdict = useCallback(
+    async (code: string): Promise<ScanVerdict> => {
+      const store = storeRef.current
+      if (!store || store === 'opening') {
+        // Nowhere durable to queue: honest refusal, not a silent drop.
+        return { kind: 'refused', message: ARMING_UNAVAILABLE_SENTENCE }
+      }
+      try {
+        const codeHash = await sha256Hex(code)
+        const cachedPack = await store.loadPack(eventId)
+        const queued = await store.queueFor(eventId)
+        const decision = decideOffline({ valid: true, code }, codeHash, cachedPack, queued)
+        if (decision.enqueue) {
+          await store.enqueue({
+            id: crypto.randomUUID(),
+            eventId,
+            code,
+            codeHash,
+            scannedAt: new Date().toISOString(),
+            verdictAtScan: decision.enqueue,
+          })
+          setQueueCount(queued.length + 1)
+        }
+        // decideOffline never returns 'invalid' for a valid input, so this
+        // cast is the union narrowing the reducer already understands.
+        return decision.verdict as ScanVerdict
+      } catch {
+        storeRef.current = null
+        setStoreUnavailable(true)
+        return { kind: 'refused', message: ARMING_UNAVAILABLE_SENTENCE }
+      }
+    },
+    [eventId],
+  )
+
   // One dispatcher: applies the reducer, and if this event opened a new
   // pending flight, runs verification for it. Named so the flight can land its
   // own verdict through the same door it came in by.
@@ -61,41 +203,49 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
 
       void (async () => {
         let verdict: ScanVerdict
+        // Last-resort net around the whole computation: while a flight is
+        // pending the reducer starts nothing new, so a throw that never lands
+        // a verdict would wedge the door on "Checking…" until reload.
         try {
           // Local first: the signature proves the QR was issued for this event,
           // so a random poster's QR never costs a server round-trip.
           const verified = await verifyQrPayload(eventKeyFromHex(eventKeyHex), payload)
           if (!verified.valid) {
             verdict = { kind: 'invalid', reason: verified.reason }
+          } else if (!navigator.onLine) {
+            verdict = await offlineVerdict(verified.code)
           } else {
-            // The server does not rely on that local check — see actions.ts.
-            const result = await checkInByCode(eventId, verified.code)
-            verdict = !result.ok
-              ? { kind: 'refused', message: result.error }
-              : result.outcome === 'checked_in'
-                ? {
-                    kind: 'in',
-                    name: result.attendeeName,
-                    ticketsIn: result.ticketsIn,
-                    ticketsTotal: result.ticketsTotal,
-                  }
-                : {
-                    kind: 'already',
-                    name: result.attendeeName,
-                    checkedInAt: result.checkedInAt,
-                  }
+            try {
+              // The server does not rely on that local check — see actions.ts.
+              const result = await checkInByCode(eventId, verified.code)
+              verdict = !result.ok
+                ? { kind: 'refused', message: result.error }
+                : result.outcome === 'checked_in'
+                  ? {
+                      kind: 'in',
+                      name: result.attendeeName,
+                      ticketsIn: result.ticketsIn,
+                      ticketsTotal: result.ticketsTotal,
+                    }
+                  : {
+                      kind: 'already',
+                      name: result.attendeeName,
+                      checkedInAt: result.checkedInAt,
+                    }
+            } catch {
+              // The network dying mid-call. This used to be a dead-end "rescan";
+              // now it is the door going offline mid-scan: same path as no
+              // signal, so the scan still lands somewhere durable.
+              verdict = await offlineVerdict(verified.code)
+            }
           }
         } catch {
-          // The network dying mid-call, or the action redirecting a stale
-          // session. Land the flight with the action's own generic sentence
-          // rather than leaving the door wedged on "Checking…" — while a
-          // flight is pending the reducer starts nothing new.
           verdict = { kind: 'refused', message: RESCAN_SENTENCE }
         }
         dispatch({ type: 'verdict', payload, verdict })
       })()
     },
-    [eventId, eventKeyHex],
+    [eventId, eventKeyHex, offlineVerdict],
   )
 
   useEffect(() => {
@@ -171,6 +321,26 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
 
   return (
     <div className="mt-6">
+      <div className="border-line mb-4 border p-3 text-[13px]">
+        {pack ? (
+          <p>
+            Roster as of {formatIst(new Date(pack.generatedAt))} · {pack.tickets.length} tickets ·{' '}
+            {pack.tickets.filter((t) => t.checkedInAt !== null).length} in
+            <button type="button" onClick={() => void arm()} className="ml-2 font-mono underline">
+              Refresh
+            </button>
+          </p>
+        ) : (
+          <p className="text-muted">Roster not cached yet — it loads while you have signal.</p>
+        )}
+        {storeUnavailable && <p className="text-muted mt-1">{ARMING_UNAVAILABLE_SENTENCE}</p>}
+        {queueCount > 0 && (
+          <p className="mt-1 font-medium">
+            {queueCount} scan{queueCount === 1 ? '' : 's'} pending sync
+          </p>
+        )}
+        {stopReason && <p className="text-muted mt-1">{stopReason}</p>}
+      </div>
       <video ref={videoRef} autoPlay muted playsInline className="bg-ink w-full" />
       {/* Rendered whether or not there is a verdict, because aria-live is only
           honoured on an element that was already in the DOM when its contents
@@ -194,6 +364,22 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
           </div>
         )}
       </div>
+      {report.length > 0 && (
+        <div className="border-line mt-6 border p-3">
+          <p className="text-[13px] font-medium">Synced this session</p>
+          <ul className="mt-1 space-y-1 text-[13px]">
+            {report.map((line) => (
+              <li key={line.entryId}>
+                {line.result.status === 'refused'
+                  ? `Scanned ${formatIst(new Date(line.scannedAt))} — refused: ${line.result.message}`
+                  : line.result.status === 'already_checked_in'
+                    ? `${line.result.attendeeName ?? 'Guest'} — scanned here ${formatIst(new Date(line.scannedAt))} · already in at ${formatIst(new Date(line.result.checkedInAt))}`
+                    : `${line.result.attendeeName ?? 'Guest'} — in (scanned ${formatIst(new Date(line.scannedAt))})`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
@@ -232,6 +418,35 @@ function VerdictCard({ verdict }: { verdict: ScanVerdict | 'pending' }) {
       return (
         <div className="rounded-md bg-red-50 p-4 text-red-700">
           <p className="text-lg font-medium">Not a ticket for this event.</p>
+        </div>
+      )
+    case 'queued':
+      return (
+        <div className="rounded-md bg-green-100 p-4 text-green-800">
+          <p className="text-2xl font-semibold">{verdict.name ?? 'Guest'}</p>
+          <p className="mt-1 text-[15px]">
+            {verdict.ticketsIn} of {verdict.ticketsTotal} in · offline, will sync
+          </p>
+        </div>
+      )
+    case 'queued_unlisted':
+      return (
+        <div className="rounded-md bg-amber-50 p-4 text-amber-800">
+          <p className="text-lg font-medium">{NOT_ON_ROSTER_SENTENCE}</p>
+          {verdict.rosterAsOf && (
+            <p className="mt-1 text-[13px]">
+              Roster as of {formatIst(new Date(verdict.rosterAsOf))}
+            </p>
+          )}
+        </div>
+      )
+    case 'already_queued':
+      return (
+        <div className="rounded-md bg-amber-50 p-4 text-amber-800">
+          <p className="text-2xl font-semibold">{verdict.name ?? 'Guest'}</p>
+          <p className="mt-1 text-[15px]">
+            Already scanned here · {formatIst(new Date(verdict.scannedAt))} · pending sync
+          </p>
         </div>
       )
   }

@@ -48,11 +48,17 @@ vi.mock('@/lib/bookings/caller', () => ({ currentCaller: async () => caller }))
  * before it gets there, and whether it gets there at all.
  */
 const checkInTicket = vi.fn<(...args: unknown[]) => Promise<CheckInResult>>()
+const buildDoorPack = vi.fn<(...args: unknown[]) => Promise<unknown>>()
+const syncOfflineCheckIns = vi.fn<(...args: unknown[]) => Promise<unknown>>()
 vi.mock('@/lib/checkin/service', () => ({
   checkInTicket: (...args: unknown[]) => checkInTicket(...args),
+  buildDoorPack: (...args: unknown[]) => buildDoorPack(...args),
+  syncOfflineCheckIns: (...args: unknown[]) => syncOfflineCheckIns(...args),
 }))
 
-const { checkInByCode } = await import('@/app/host/events/[id]/scan/actions')
+const { checkInByCode, loadDoorPack, syncOfflineCheckins } = await import(
+  '@/app/host/events/[id]/scan/actions'
+)
 
 const CALLER_ID = '00000000-0000-4000-8000-000000000001'
 const CODE = 'a'.repeat(32)
@@ -99,5 +105,79 @@ describe('checkInByCode', () => {
   it('returns the service refusal untouched', async () => {
     checkInTicket.mockResolvedValue({ ok: false, error: 'This booking is not confirmed.' })
     expect(await checkInByCode(EVENT_ID, CODE)).toEqual({ ok: false, error: 'This booking is not confirmed.' })
+  })
+})
+
+describe('loadDoorPack', () => {
+  // Returned, not redirected: this action runs from the scanner's timers, and
+  // a heartbeat's redirect would yank the door to /login. See actions.ts.
+  it('returns the sign-in sentence to a signed-out caller instead of redirecting', async () => {
+    caller = null
+    expect(await loadDoorPack(EVENT_ID)).toEqual({
+      ok: false,
+      error: 'Session expired. Sign in again to sync queued check-ins.',
+    })
+    expect(buildDoorPack).not.toHaveBeenCalled()
+  })
+
+  it('refuses a junk event id before the service sees it', async () => {
+    expect(await loadDoorPack('not-a-uuid')).toEqual({ ok: false, error: GENERIC })
+    expect(buildDoorPack).not.toHaveBeenCalled()
+  })
+
+  it('passes through under the caller\'s identity', async () => {
+    const pack = { eventId: EVENT_ID, generatedAt: 'now', tickets: [] }
+    buildDoorPack.mockResolvedValue({ ok: true, pack })
+    expect(await loadDoorPack(EVENT_ID)).toEqual({ ok: true, pack })
+    expect(buildDoorPack).toHaveBeenCalledWith({ id: CALLER_ID }, EVENT_ID)
+  })
+})
+
+describe('syncOfflineCheckins', () => {
+  const ENTRY = {
+    id: '00000000-0000-4000-8000-00000000000a',
+    code: 'b'.repeat(32),
+    scannedAt: '2026-08-14T13:05:00.000Z',
+  }
+
+  // Same posture as loadDoorPack: the queue must hold, not bounce the page.
+  it('returns the sign-in sentence to a signed-out caller instead of redirecting', async () => {
+    caller = null
+    expect(await syncOfflineCheckins(EVENT_ID, [ENTRY])).toEqual({
+      ok: false,
+      error: 'Session expired. Sign in again to sync queued check-ins.',
+    })
+    expect(syncOfflineCheckIns).not.toHaveBeenCalled()
+  })
+
+  it('refuses junk shapes before the service sees them', async () => {
+    expect(await syncOfflineCheckins('not-a-uuid', [ENTRY])).toEqual({ ok: false, error: GENERIC })
+    expect(await syncOfflineCheckins(EVENT_ID, [])).toEqual({ ok: false, error: GENERIC })
+    expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, code: 'nope' }])).toEqual({
+      ok: false,
+      error: GENERIC,
+    })
+    expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, id: 'nope' }])).toEqual({
+      ok: false,
+      error: GENERIC,
+    })
+    expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, scannedAt: 'yesterday-ish' }])).toEqual({
+      ok: false,
+      error: GENERIC,
+    })
+    expect(syncOfflineCheckIns).not.toHaveBeenCalled()
+  })
+
+  it('caps a batch at 200 entries', async () => {
+    const entries = Array.from({ length: 201 }, () => ({ ...ENTRY, id: crypto.randomUUID() }))
+    expect(await syncOfflineCheckins(EVENT_ID, entries)).toEqual({ ok: false, error: GENERIC })
+    expect(syncOfflineCheckIns).not.toHaveBeenCalled()
+  })
+
+  it('strips extra properties and passes through under the caller\'s identity', async () => {
+    syncOfflineCheckIns.mockResolvedValue({ ok: true, outcomes: [] })
+    const smuggled = { ...ENTRY, extra: 'ignored' } as typeof ENTRY
+    expect(await syncOfflineCheckins(EVENT_ID, [smuggled])).toEqual({ ok: true, outcomes: [] })
+    expect(syncOfflineCheckIns).toHaveBeenCalledWith({ id: CALLER_ID }, EVENT_ID, [ENTRY])
   })
 })

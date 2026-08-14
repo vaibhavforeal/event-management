@@ -2,8 +2,14 @@
 
 import { redirect } from 'next/navigation'
 import { currentCaller } from '@/lib/bookings/caller'
-import { checkInTicket, type CheckInResult } from '@/lib/checkin/service'
-import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
+import {
+  buildDoorPack,
+  checkInTicket,
+  syncOfflineCheckIns,
+  type CheckInResult,
+} from '@/lib/checkin/service'
+import type { DoorPackResult, OfflineScanEntry, SyncResult } from '@/lib/checkin/offline/contract'
+import { RESCAN_SENTENCE, SIGN_IN_TO_SYNC_SENTENCE } from '@/lib/checkin/sentences'
 import { loginPath } from '@/lib/auth/session'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -31,4 +37,66 @@ export async function checkInByCode(eventId: string, code: string): Promise<Chec
   // this return value, and the guest list re-renders when the host next opens
   // it; there is no cached payload here that just went stale.
   return checkInTicket(caller, eventId, code)
+}
+
+/**
+ * A door's worth of offline scans, not a data-import surface. A real queue at
+ * a pilot-scale door is tens of entries; the client drains in rounds of 200
+ * (lib/checkin/offline/sync.ts) if it somehow isn't.
+ */
+const MAX_SYNC_BATCH = 200
+
+function isIsoInstant(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value))
+}
+
+/**
+ * The scanner's arming read. Same junk-shape posture as checkInByCode — but a
+ * signed-out caller gets a returned refusal, not a redirect: arming runs from
+ * timers and re-arms after every drain, and a redirect fired by a background
+ * refresh would yank the scanner to /login mid-door. The roster just stays
+ * stale, which the header already shows as a state.
+ */
+export async function loadDoorPack(eventId: string): Promise<DoorPackResult> {
+  const caller = await currentCaller()
+  if (!caller) return { ok: false, error: SIGN_IN_TO_SYNC_SENTENCE }
+
+  if (!UUID_PATTERN.test(eventId)) {
+    return { ok: false, error: RESCAN_SENTENCE }
+  }
+  return buildDoorPack(caller, eventId)
+}
+
+/**
+ * The queue drain. Entries are re-built field by field rather than passed
+ * through, so a handcrafted POST cannot smuggle extra properties toward the
+ * service. The verdict on each entry is the service's; this action only
+ * refuses shapes. A signed-out caller gets the sign-in sentence returned, not
+ * a redirect — the 30s heartbeat calls this, and the queue must hold where it
+ * is until the host signs in again.
+ */
+export async function syncOfflineCheckins(
+  eventId: string,
+  entries: OfflineScanEntry[],
+): Promise<SyncResult> {
+  const caller = await currentCaller()
+  if (!caller) return { ok: false, error: SIGN_IN_TO_SYNC_SENTENCE }
+
+  const wellShaped =
+    UUID_PATTERN.test(eventId) &&
+    Array.isArray(entries) &&
+    entries.length > 0 &&
+    entries.length <= MAX_SYNC_BATCH &&
+    entries.every(
+      (e) => UUID_PATTERN.test(e.id) && CODE_PATTERN.test(e.code) && isIsoInstant(e.scannedAt),
+    )
+  if (!wellShaped) {
+    return { ok: false, error: RESCAN_SENTENCE }
+  }
+
+  return syncOfflineCheckIns(
+    caller,
+    eventId,
+    entries.map(({ id, code, scannedAt }) => ({ id, code, scannedAt })),
+  )
 }

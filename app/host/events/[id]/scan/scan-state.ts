@@ -12,6 +12,12 @@ export type ScanVerdict =
   | { kind: 'already'; name: string | null; checkedInAt: string }
   | { kind: 'refused'; message: string }
   | { kind: 'invalid'; reason: 'malformed' | 'unsupported_version' | 'bad_signature' }
+  /** Offline: on the roster, fresh, queued to sync. The door's green. */
+  | { kind: 'queued'; name: string | null; ticketsIn: number; ticketsTotal: number }
+  /** Offline: valid signature, unknown to the cached roster. Queued; amber. */
+  | { kind: 'queued_unlisted'; rosterAsOf: string | null }
+  /** Offline: this device already scanned it; pending sync. Amber. */
+  | { kind: 'already_queued'; name: string | null; scannedAt: string }
 
 export interface ScanSession {
   current: { payload: string; verdict: ScanVerdict | 'pending' } | null
