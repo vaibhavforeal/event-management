@@ -2,7 +2,13 @@
 
 import { redirect } from 'next/navigation'
 import { currentCaller } from '@/lib/bookings/caller'
-import { checkInTicket, type CheckInResult } from '@/lib/checkin/service'
+import {
+  buildDoorPack,
+  checkInTicket,
+  syncOfflineCheckIns,
+  type CheckInResult,
+} from '@/lib/checkin/service'
+import type { DoorPackResult, OfflineScanEntry, SyncResult } from '@/lib/checkin/offline/contract'
 import { RESCAN_SENTENCE } from '@/lib/checkin/sentences'
 import { loginPath } from '@/lib/auth/session'
 
@@ -31,4 +37,58 @@ export async function checkInByCode(eventId: string, code: string): Promise<Chec
   // this return value, and the guest list re-renders when the host next opens
   // it; there is no cached payload here that just went stale.
   return checkInTicket(caller, eventId, code)
+}
+
+/**
+ * A door's worth of offline scans, not a data-import surface. A real queue at
+ * a pilot-scale door is tens of entries; the client drains in rounds of 200
+ * (lib/checkin/offline/sync.ts) if it somehow isn't.
+ */
+const MAX_SYNC_BATCH = 200
+
+function isIsoInstant(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value))
+}
+
+/** The scanner's arming read. Same junk-shape posture as checkInByCode. */
+export async function loadDoorPack(eventId: string): Promise<DoorPackResult> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  if (!UUID_PATTERN.test(eventId)) {
+    return { ok: false, error: RESCAN_SENTENCE }
+  }
+  return buildDoorPack(caller, eventId)
+}
+
+/**
+ * The queue drain. Entries are re-built field by field rather than passed
+ * through, so a handcrafted POST cannot smuggle extra properties toward the
+ * service. The verdict on each entry is the service's; this action only
+ * refuses shapes.
+ */
+export async function syncOfflineCheckins(
+  eventId: string,
+  entries: OfflineScanEntry[],
+): Promise<SyncResult> {
+  const caller = await currentCaller()
+  if (!caller) redirect(await loginPath())
+
+  const wellShaped =
+    UUID_PATTERN.test(eventId) &&
+    Array.isArray(entries) &&
+    entries.length > 0 &&
+    entries.length <= MAX_SYNC_BATCH &&
+    entries.every(
+      (e) => UUID_PATTERN.test(e.id) && CODE_PATTERN.test(e.code) && isIsoInstant(e.scannedAt),
+    )
+  if (!wellShaped) {
+    return { ok: false, error: RESCAN_SENTENCE }
+  }
+
+  return syncOfflineCheckIns(
+    caller,
+    eventId,
+    entries.map(({ id, code, scannedAt }) => ({ id, code, scannedAt })),
+  )
 }
