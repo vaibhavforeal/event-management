@@ -30,7 +30,15 @@ async function rpc(code: string, extra: { p_scanned_at?: string; p_offline?: boo
       p_checked_in_by: hostId,
       ...extra,
     })
-    .single()
+    // The test client is untyped (no Database generic); name the row shape here.
+    .single<{
+      outcome: string
+      attendee_name: string | null
+      checked_in_at: string
+      reference: string
+      tickets_total: number
+      tickets_in: number
+    }>()
 }
 
 async function ticketRow(code: string) {

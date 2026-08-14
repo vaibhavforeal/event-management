@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 // The strategy ships as a plain ESM file in public/ so the module service
-// worker can import it WITHOUT a bundler; vitest imports the same file here.
-// @ts-expect-error — plain .mjs, no type declarations, deliberately.
+// worker can import it WITHOUT a bundler; vitest imports the same file here
+// (resolves untyped but without error under this tsconfig, so no suppression).
 import { decide, isStaleCache, PAGES_CACHE, STATIC_CACHE } from '../../../public/sw-strategy.mjs'
 
 const ORIGIN = 'https://happenly.example.com'
