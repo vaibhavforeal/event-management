@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest'
 import { decide, isStaleCache, PAGES_CACHE, STATIC_CACHE } from '../../../public/sw-strategy.mjs'
 
 const ORIGIN = 'https://happenly.example.com'
-const GET_NAV = { method: 'GET', mode: 'navigate' }
-const GET_FETCH = { method: 'GET', mode: 'no-cors' }
+const GET_NAV = { method: 'GET', mode: 'navigate', origin: ORIGIN }
+const GET_FETCH = { method: 'GET', mode: 'no-cors', origin: ORIGIN }
 
 describe('decide — the whole fetch policy, three rules', () => {
   it('immutable build assets are cache-first', () => {
@@ -28,8 +28,25 @@ describe('decide — the whole fetch policy, three rules', () => {
     expect(decide(`${ORIGIN}/host/events/x/attendees`, GET_NAV)).toBe('passthrough')
     expect(decide(`${ORIGIN}/host/events/x/scan`, GET_FETCH)).toBe('passthrough') // not a navigation
     expect(decide(`${ORIGIN}/api/cron`, GET_FETCH)).toBe('passthrough')
-    expect(decide(`${ORIGIN}/host/events/x/scan`, { method: 'POST', mode: 'navigate' })).toBe(
+    expect(
+      decide(`${ORIGIN}/host/events/x/scan`, { method: 'POST', mode: 'navigate', origin: ORIGIN }),
+    ).toBe(
       'passthrough', // server actions are never cached
+    )
+  })
+
+  it('another origin never reaches a cache, whatever path it wears', () => {
+    const evil = 'https://evil.example.net'
+    expect(decide(`${evil}/_next/static/chunks/main-abc123.js`, GET_FETCH)).toBe('passthrough')
+    expect(decide(`${evil}/host/events/8f14e45f-0000-4000-8000-000000000001/scan`, GET_NAV)).toBe(
+      'passthrough',
+    )
+    // Same host, different scheme or port is a different origin too.
+    expect(decide('http://happenly.example.com/_next/static/chunks/a.js', GET_FETCH)).toBe(
+      'passthrough',
+    )
+    expect(decide('https://happenly.example.com:8443/_next/static/chunks/a.js', GET_FETCH)).toBe(
+      'passthrough',
     )
   })
 })

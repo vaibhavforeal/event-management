@@ -28,6 +28,13 @@ import {
  *  frame-rate problem. */
 const DETECT_INTERVAL_MS = 300
 
+/**
+ * What the queue badge says when a sync post threw. Not RESCAN_SENTENCE: this
+ * lands as drainQueue's stopReason, where "rescan the ticket" is an
+ * instruction pointing at nothing — the held queue is about the network.
+ */
+const SYNC_UNREACHABLE_SENTENCE = 'Could not reach the server. Queued scans are kept and will retry.'
+
 // Minimal type for the native detector; TS has no built-in lib entry for it.
 interface DetectedBarcode {
   rawValue: string
@@ -122,7 +129,7 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
         // sentence, which arrives below as the drain's stopReason.
         post: (entries) => syncOfflineCheckins(eventId, entries).catch(() => ({
           ok: false as const,
-          error: RESCAN_SENTENCE,
+          error: SYNC_UNREACHABLE_SENTENCE,
         })),
       })
       if (lines.length > 0) {

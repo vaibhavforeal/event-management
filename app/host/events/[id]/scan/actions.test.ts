@@ -63,6 +63,9 @@ const { checkInByCode, loadDoorPack, syncOfflineCheckins } = await import(
 const CALLER_ID = '00000000-0000-4000-8000-000000000001'
 const CODE = 'a'.repeat(32)
 const GENERIC = 'Something went wrong. Rescan the ticket.'
+// The sync action's own junk-shape sentence: it surfaces as drainQueue's
+// stopReason beside the queue badge, where "rescan the ticket" means nothing.
+const SYNC_REJECTED = 'Could not sync queued scans. They are kept on this device.'
 
 /** Runs the action expecting a redirect, and returns where it went. */
 async function captureRedirect(run: () => Promise<unknown>): Promise<string> {
@@ -151,26 +154,57 @@ describe('syncOfflineCheckins', () => {
   })
 
   it('refuses junk shapes before the service sees them', async () => {
-    expect(await syncOfflineCheckins('not-a-uuid', [ENTRY])).toEqual({ ok: false, error: GENERIC })
-    expect(await syncOfflineCheckins(EVENT_ID, [])).toEqual({ ok: false, error: GENERIC })
+    expect(await syncOfflineCheckins('not-a-uuid', [ENTRY])).toEqual({
+      ok: false,
+      error: SYNC_REJECTED,
+    })
+    expect(await syncOfflineCheckins(EVENT_ID, [])).toEqual({ ok: false, error: SYNC_REJECTED })
     expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, code: 'nope' }])).toEqual({
       ok: false,
-      error: GENERIC,
+      error: SYNC_REJECTED,
     })
     expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, id: 'nope' }])).toEqual({
       ok: false,
-      error: GENERIC,
+      error: SYNC_REJECTED,
     })
     expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, scannedAt: 'yesterday-ish' }])).toEqual({
       ok: false,
-      error: GENERIC,
+      error: SYNC_REJECTED,
     })
     expect(syncOfflineCheckIns).not.toHaveBeenCalled()
   })
 
+  it('refuses timestamps Date.parse would wave through but toISOString never mints', async () => {
+    for (const scannedAt of [
+      '2026-08-14', // date-only: an implied midnight is not a scan time
+      'Aug 14, 2026 13:05:00', // locale string: an implied zone is not a zone
+      '2026-08-14T13:05Z', // no seconds
+      '2026-08-14T13:05:00.000', // no zone
+      '2026-13-14T13:05:00.000Z', // month 13: past the pattern, caught by parse
+    ]) {
+      expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, scannedAt }])).toEqual({
+        ok: false,
+        error: SYNC_REJECTED,
+      })
+    }
+    expect(syncOfflineCheckIns).not.toHaveBeenCalled()
+  })
+
+  it('accepts an explicit-offset instant, not just Z', async () => {
+    syncOfflineCheckIns.mockResolvedValue({ ok: true, outcomes: [] })
+    const scannedAt = '2026-08-14T18:35:00.000+05:30'
+    expect(await syncOfflineCheckins(EVENT_ID, [{ ...ENTRY, scannedAt }])).toEqual({
+      ok: true,
+      outcomes: [],
+    })
+  })
+
   it('caps a batch at 200 entries', async () => {
     const entries = Array.from({ length: 201 }, () => ({ ...ENTRY, id: crypto.randomUUID() }))
-    expect(await syncOfflineCheckins(EVENT_ID, entries)).toEqual({ ok: false, error: GENERIC })
+    expect(await syncOfflineCheckins(EVENT_ID, entries)).toEqual({
+      ok: false,
+      error: SYNC_REJECTED,
+    })
     expect(syncOfflineCheckIns).not.toHaveBeenCalled()
   })
 

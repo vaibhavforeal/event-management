@@ -19,15 +19,20 @@ export const PAGES_CACHE = `${PREFIX}pages-${CACHE_VERSION}`
 const SCAN_PATH = /^\/host\/events\/[^/]+\/scan\/?$/
 
 /**
+ * `origin` is the worker's own (self.location.origin): only same-origin
+ * requests may reach a cache — a foreign host serving /_next/static/… paths
+ * must not be able to seed ours. Missing origin fails the same way, closed.
+ *
  * @param {string} url
- * @param {{ method: string, mode: string }} init
+ * @param {{ method: string, mode: string, origin: string }} init
  * @returns {'static' | 'scan-page' | 'passthrough'}
  */
-export function decide(url, { method, mode }) {
+export function decide(url, { method, mode, origin }) {
   if (method !== 'GET') return 'passthrough'
-  const { pathname } = new URL(url)
-  if (pathname.startsWith('/_next/static/')) return 'static'
-  if (mode === 'navigate' && SCAN_PATH.test(pathname)) return 'scan-page'
+  const parsed = new URL(url)
+  if (parsed.origin !== origin) return 'passthrough'
+  if (parsed.pathname.startsWith('/_next/static/')) return 'static'
+  if (mode === 'navigate' && SCAN_PATH.test(parsed.pathname)) return 'scan-page'
   return 'passthrough'
 }
 

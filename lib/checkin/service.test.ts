@@ -12,7 +12,7 @@ import type { Caller } from '@/lib/bookings/caller'
 // lib/env the moment it is imported. The helper import above must therefore
 // come first; awaiting the service here keeps that order explicit rather than
 // an accident of import hoisting. Same shape as lib/bookings/service.test.ts.
-const { checkInTicket, checkInNextTicket } = await import('@/lib/checkin/service')
+const { checkInTicket, checkInNextTicket, asCheckInOutcome } = await import('@/lib/checkin/service')
 
 const admin = adminClient()
 
@@ -98,6 +98,23 @@ describe('checkInTicket', () => {
       ok: false,
       error: 'No such ticket for this event. It may be for a different event, or its booking was cancelled.',
     })
+  })
+})
+
+describe('asCheckInOutcome', () => {
+  // The RPC itself can only say the two words, so the fail-closed branches in
+  // the three callers cannot be reached through the real database; the
+  // narrowing that guards them is proven here instead.
+  it('passes the two words the SQL can say, and only those', () => {
+    expect(asCheckInOutcome('checked_in')).toBe('checked_in')
+    expect(asCheckInOutcome('already_checked_in')).toBe('already_checked_in')
+  })
+
+  it('refuses anything else with null, never a guess', () => {
+    expect(asCheckInOutcome('')).toBeNull()
+    expect(asCheckInOutcome('CHECKED_IN')).toBeNull()
+    expect(asCheckInOutcome('refused')).toBeNull()
+    expect(asCheckInOutcome('checked_in ')).toBeNull()
   })
 })
 

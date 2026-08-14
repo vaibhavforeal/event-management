@@ -33,4 +33,8 @@ describe('the web app manifest', () => {
     expect(srcs).toContain('/icon-512.png')
     expect(srcs).toContain('/icon-512-maskable.png')
   })
+
+  it('declares every icon a PNG — installers trust the type field over sniffing', () => {
+    for (const icon of m.icons!) expect(icon.type).toBe('image/png')
+  })
 })
