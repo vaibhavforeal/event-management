@@ -183,37 +183,44 @@ export function Scanner({ eventId, eventKeyHex }: { eventId: string; eventKeyHex
 
       void (async () => {
         let verdict: ScanVerdict
-        // Local first: the signature proves the QR was issued for this event,
-        // so a random poster's QR never costs a server round-trip.
-        const verified = await verifyQrPayload(eventKeyFromHex(eventKeyHex), payload)
-        if (!verified.valid) {
-          verdict = { kind: 'invalid', reason: verified.reason }
-        } else if (!navigator.onLine) {
-          verdict = await offlineVerdict(verified.code)
-        } else {
-          try {
-            // The server does not rely on that local check — see actions.ts.
-            const result = await checkInByCode(eventId, verified.code)
-            verdict = !result.ok
-              ? { kind: 'refused', message: result.error }
-              : result.outcome === 'checked_in'
-                ? {
-                    kind: 'in',
-                    name: result.attendeeName,
-                    ticketsIn: result.ticketsIn,
-                    ticketsTotal: result.ticketsTotal,
-                  }
-                : {
-                    kind: 'already',
-                    name: result.attendeeName,
-                    checkedInAt: result.checkedInAt,
-                  }
-          } catch {
-            // The network dying mid-call. This used to be a dead-end "rescan";
-            // now it is the door going offline mid-scan: same path as no
-            // signal, so the scan still lands somewhere durable.
+        // Last-resort net around the whole computation: while a flight is
+        // pending the reducer starts nothing new, so a throw that never lands
+        // a verdict would wedge the door on "Checking…" until reload.
+        try {
+          // Local first: the signature proves the QR was issued for this event,
+          // so a random poster's QR never costs a server round-trip.
+          const verified = await verifyQrPayload(eventKeyFromHex(eventKeyHex), payload)
+          if (!verified.valid) {
+            verdict = { kind: 'invalid', reason: verified.reason }
+          } else if (!navigator.onLine) {
             verdict = await offlineVerdict(verified.code)
+          } else {
+            try {
+              // The server does not rely on that local check — see actions.ts.
+              const result = await checkInByCode(eventId, verified.code)
+              verdict = !result.ok
+                ? { kind: 'refused', message: result.error }
+                : result.outcome === 'checked_in'
+                  ? {
+                      kind: 'in',
+                      name: result.attendeeName,
+                      ticketsIn: result.ticketsIn,
+                      ticketsTotal: result.ticketsTotal,
+                    }
+                  : {
+                      kind: 'already',
+                      name: result.attendeeName,
+                      checkedInAt: result.checkedInAt,
+                    }
+            } catch {
+              // The network dying mid-call. This used to be a dead-end "rescan";
+              // now it is the door going offline mid-scan: same path as no
+              // signal, so the scan still lands somewhere durable.
+              verdict = await offlineVerdict(verified.code)
+            }
           }
+        } catch {
+          verdict = { kind: 'refused', message: RESCAN_SENTENCE }
         }
         dispatch({ type: 'verdict', payload, verdict })
       })()
