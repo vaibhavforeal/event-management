@@ -25,14 +25,14 @@ export function ApprovedPayPanel({
   const [state, action, pending] = useActionState<ApprovedPayState, FormData>(startApprovedPayment, {})
 
   return (
-    <section className="border-line mt-8 rounded-lg border p-4">
+    <section className="mt-8 rounded-xl bg-white p-4 shadow-[0_2px_12px_rgba(124,45,18,0.10)]">
       <form action={action}>
         <input type="hidden" name="reference" value={reference} />
         <p className="text-sm">{sentence}</p>
         <button
           type="submit"
           disabled={pending}
-          className="bg-ink text-paper mt-3 w-full rounded-lg px-5 py-3 text-[15px] font-medium disabled:opacity-60"
+          className="mt-3 w-full bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:opacity-60"
         >
           {pending ? 'Starting payment…' : `Pay ${amountLabel}`}
         </button>

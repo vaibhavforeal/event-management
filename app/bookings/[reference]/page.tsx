@@ -168,7 +168,7 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
     <main className="mx-auto min-h-screen w-full max-w-2xl px-5 py-10">
       <p className="font-mono text-[13px] tracking-wide text-muted">{statusLine}</p>
 
-      <h1 className="mt-2 text-2xl font-semibold break-words">{event?.title ?? 'Event'}</h1>
+      <h1 className="font-display mt-2 text-2xl font-semibold break-words">{event?.title ?? 'Event'}</h1>
 
       <dl className="mt-8 space-y-4 font-mono text-[14px]">
         <div>
@@ -296,14 +296,14 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
       )}
 
       {booking.status === 'confirmed' && booking.payment_mode === 'cash' && (
-        <p className="border-line mt-6 rounded-lg border p-3 text-sm">
-          Pay {formatPaise(booking.total_paise)} in cash at the door.
+        <p className="mt-6 rounded-xl bg-white p-3 text-sm shadow-[0_2px_12px_rgba(124,45,18,0.10)]">
+          Pay <span className="text-accent">{formatPaise(booking.total_paise)}</span> in cash at the door.
         </p>
       )}
 
       {tickets.length > 0 && (
         <section className="mt-10">
-          <h2 className="text-muted font-mono text-[13px]">
+          <h2 className="font-display text-muted font-mono text-[13px]">
             {tickets.length === 1 ? 'Your ticket' : `Your tickets — one per person`}
           </h2>
           <ul className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3">

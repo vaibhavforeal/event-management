@@ -34,7 +34,7 @@ export default async function BookingsPage() {
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-2xl px-5 py-10">
-      <h1 className="text-2xl font-semibold">Your bookings</h1>
+      <h1 className="font-display text-2xl font-semibold">Your bookings</h1>
 
       {bookings.length === 0 ? (
         <p className="text-muted mt-8 text-[15px]">
@@ -47,7 +47,7 @@ export default async function BookingsPage() {
       ) : (
         <ul className="mt-8 space-y-4">
           {bookings.map((booking) => (
-            <li key={booking.id} className="border-line rounded-xl border p-4">
+            <li key={booking.id} className="rounded-xl bg-white p-4 shadow-[0_2px_12px_rgba(124,45,18,0.10)]">
               {/* break-words on the title: a 140-character unbroken one is valid
                   under the schema CHECK, and without this it scrolls the whole
                   page sideways. Same rule as the host dashboard. */}
@@ -59,7 +59,12 @@ export default async function BookingsPage() {
               </Link>
               <p className="text-muted mt-1 font-mono text-[13px]">
                 {booking.events && `${formatIst(new Date(booking.events.starts_at))} · `}
-                {booking.quantity} {booking.quantity === 1 ? 'seat' : 'seats'} · {booking.status}
+                {booking.quantity} {booking.quantity === 1 ? 'seat' : 'seats'} ·{' '}
+                <span className={
+                  booking.status === 'confirmed' ? 'text-accent'
+                  : booking.status === 'cancelled' || booking.status === 'refunded' ? 'text-muted'
+                  : 'text-ember'
+                }>{booking.status}</span>
                 {positions.has(booking.id) && ` · ${waitlistShortPosition(positions.get(booking.id)!)}`}
               </p>
               {/* A confirmed booking is cancelled, a pending request is
