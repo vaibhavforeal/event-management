@@ -427,7 +427,7 @@ Expected: clean.
 
 Run: `npm run start` (build from Step 2). On a 390px viewport open `/`, `/e/walk-future-supper`, `/login`, `/bookings` (login `919999900001`, OTP `123456` — dev stack must be up: `npm run db:start`). Compare against `.superpowers/brainstorm/203366-1786787125/content/fusion.html`. The checklist: serif titles rendering (Fraunces, not a fallback serif); ember CTAs; white cards with warm shadows; chips restyled; gradient fallback on the cover-less walk events; QR page black-on-white.
 
-- [ ] **Step 4: Hand to the user for the visual verdict**
+- [x] **Step 4: Hand to the user for the visual verdict**
 
 The user eyeballs the same four pages. Only after their approval: merge and push.
 
