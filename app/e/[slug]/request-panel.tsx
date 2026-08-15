@@ -42,7 +42,7 @@ export function RequestPanel({ ticketTypeId, slug, maxSeats, priceLabel, offerCa
             maxLength={80}
             placeholder="Your name"
             disabled={pending}
-            className="border-line w-28 rounded-lg border px-3 py-3 text-[15px]"
+            className="border-cream-line bg-white w-28 rounded-lg border px-3 py-3 text-[15px]"
           />
           <label className="sr-only" htmlFor="quantity">Seats</label>
           <select
@@ -50,7 +50,7 @@ export function RequestPanel({ ticketTypeId, slug, maxSeats, priceLabel, offerCa
             name="quantity"
             defaultValue="1"
             disabled={pending}
-            className="border-line rounded-lg border px-3 py-3 font-mono text-[15px]"
+            className="border-cream-line bg-white rounded-lg border px-3 py-3 font-mono text-[15px]"
           >
             {Array.from({ length: maxSeats }, (_, i) => i + 1).map((n) => (
               <option key={n} value={n}>{n}</option>
@@ -59,7 +59,7 @@ export function RequestPanel({ ticketTypeId, slug, maxSeats, priceLabel, offerCa
           <button
             type="submit"
             disabled={pending}
-            className="bg-ink text-paper rounded-lg px-5 py-3 text-[15px] font-medium disabled:opacity-60"
+            className="bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:opacity-60"
           >
             {pending ? 'Sending…' : 'Request to join'}
           </button>
@@ -74,7 +74,7 @@ export function RequestPanel({ ticketTypeId, slug, maxSeats, priceLabel, offerCa
         maxLength={280}
         placeholder="Tell the host who's coming (optional)"
         disabled={pending}
-        className="border-line w-full rounded-lg border px-3 py-2 text-[14px]"
+        className="border-cream-line bg-white w-full rounded-lg border px-3 py-2 text-[14px]"
       />
 
       {offerCash && (

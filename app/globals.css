@@ -29,8 +29,22 @@
   --color-accent: #0f5e52; /* verdigris — section ticks, taken seats */
   --color-raised: #f2efe9; /* disabled controls, quiet fills */
 
+  /*
+    The warm half of the redesign (spec 2026-08-15). ember is THE warm accent:
+    primary CTAs, date badges, urgency. marigold is gradient/decorative fill
+    ONLY — its contrast on paper fails for text, so it must never color any.
+    cream/cream-line are the quiet warm tint for chips and info panels.
+    Verdigris (--color-accent) keeps money and positive states.
+  */
+  --color-ember: #c2410c;
+  --color-ember-deep: #7c2d12;
+  --color-marigold: #f5a623;
+  --color-cream: #fdf3e0;
+  --color-cream-line: #f0e2d0;
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-fraunces);
 }
 
 /*

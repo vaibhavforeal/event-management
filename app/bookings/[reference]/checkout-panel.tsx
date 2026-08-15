@@ -141,7 +141,7 @@ export function CheckoutPanel({
   const expired = remaining <= 0
 
   return (
-    <section className="border-line mt-8 rounded-lg border p-4">
+    <section className="mt-8 rounded-xl bg-white p-4 shadow-[0_2px_12px_rgba(124,45,18,0.10)]">
       {/* onReady, not onLoad: onLoad fires once per script load, so a remount
           with checkout.js already cached would never enable the button.
           onReady fires on every mount, including that one. */}
@@ -157,7 +157,7 @@ export function CheckoutPanel({
               type="button"
               onClick={openSheet}
               disabled={!scriptReady}
-              className="bg-ink text-paper w-full rounded-lg px-5 py-3 text-[15px] font-medium disabled:opacity-60"
+              className="w-full bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:opacity-60"
             >
               Pay {formatPaise(amountPaise)}
             </button>

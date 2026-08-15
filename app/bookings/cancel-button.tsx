@@ -43,7 +43,7 @@ export function CancelButton({
           would otherwise announce nothing at all. */}
       <div aria-live="polite">
         {consequence && <p className="text-muted mt-1 text-[13px]">{consequence}</p>}
-        {state.error && <p className="mt-1 text-[13px] text-red-700">{state.error}</p>}
+        {state.error && <p className="text-ember mt-1 text-[13px]">{state.error}</p>}
       </div>
     </form>
   )

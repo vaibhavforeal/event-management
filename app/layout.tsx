@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { Fraunces, Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 import { SwRegister } from './sw-register'
 
@@ -10,6 +10,16 @@ const geistSans = Geist({
 
 const geistMono = Geist_Mono({
   variable: '--font-geist-mono',
+  subsets: ['latin'],
+})
+
+/**
+ * Display serif for page titles and event names only — the editorial half of
+ * the redesign (spec 2026-08-15). Variable, latin subset, one file; body text
+ * stays Geist so the reading surfaces don't change voice.
+ */
+const fraunces = Fraunces({
+  variable: '--font-fraunces',
   subsets: ['latin'],
 })
 
@@ -42,7 +52,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} h-full antialiased`}
     >
       {/*
         Deliberately NOT a flex container.

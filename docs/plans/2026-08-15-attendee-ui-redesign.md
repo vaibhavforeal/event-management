@@ -26,7 +26,7 @@
 | Recipe | Exact classes |
 |---|---|
 | Card surface | `rounded-xl bg-white shadow-[0_2px_12px_rgba(124,45,18,0.10)]` (replaces `border-line … border`) |
-| Primary button (pill) | `bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:bg-raised disabled:text-muted` |
+| Primary button (pill) | `bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:opacity-60` |
 | Secondary button (pill) | `bg-white border border-cream-line text-ember-deep rounded-full px-4 py-3 text-[14px] font-medium disabled:opacity-60` |
 | Chip, selected | `bg-ember text-white rounded-full px-3 py-1` |
 | Chip, unselected | `bg-white border border-cream-line text-ember-deep rounded-full px-3 py-1` |
@@ -47,7 +47,7 @@ Rules: primary CTA = ember. Money amounts and positive/confirmed states = `text-
 **Interfaces:**
 - Produces: Tailwind utilities `bg-ember`, `text-ember`, `text-ember-deep`, `bg-cream`, `border-cream-line`, `from-marigold`/`to-marigold` (gradients only), and the `font-display` utility. Every later task consumes these.
 
-- [ ] **Step 1: Add Fraunces to the root layout**
+- [x] **Step 1: Add Fraunces to the root layout**
 
 In `app/layout.tsx`, extend the font imports:
 
@@ -75,7 +75,7 @@ and add the variable to the `<html>` className:
 className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} h-full antialiased`}
 ```
 
-- [ ] **Step 2: Add the tokens to globals.css**
+- [x] **Step 2: Add the tokens to globals.css**
 
 Inside the existing `@theme inline` block, after `--color-raised`, add:
 
@@ -100,17 +100,17 @@ and after `--font-mono`:
   --font-display: var(--font-fraunces);
 ```
 
-- [ ] **Step 3: Verify the build sees all of it**
+- [x] **Step 3: Verify the build sees all of it**
 
 Run: `npm run build`
 Expected: clean build. Then `grep -c "ember\|cream\|marigold\|font-display" app/globals.css` returns ≥ 6.
 
-- [ ] **Step 4: Run the full gates**
+- [x] **Step 4: Run the full gates**
 
 Run: `npm run test && npm run typecheck && npm run lint`
 Expected: 995 tests pass (nothing behavioral moved), 0 type errors, 0 lint errors.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/globals.css app/layout.tsx
@@ -128,7 +128,7 @@ git commit -m "feat: warm tokens (ember/marigold/cream) and Fraunces display fon
 **Interfaces:**
 - Produces: `coverFallbackClass(category: string | null): string` — returns a COMPLETE static Tailwind class string (JIT must see whole literals; never build class names by concatenation). Tasks 3 and 4 consume it.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `lib/events/cover-fallback.test.ts`:
 
@@ -167,12 +167,12 @@ describe('coverFallbackClass', () => {
 })
 ```
 
-- [ ] **Step 2: Run it, watch it fail**
+- [x] **Step 2: Run it, watch it fail**
 
 Run: `npx vitest run cover-fallback`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `lib/events/cover-fallback.ts`:
 
@@ -201,13 +201,13 @@ export function coverFallbackClass(category: string | null): string {
 }
 ```
 
-- [ ] **Step 4: Run the test, watch it pass — then mutation-check it**
+- [x] **Step 4: Run the test, watch it pass — then mutation-check it**
 
 Run: `npx vitest run cover-fallback`
 Expected: PASS.
 Mutation check (this repo's standing rule — a test that can't go red proves nothing): make `coverFallbackClass` return `DEFAULT_COVER_FALLBACK` unconditionally, re-run, expect the three category tests RED, then restore and re-run GREEN.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add lib/events/cover-fallback.ts lib/events/cover-fallback.test.ts
@@ -225,12 +225,12 @@ git commit -m "feat: category-tinted cover fallback gradients"
 **Interfaces:**
 - Consumes: Task 1 utilities, Task 2 `coverFallbackClass` — `FeedEvent` already carries `category` IF the feed query selects it; Step 0 verifies and, if absent, adds `category` to `FEED_COLUMNS` in `lib/events/queries.ts` and to the `FeedEvent` type (a read-only column addition; RLS already exposes the row).
 
-- [ ] **Step 0: Verify the copy-freeze exception and the category column**
+- [x] **Step 0: Verify the copy-freeze exception and the category column**
 
 Run: `grep -rn "What is on" --include="*.test.*" .` — expected: no hits (no test asserts the feed heading; if one exists, STOP and leave the tagline out).
 Run: `grep -n "category" lib/events/queries.ts` — if `FEED_COLUMNS` lacks `category`, add it to the select string and to the `FeedEvent` interface as `category: string | null`.
 
-- [ ] **Step 1: Restyle the feed page (`app/page.tsx`)**
+- [x] **Step 1: Restyle the feed page (`app/page.tsx`)**
 
 - h1 (line ~64): `className="text-2xl font-semibold"` → `className="font-display text-[26px] font-semibold"`
 - Directly under the h1 row's closing `</div>` (after line ~82), add the one permitted new line:
@@ -245,7 +245,7 @@ Run: `grep -n "category" lib/events/queries.ts` — if `FEED_COLUMNS` lacks `cat
 - The unknown-city chip (line ~123): `bg-ink text-paper` → `bg-ember text-white`.
 - Empty state `<p>` (line ~137): add `bg-white` and swap `border border-dashed` for the Card surface recipe minus rounding change: `className="text-muted rounded-xl bg-white p-8 text-center shadow-[0_2px_12px_rgba(124,45,18,0.10)]"`.
 
-- [ ] **Step 2: Restyle the event card (`app/_components/event-card.tsx`)**
+- [x] **Step 2: Restyle the event card (`app/_components/event-card.tsx`)**
 
 - Import `coverFallbackClass` from `@/lib/events/cover-fallback`.
 - Root `<Link>` (line ~26): `border-line hover:border-muted block overflow-hidden rounded-xl border transition` → `block overflow-hidden rounded-xl bg-white shadow-[0_2px_12px_rgba(124,45,18,0.10)] transition hover:shadow-[0_4px_16px_rgba(124,45,18,0.16)]`.
@@ -256,12 +256,12 @@ Run: `grep -n "category" lib/events/queries.ts` — if `FEED_COLUMNS` lacks `cat
 - Price (line ~64): `text-sm font-medium` → `text-sm font-bold text-accent`.
 - Do NOT touch `CARD_SIZES`, `preload`, `sizes`, or any comment.
 
-- [ ] **Step 3: Gates and eyeball**
+- [x] **Step 3: Gates and eyeball**
 
 Run: `npx vitest run events && npm run typecheck && npm run lint`
 Expected: green. Then `npm run build` clean.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/page.tsx app/_components/event-card.tsx lib/events/queries.ts
@@ -285,7 +285,7 @@ This page already has an editorial identity — mono `SectionLabel` ticks, the
 `SeatMarks` signature, the fixed bottom bar. PRESERVE all three; the redesign
 warms it, it does not replace it.
 
-- [ ] **Step 1: Restyle `app/e/[slug]/page.tsx`**
+- [x] **Step 1: Restyle `app/e/[slug]/page.tsx`**
 
 - Cover fallback: the page renders `<Image>` only when `cover_image_url` exists (line ~245). Add an `else` branch so cover-less events get the gradient:
 
@@ -302,7 +302,7 @@ warms it, it does not replace it.
 - `SectionLabel` (line ~117) and `SeatMarks` (line ~143): UNCHANGED — verdigris structure ticks and seat fills are the page's own signature (one warm accent per component: the header owns ember, sections own verdigris).
 - The inert fallback button in the bottom bar (line ~436): `border-line bg-raised text-muted shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium` → `bg-raised text-muted shrink-0 rounded-full px-5 py-3 text-[15px] font-medium`. Its three sentences stay byte-identical.
 
-- [ ] **Step 2: Restyle the three panels (class-only, same recipe)**
+- [x] **Step 2: Restyle the three panels (class-only, same recipe)**
 
 In each of `book-panel.tsx`, `request-panel.tsx`, `join-waitlist-panel.tsx`:
 
@@ -311,13 +311,13 @@ In each of `book-panel.tsx`, `request-panel.tsx`, `join-waitlist-panel.tsx`:
 - Inputs/selects: `border-line … rounded-lg border` → `border-cream-line bg-white … rounded-lg border` (inputs stay rounded-lg — pills are for buttons).
 - Button LABELS, error strings, aria labels: byte-identical. If a panel file's buttons differ structurally from book-panel's, apply the same recipe by role (primary submit vs secondary), never invent new colors.
 
-- [ ] **Step 3: Gates**
+- [x] **Step 3: Gates**
 
 Run: `npx vitest run "e/\[slug\]" && npm run typecheck && npm run lint && npm run build`
 (If the bracket filter misses on this shell, `npx vitest run slug` also matches the route's tests.)
 Expected: all green — these suites assert sentences and action wiring, neither of which moved.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add "app/e/[slug]/page.tsx" "app/e/[slug]/book-panel.tsx" "app/e/[slug]/request-panel.tsx" "app/e/[slug]/join-waitlist-panel.tsx"
@@ -339,7 +339,7 @@ git commit -m "feat: the event page warms up — ember header and CTAs, gradient
 **Interfaces:**
 - Consumes: Task 1 utilities only.
 
-- [ ] **Step 1: Restyle `app/bookings/page.tsx`**
+- [x] **Step 1: Restyle `app/bookings/page.tsx`**
 
 - h1 (line ~37): add `font-display`.
 - Booking card `<li>` (line ~50): `border-line rounded-xl border p-4` → `rounded-xl bg-white p-4 shadow-[0_2px_12px_rgba(124,45,18,0.10)]`.
@@ -353,7 +353,7 @@ git commit -m "feat: the event page warms up — ember header and CTAs, gradient
 }>{booking.status}</span>
 ```
 
-- [ ] **Step 2: Restyle the ticket page and its panels**
+- [x] **Step 2: Restyle the ticket page and its panels**
 
 `app/bookings/[reference]/page.tsx` (347 lines — read it first):
 
@@ -367,12 +367,12 @@ In `checkout-panel.tsx`, `approved-pay-panel.tsx`, `claim-seat-panel.tsx`, `canc
 - Primary submit buttons → Primary recipe (as Task 4 Step 2, byte-identical labels).
 - Secondary/destructive: cancel-button's control keeps its current quiet shape but its consequence/warning line, if it has a color, becomes `text-ember` (urgency per recipe rules). Labels byte-identical.
 
-- [ ] **Step 3: Gates**
+- [x] **Step 3: Gates**
 
 Run: `npx vitest run bookings && npm run typecheck && npm run lint && npm run build`
 Expected: green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/bookings
@@ -390,17 +390,17 @@ git commit -m "feat: bookings and the ticket page join the palette — QR stays 
 **Interfaces:**
 - Consumes: Task 1 utilities only.
 
-- [ ] **Step 1: Restyle**
+- [x] **Step 1: Restyle**
 
 - `page.tsx` h1 (line ~29): `text-2xl font-semibold tracking-tight` → `font-display text-2xl font-semibold tracking-tight`.
 - `login-form.tsx` (read it first): primary submit → Primary recipe; inputs → `border-cream-line bg-white` borders as in Task 4; every sentence and label byte-identical.
 
-- [ ] **Step 2: Gates**
+- [x] **Step 2: Gates**
 
 Run: `npx vitest run login && npm run typecheck && npm run lint`
 Expected: green (or "no test files found" for login — then run `npm run test`).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add app/login
@@ -413,17 +413,17 @@ git commit -m "feat: login joins the palette"
 
 **Files:** none created — verification only.
 
-- [ ] **Step 1: The whole suite, unmodified**
+- [x] **Step 1: The whole suite, unmodified**
 
 Run: `npm run test`
 Expected: **995 passed**, zero test-file changes in `git status` beyond `cover-fallback.test.ts` (Task 2's addition). Any other test edit means a copy freeze violation — find it and fix the SOURCE, not the test.
 
-- [ ] **Step 2: Typecheck, lint, build**
+- [x] **Step 2: Typecheck, lint, build**
 
 Run: `npm run typecheck && npm run lint && npm run build`
 Expected: clean.
 
-- [ ] **Step 3: The eyeball against the comp**
+- [x] **Step 3: The eyeball against the comp**
 
 Run: `npm run start` (build from Step 2). On a 390px viewport open `/`, `/e/walk-future-supper`, `/login`, `/bookings` (login `919999900001`, OTP `123456` — dev stack must be up: `npm run db:start`). Compare against `.superpowers/brainstorm/203366-1786787125/content/fusion.html`. The checklist: serif titles rendering (Fraunces, not a fallback serif); ember CTAs; white cards with warm shadows; chips restyled; gradient fallback on the cover-less walk events; QR page black-on-white.
 
@@ -448,6 +448,12 @@ git push origin master
   already answers those in its sections and fixed bottom bar; "no layout
   re-architecture" wins, so the strip is realized by warming what exists, not
   by adding a panel.
+- The spec's login "same card treatment" was not built — login keeps its bare
+  column layout, with only type/button/input recipes applied. This was the
+  plan's call to avoid unnecessary re-architecture.
+- The spec's "date badge overlaid on the cover" landed as the ember uppercase
+  date line in the card body, not an overlay. This was the plan's call for
+  implementation simplicity and accessibility.
 
 ## Execution notes
 

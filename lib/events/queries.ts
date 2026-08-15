@@ -17,7 +17,7 @@ import { createClient } from '@/lib/supabase/server'
 // list — see getPublishedEventBySlug — and one wider select is cheaper than a
 // second column list to keep in step with this one.
 const FEED_COLUMNS =
-  'id, slug, title, cover_image_url, city, venue_name, starts_at, ticket_types(id, price_paise, quantity, reserved_count, max_per_order)'
+  'id, slug, title, cover_image_url, city, venue_name, starts_at, category, ticket_types(id, price_paise, quantity, reserved_count, max_per_order)'
 
 /**
  * The order embedded ticket types come back in, everywhere.
@@ -43,6 +43,7 @@ export interface FeedEvent {
   city: string
   venue_name: string | null
   starts_at: string
+  category: string | null
   ticket_types: Array<{
     id: string
     price_paise: number
