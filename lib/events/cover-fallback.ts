@@ -10,7 +10,7 @@ export const DEFAULT_COVER_FALLBACK = 'bg-gradient-to-br from-ember to-accent'
 
 const FOOD = ['supper', 'dinner', 'food', 'brunch', 'lunch', 'chai', 'chaat', 'tasting', 'pop-up', 'popup']
 const GAMES = ['game', 'board', 'quiz', 'trivia']
-const CRAFT = ['workshop', 'craft', 'art', 'pottery', 'paint']
+const CRAFT = ['workshop', 'craft', 'pottery', 'paint']
 
 export function coverFallbackClass(category: string | null): string {
   const folded = category?.trim().toLowerCase()

@@ -28,7 +28,7 @@ export default function EventNotFound() {
       </p>
       <Link
         href="/"
-        className="bg-ink text-paper focus-visible:outline-accent rounded-lg px-4 py-2 focus-visible:outline-2 focus-visible:outline-offset-2"
+        className="bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep focus-visible:outline-accent focus-visible:outline-2 focus-visible:outline-offset-2"
       >
         See what else is on
       </Link>

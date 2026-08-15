@@ -26,7 +26,7 @@
 | Recipe | Exact classes |
 |---|---|
 | Card surface | `rounded-xl bg-white shadow-[0_2px_12px_rgba(124,45,18,0.10)]` (replaces `border-line … border`) |
-| Primary button (pill) | `bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:bg-raised disabled:text-muted` |
+| Primary button (pill) | `bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:opacity-60` |
 | Secondary button (pill) | `bg-white border border-cream-line text-ember-deep rounded-full px-4 py-3 text-[14px] font-medium disabled:opacity-60` |
 | Chip, selected | `bg-ember text-white rounded-full px-3 py-1` |
 | Chip, unselected | `bg-white border border-cream-line text-ember-deep rounded-full px-3 py-1` |
@@ -448,6 +448,12 @@ git push origin master
   already answers those in its sections and fixed bottom bar; "no layout
   re-architecture" wins, so the strip is realized by warming what exists, not
   by adding a panel.
+- The spec's login "same card treatment" was not built — login keeps its bare
+  column layout, with only type/button/input recipes applied. This was the
+  plan's call to avoid unnecessary re-architecture.
+- The spec's "date badge overlaid on the cover" landed as the ember uppercase
+  date line in the card body, not an overlay. This was the plan's call for
+  implementation simplicity and accessibility.
 
 ## Execution notes
 
