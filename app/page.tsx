@@ -61,7 +61,7 @@ export default async function FeedPage(props: PageProps<'/'>) {
           title whole. Nothing is restyled to make room: both links are the same
           `text-sm underline` the single one was. */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold">What is on</h1>
+        <h1 className="font-display text-[26px] font-semibold">What is on</h1>
         {/* The two links travel as one flex item so they wrap together rather
             than one of them stranding itself on a line of its own. `gap-4`
             matches the row's own spacing, so the three items read as evenly
@@ -80,6 +80,9 @@ export default async function FeedPage(props: PageProps<'/'>) {
           </Link>
         </div>
       </div>
+      <p className="text-[11px] tracking-[0.08em] uppercase text-muted mb-4 -mt-3">
+        Supper clubs · game nights · workshops · pop-ups
+      </p>
 
       {/* Rendered whether or not a filter is active, so changing city costs one
           navigation rather than a round trip out through the national feed. One
@@ -105,7 +108,7 @@ export default async function FeedPage(props: PageProps<'/'>) {
                 href={selected ? '/' : `/?city=${encodeURIComponent(name)}`}
                 aria-current={selected ? 'true' : undefined}
                 className={`min-w-0 rounded-full px-3 py-1 break-words ${
-                  selected ? 'bg-ink text-paper' : 'border-line border'
+                  selected ? 'bg-ember text-white' : 'bg-white border border-cream-line text-ember-deep'
                 }`}
               >
                 {name}
@@ -120,7 +123,7 @@ export default async function FeedPage(props: PageProps<'/'>) {
               into a group chat that renders the feed as one enormous black bar,
               and this product travels by forwarded link. */}
           {selectedCity && !selectionIsKnown && (
-            <span className="bg-ink text-paper min-w-0 rounded-full px-3 py-1 break-words">
+            <span className="bg-ember text-white min-w-0 rounded-full px-3 py-1 break-words">
               {selectedCity.trim().slice(0, MAX_CITY_LENGTH)}
             </span>
           )}
@@ -134,7 +137,7 @@ export default async function FeedPage(props: PageProps<'/'>) {
       )}
 
       {events.length === 0 ? (
-        <p className="border-line text-muted rounded-xl border border-dashed p-8 text-center">
+        <p className="text-muted rounded-xl bg-white p-8 text-center shadow-[0_2px_12px_rgba(124,45,18,0.10)]">
           Nothing on right now. <Link href="/host/events/new" className="underline">Host something.</Link>
         </p>
       ) : (

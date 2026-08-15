@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { formatIst } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import type { FeedEvent } from '@/lib/events/queries'
+import { coverFallbackClass } from '@/lib/events/cover-fallback'
 
 /**
  * What a card is actually painted at, so next/image can pick a variant that
@@ -23,7 +24,7 @@ export function EventCard({ event, preload = false }: { event: FeedEvent; preloa
   return (
     <Link
       href={`/e/${event.slug}`}
-      className="border-line hover:border-muted block overflow-hidden rounded-xl border transition"
+      className="block overflow-hidden rounded-xl bg-white shadow-[0_2px_12px_rgba(124,45,18,0.10)] transition hover:shadow-[0_4px_16px_rgba(124,45,18,0.16)]"
     >
       {event.cover_image_url ? (
         <Image
@@ -42,10 +43,10 @@ export function EventCard({ event, preload = false }: { event: FeedEvent; preloa
           className="h-40 w-full object-cover"
         />
       ) : (
-        <div className="from-line to-raised h-40 w-full bg-gradient-to-br" />
+        <div className={`h-40 w-full ${coverFallbackClass(event.category)}`} />
       )}
       <div className="space-y-1 p-4">
-        <p className="text-muted text-sm">{formatIst(new Date(event.starts_at))}</p>
+        <p className="text-[11px] tracking-[0.08em] uppercase text-ember font-semibold">{formatIst(new Date(event.starts_at))}</p>
         {/* break-words on every host-supplied string, the standing rule in this
             app. A 140-character title with no space in it is valid under both
             the Zod schema and the events.title CHECK, and hosts do write them.
@@ -58,10 +59,10 @@ export function EventCard({ event, preload = false }: { event: FeedEvent; preloa
             and the visitor read "AntidisestablishmentarianismAntidisestablish"
             with no ellipsis and no way to see the rest. Clipping is the failure
             here, not overflow. */}
-        <h2 className="font-medium leading-snug break-words">{event.title}</h2>
-        <p className="text-muted text-sm break-words">{event.venue_name ?? event.city}</p>
+        <h2 className="font-display text-[16px] font-semibold leading-snug break-words">{event.title}</h2>
+        <p className="text-[11px] tracking-[0.08em] uppercase text-muted break-words">{event.venue_name ?? event.city}</p>
         {ticket && (
-          <p className="text-sm font-medium">
+          <p className="text-sm font-bold text-accent">
             {ticket.price_paise === 0 ? 'Free' : formatPaise(ticket.price_paise)}
           </p>
         )}
