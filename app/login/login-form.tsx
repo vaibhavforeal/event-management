@@ -12,7 +12,7 @@ function SubmitButton({ children }: { children: React.ReactNode }) {
     <button
       type="submit"
       disabled={pending}
-      className="bg-ink text-paper w-full rounded-lg px-4 py-3 text-sm font-medium transition hover:bg-ink/85 disabled:opacity-50"
+      className="bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:opacity-60 w-full"
     >
       {pending ? 'Just a moment…' : children}
     </button>
@@ -49,7 +49,7 @@ export function LoginForm({ next }: { next: string }) {
             autoFocus
             placeholder="98765 43210"
             defaultValue={state.phone ?? ''}
-            className="border-line focus:border-ink rounded-lg border px-4 py-3 text-base outline-none"
+            className="border-cream-line bg-white focus:border-ink rounded-lg border px-4 py-3 text-base outline-none"
           />
           <span className="text-muted text-xs">
             We&apos;ll send a code on WhatsApp.
@@ -68,7 +68,7 @@ export function LoginForm({ next }: { next: string }) {
             required
             autoFocus
             placeholder="123456"
-            className="border-line focus:border-ink rounded-lg border px-4 py-3 text-center text-2xl tracking-[0.4em] outline-none"
+            className="border-cream-line bg-white focus:border-ink rounded-lg border px-4 py-3 text-center text-2xl tracking-[0.4em] outline-none"
           />
           <span className="text-muted text-xs">Sent to {state.phone}</span>
         </label>
