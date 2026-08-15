@@ -75,7 +75,7 @@ export function BookPanel({
           maxLength={80}
           placeholder="Your name"
           disabled={busy}
-          className="border-line w-28 rounded-lg border px-3 py-3 text-[15px]"
+          className="border-cream-line bg-white w-28 rounded-lg border px-3 py-3 text-[15px]"
         />
 
         <label className="sr-only" htmlFor="quantity">
@@ -86,7 +86,7 @@ export function BookPanel({
           name="quantity"
           defaultValue="1"
           disabled={busy}
-          className="border-line rounded-lg border px-3 py-3 font-mono text-[15px]"
+          className="border-cream-line bg-white rounded-lg border px-3 py-3 font-mono text-[15px]"
         >
           {Array.from({ length: maxSeats }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>
@@ -98,7 +98,7 @@ export function BookPanel({
         <button
           type="submit"
           disabled={busy}
-          className="bg-ink text-paper rounded-lg px-5 py-3 text-[15px] font-medium disabled:opacity-60"
+          className="bg-ember text-white rounded-full px-5 py-3 text-[15px] font-semibold hover:bg-ember-deep disabled:opacity-60"
         >
           {pending ? (paid ? 'Starting payment…' : 'Booking…') : paid ? `Pay ${priceLabel}` : 'Book'}
         </button>
@@ -108,7 +108,7 @@ export function BookPanel({
             type="submit"
             formAction={cashAction}
             disabled={busy}
-            className="border-line text-ink rounded-lg border px-4 py-3 text-[14px] font-medium disabled:opacity-60"
+            className="bg-white border border-cream-line text-ember-deep rounded-full px-4 py-3 text-[14px] font-medium disabled:opacity-60"
           >
             {cashPending ? 'Booking…' : 'Cash at the door'}
           </button>

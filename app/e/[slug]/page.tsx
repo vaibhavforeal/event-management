@@ -8,6 +8,7 @@ import { formatIst, formatIstDateOnly, hasStarted } from '@/lib/events/datetime'
 import { formatPaise } from '@/lib/money'
 import { refundPolicySentence } from '@/lib/payments/refund-policy'
 import { clientEnv } from '@/lib/env'
+import { coverFallbackClass } from '@/lib/events/cover-fallback'
 import { BookPanel } from './book-panel'
 import { RequestPanel } from './request-panel'
 import { JoinWaitlistPanel } from './join-waitlist-panel'
@@ -242,7 +243,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
      * page a distinct background again cannot quietly end mid-viewport.
      */
     <main className="mx-auto min-h-screen w-full max-w-2xl pb-36">
-      {event.cover_image_url && (
+      {event.cover_image_url ? (
         /**
          * 1200x630 is the same crop the OpenGraph card used, so the page opens
          * on the picture the visitor just tapped in WhatsApp.
@@ -260,11 +261,13 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
           sizes="(min-width: 672px) 672px, 100vw"
           className="aspect-[1200/630] w-full object-cover sm:rounded-b-2xl"
         />
+      ) : (
+        <div aria-hidden className={`aspect-[1200/630] w-full sm:rounded-b-2xl ${coverFallbackClass(event.category)}`} />
       )}
 
       <div className="px-5 pt-7">
         <header className="space-y-3">
-          <p className="text-accent font-mono text-[11px] tracking-[0.18em] uppercase">
+          <p className="text-ember font-mono text-[11px] tracking-[0.18em] uppercase">
             {formatIstDateOnly(startsAt)}
           </p>
           {/* break-words on every host-supplied string on this page. A
@@ -272,7 +275,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
               schema and the database CHECK, and without this the text paints
               outside its own box and scrolls the whole page sideways — a bounding
               box check does not catch it. */}
-          <h1 className="text-[28px] leading-[1.15] font-semibold tracking-tight text-balance break-words sm:text-[34px]">
+          <h1 className="font-display text-[28px] leading-[1.15] font-semibold tracking-tight text-balance break-words sm:text-[34px]">
             {event.title}
           </h1>
           {/* The city used to repeat here. It belongs under Where, not in the
@@ -433,7 +436,7 @@ export default async function PublicEventPage(props: PageProps<'/e/[slug]'>) {
             <button
               type="button"
               disabled
-              className="border-line bg-raised text-muted shrink-0 rounded-lg border px-5 py-3 text-[15px] font-medium"
+              className="bg-raised text-muted shrink-0 rounded-full px-5 py-3 text-[15px] font-medium"
             >
               {/* "already started", not "finished": a link forwarded to a
                   WhatsApp group is opened twenty minutes into a three-hour
