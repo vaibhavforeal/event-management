@@ -303,7 +303,7 @@ export default async function BookingPage(props: PageProps<'/bookings/[reference
 
       {tickets.length > 0 && (
         <section className="mt-10">
-          <h2 className="font-display text-muted font-mono text-[13px]">
+          <h2 className="text-muted font-mono text-[13px]">
             {tickets.length === 1 ? 'Your ticket' : `Your tickets — one per person`}
           </h2>
           <ul className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3">
