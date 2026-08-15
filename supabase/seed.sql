@@ -86,12 +86,16 @@ values
    now() + interval '4 days', now() + interval '5 days',
    'published', false, false, now(), 24, false, now(), now());
 
+-- The future event's ticket is FREE so a door walk can book one on a phone
+-- and get straight to the QR — no payment leg on the way to the scanner.
 insert into public.ticket_types
   (id, event_id, name, price_paise, quantity, reserved_count, max_per_order,
    sort_order, created_at, updated_at)
 values
   ('33333333-3333-4333-8333-333333333301', '22222222-2222-4222-8222-222222222201',
-   'General', 50000, 10, 0, 10, 0, now(), now());
+   'General', 50000, 10, 0, 10, 0, now(), now()),
+  ('33333333-3333-4333-8333-333333333302', '22222222-2222-4222-8222-222222222202',
+   'General', 0, 10, 0, 10, 0, now(), now());
 
 -- ── the ended event's money story: one kept booking, one refunded, one payout ─
 -- Settled: gross 1200.00 = 500.00 kept + 700.00 refunded-but-captured;
